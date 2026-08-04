@@ -1,0 +1,44 @@
+# Installierte Abhängigkeiten — werden via npm install wiederhergestellt
+node_modules/
+
+# Kompilierter TypeScript-Output — wird via npm run build erzeugt
+dist/
+
+# Echte Umgebungsvariablen mit Passwörtern — nur die *.example-Vorlagen werden versioniert
+.env*
+!.env.example
+!.env.prod.example
+
+# Lokale Docker-Compose-Overrides (z. B. DEV_ENFORCE_ROLES fürs Rollen-Testen) — nur lokal
+docker-compose.override.yml
+
+# Source-Map-Dateien für den kompilierten JS-Output
+*.js.map
+
+# Claude Code interne Konfiguration und Worktrees — nicht für das Team relevant
+.claude/
+
+# JetBrains IDE-Konfiguration (.idea) — nur lokal, nicht fürs Team relevant
+.idea/
+
+# macOS Systemdateien
+.DS_Store
+
+# M16-Test-Hilfsrepo (Gitlink ohne .gitmodules) — dient nur lokal dem Testen von M16,
+# bleibt auf dem lokalen Branch des Kollegen, nicht im geteilten Stand.
+MaxGraphTest/
+
+# Lokale Arbeitsdateien, nicht Teil der Veroeffentlichung
+demo-links.sh
+seed-praesi.sql
+DEMO-PRAESENTATION.md
+SETUP-KOLLEGEN.md
+PRE-PUBLIC-AUDIT.md
+documents/
+
+# Lokale Sicherungen
+*.tar.gz
+*.bundle
+
+# Urheberrechtlich geschuetzte Fremdliteratur - nur lokal, nie veroeffentlichen
+literatur-quellen/

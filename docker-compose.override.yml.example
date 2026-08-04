@@ -1,0 +1,23 @@
+# Vorlage für lokales ROLLEN-TESTEN (owner/member/commentator/spectator).
+#
+# So aktivierst du es:
+#   cp docker-compose.override.yml.example docker-compose.override.yml
+#   docker compose up -d app
+# Docker lädt docker-compose.override.yml automatisch dazu.
+#
+# So schaltest du es wieder aus (zurück zu „jeder ist owner"):
+#   rm docker-compose.override.yml
+#   docker compose up -d app
+#
+# Die Kopie (docker-compose.override.yml) ist bewusst .gitignore't — so bleibt main
+# standardmäßig reibungslos (jeder owner, keine 403), und Rollen-Testen ist opt-in.
+services:
+  app:
+    environment:
+      # Echtes Rollen-Enforcement: Rollen kommen aus session_members statt „alle owner".
+      # ⚠️ Damit bekommt ein Nicht-Mitglied 403 — die Test-Nutzer müssen der Session
+      #    beitreten/als Mitglied eingetragen sein (siehe M10-Test-Guide.md).
+      - DEV_ENFORCE_ROLES=true
+    # Optional: public/ live mounten → FE-Änderungen an playground.html greifen ohne Image-Rebuild:
+    # volumes:
+    #   - ./public:/app/public

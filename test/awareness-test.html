@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Awareness Test – Projekt 5</title>
+  <style>
+    body { font-family: Arial; padding: 20px; max-width: 900px; }
+    
+    #status { 
+      padding: 10px; 
+      border-radius: 5px; 
+      margin-bottom: 15px; 
+    }
+    .connected { background: #d4edda; color: #155724; }
+    .disconnected { background: #f8d7da; color: #721c24; }
+    
+    #editor-container {
+      position: relative;
+      margin-bottom: 15px;
+    }
+    
+    #editor { 
+      width: 100%; 
+      height: 200px; 
+      font-size: 16px; 
+      font-family: monospace; 
+      padding: 10px; 
+      border: 2px solid #ccc; 
+      border-radius: 5px;
+      resize: none;
+      box-sizing: border-box;
+    }
+
+    #users-container {
+      padding: 10px;
+      background: #f8f9fa;
+      border-radius: 5px;
+      margin-bottom: 15px;
+    }
+
+    .user-badge {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 12px;
+      color: white;
+      margin: 3px;
+      font-size: 13px;
+    }
+
+    #log { 
+      height: 150px; 
+      overflow-y: scroll; 
+      border: 1px solid #ccc; 
+      padding: 10px; 
+      font-family: monospace; 
+      font-size: 12px;
+      background: #1e1e1e;
+      color: #00ff00;
+      border-radius: 5px;
+    }
+
+    .log-entry { margin: 2px 0; }
+
+    input { 
+      padding: 8px; 
+      border: 1px solid #ccc; 
+      border-radius: 5px;
+      margin-right: 10px;
+    }
+
+    button {
+      padding: 8px 16px;
+      background: #5B8C00;
+      color: white;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+    }
+
+    button:hover { background: #4a7000; }
+
+    /* Cursor Styles */
+    .remote-cursor {
+      position: absolute;
+      width: 2px;
+      height: 20px;
+      pointer-events: none;
+      opacity: 0.9;
+      z-index: 10;
+    }
+
+    .remote-cursor-label {
+      position: absolute;
+      font-size: 11px;
+      color: white;
+      padding: 1px 5px;
+      border-radius: 3px;
+      white-space: nowrap;
+      pointer-events: none;
+      z-index: 11;
+      font-family: Arial;
+    }
+  </style>
+</head>
+<body>
+  <h2>🔌 Awareness Test – Projekt 5</h2>
+  <p>Öffne diese Seite in zwei Tabs mit derselben Session-ID!</p>
+
+  <!-- Nutzer-Name und Session eingeben -->
+  <div style="margin-bottom: 15px;">
+    <input id="userName" placeholder="Dein Name (z.B. alice)" value="alice"/>
+    <input id="sessionId" placeholder="Session-ID" 
+           value="a6aa46ce-8f5f-4e3c-af2d-a5e14502e348"/>
+    <button onclick="connect()">Verbinden</button>
+  </div>
+
+  <!-- Status -->
+  <div id="status" class="disconnected">
+    ⏳ Noch nicht verbunden...
+  </div>
+
+  <!-- Online Nutzer -->
+  <div id="users-container">
+    👥 Online: <span id="users-list">niemand</span>
+  </div>
+
+  <!-- SQL Editor -->
+  <h3>SQL Editor:</h3>
+  <div id="editor-container">
+    <textarea id="editor" 
+      placeholder="Verbinde zuerst!" 
+      disabled>
+    </textarea>
+  </div>
+
+  <!-- Log -->
+  <h3>Log:</h3>
+  <div id="log"></div>
+
+  <script type="module">
+    import * as Y from 'https://esm.sh/yjs'
+    import { WebsocketProvider } from 'https://esm.sh/y-websocket'
+
+    // Farben für verschiedene Nutzer:
+    const COLORS = [
+      '#e74c3c', '#3498db', '#2ecc71', 
+      '#f39c12', '#9b59b6', '#1abc9c'
+    ]
+
+    function getColor(index) {
+      return COLORS[index % COLORS.length]
+    }
+
+    const log = document.getElementById('log')
+    const status = document.getElementById('status')
+    const editor = document.getElementById('editor')
+    const usersList = document.getElementById('users-list')
+    const editorContainer = document.getElementById('editor-container')
+
+    function addLog(msg, color = '#00ff00') {
+      const div = document.createElement('div')
+      div.className = 'log-entry'
+      div.style.color = color
+      div.textContent = new Date().toLocaleTimeString() + ' → ' + msg
+      log.appendChild(div)
+      log.scrollTop = log.scrollHeight
+    }
+
+    // Globale Variablen:
+    let provider = null
+    let ydoc = null
+    let yText = null
+    let myColor = '#000000'
+    let myUserName = ''
+
+    // ── Cursor-Logik ──────────────────────────────────────────
+
+    // Cursor-Position berechnen (Zeile + Spalte → Pixel):
+    function getCaretCoordinates(element, position) {
+      const div = document.createElement('div')
+      const style = window.getComputedStyle(element)
+
+      // Dieselben Styles wie der Editor:
+      div.style.position = 'absolute'
+      div.style.visibility = 'hidden'
+      div.style.whiteSpace = 'pre-wrap'
+      div.style.wordWrap = 'break-word'
+      div.style.fontSize = style.fontSize
+      div.style.fontFamily = style.fontFamily
+      div.style.lineHeight = style.lineHeight
+      div.style.padding = style.padding
+      div.style.width = element.offsetWidth + 'px'
+
+      div.textContent = element.value.substring(0, position)
+
+      const span = document.createElement('span')
+      span.textContent = '|'
+      div.appendChild(span)
+
+      document.body.appendChild(div)
+      const rect = span.getBoundingClientRect()
+      const editorRect = element.getBoundingClientRect()
+      document.body.removeChild(div)
+
+      return {
+        top: rect.top - editorRect.top + element.scrollTop,
+        left: rect.left - editorRect.left
+      }
+    }
+
+    // Alle Remote-Cursor neu zeichnen:
+    function updateCursors() {
+      // Alte Cursor entfernen:
+      editorContainer.querySelectorAll('.remote-cursor, .remote-cursor-label')
+        .forEach(el => el.remove())
+
+      if (!provider) return
+
+      const states = provider.awareness.getStates()
+
+      states.forEach((state, clientId) => {
+        // Eigenen Cursor nicht anzeigen:
+        if (clientId === provider.awareness.clientID) return
+        if (!state.cursor || !state.user) return
+
+        const { position } = state.cursor
+        const { name, color } = state.user
+
+        // Position in Pixel umrechnen:
+        const coords = getCaretCoordinates(editor, position)
+
+        // Cursor-Linie:
+        const cursorEl = document.createElement('div')
+        cursorEl.className = 'remote-cursor'
+        cursorEl.style.backgroundColor = color
+        cursorEl.style.top = coords.top + 'px'
+        cursorEl.style.left = coords.left + 'px'
+
+        // Cursor-Label (Name):
+        const labelEl = document.createElement('div')
+        labelEl.className = 'remote-cursor-label'
+        labelEl.style.backgroundColor = color
+        labelEl.style.top = (coords.top - 20) + 'px'
+        labelEl.style.left = coords.left + 'px'
+        labelEl.textContent = name
+
+        editorContainer.appendChild(cursorEl)
+        editorContainer.appendChild(labelEl)
+      })
+    }
+
+    // Eigene Cursor-Position senden:
+    function sendCursorPosition() {
+      if (!provider) return
+      const position = editor.selectionStart
+      provider.awareness.setLocalStateField('cursor', {
+        position: position
+      })
+    }
+
+    // ── Verbindung aufbauen ──────────────────────────────────
+
+   window.connect = async function() {
+  myUserName = document.getElementById('userName').value || 'Anonym'
+  const sessionId = document.getElementById('sessionId').value
+
+  if (!sessionId) {
+    alert('Bitte Session-ID eingeben!')
+    return
+  }
+
+  // UUID prüfen:
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+  if (!uuidRegex.test(sessionId)) {
+    status.textContent = '❌ Ungültige Session-ID!'
+    status.className = 'disconnected'
+    addLog('❌ Ungültige Session-ID!', '#ff0000')
+    return
+  }
+
+  // Session prüfen:
+  try {
+    const response = await fetch(`http://localhost:3000/api/sessions/${sessionId}`)
+    if (!response.ok) {
+      status.textContent = '❌ Session existiert nicht!'
+      status.className = 'disconnected'
+      addLog('❌ Session nicht gefunden!', '#ff0000')
+      return
+    }
+  } catch (err) {
+    status.textContent = '❌ Server nicht erreichbar!'
+    status.className = 'disconnected'
+    addLog('❌ Server Fehler!', '#ff0000')
+    return
+  }
+
+  addLog(`🚀 Verbinde als "${myUserName}" mit Session: ${sessionId}`)
+
+  // Yjs Dokument:
+  ydoc = new Y.Doc()
+
+  // WebSocket Verbindung:
+  provider = new WebsocketProvider(
+    'ws://localhost:3000/sync',
+    sessionId,
+    ydoc,
+    { disableBc: true }
+  )
+      // Awareness — eigene Info setzen:
+      myColor = getColor(ydoc.clientID % COLORS.length)
+      provider.awareness.setLocalStateField('user', {
+        name: myUserName,
+        color: myColor
+      })
+
+      // Verbindungsstatus:
+      provider.on('status', event => {
+        if (event.status === 'connected') {
+          status.textContent = `✅ Verbunden als "${myUserName}"!`
+          status.className = 'connected'
+          editor.disabled = false
+          editor.placeholder = 'Tippe SQL hier...'
+          addLog(`✅ Verbunden!`, '#00ff00')
+        } else {
+          status.textContent = '❌ Getrennt!'
+          status.className = 'disconnected'
+          editor.disabled = true
+          addLog(`❌ Getrennt!`, '#ff0000')
+        }
+      })
+
+      provider.ws.onmessage = (event) => {
+        try {
+          const message = JSON.parse(event.data)
+
+          if (message.type === 'review.created') {
+            addLog(`📝 Neue Review-Anfrage: ${message.payload.requester_id}`, '#ff99ff')
+          }
+
+          if (message.type === 'review.feedback_added') {
+            addLog(`✅ Review abgeschlossen von: ${message.payload.reviewer_id}`, '#ff99ff')
+          }
+        } catch {
+          // Yjs sendet auch eigene binäre Nachrichten.
+          // Die ignorieren wir hier bewusst.
+        }
+      }
+
+      // Yjs Text:
+      yText = ydoc.getText('sql')
+
+      // Editor → Yjs:
+      editor.addEventListener('input', () => {
+        const newContent = editor.value
+        if (newContent !== yText.toString()) {
+          ydoc.transact(() => {
+            yText.delete(0, yText.length)
+            yText.insert(0, newContent)
+          })
+        }
+        sendCursorPosition()
+      })
+
+      // Cursor-Position senden bei Klick und Tastendruck:
+      editor.addEventListener('keyup', sendCursorPosition)
+      editor.addEventListener('click', sendCursorPosition)
+      editor.addEventListener('select', sendCursorPosition)
+
+      // Yjs → Editor:
+      yText.observe(() => {
+        const newContent = yText.toString()
+        if (editor.value !== newContent) {
+          const cursorPos = editor.selectionStart
+          editor.value = newContent
+          editor.setSelectionRange(cursorPos, cursorPos)
+          addLog(`📨 Update empfangen: "${newContent}"`, '#00ffff')
+        }
+        updateCursors()
+      })
+
+      // Awareness — andere Nutzer beobachten:
+      provider.awareness.on('change', () => {
+        const states = provider.awareness.getStates()
+        const users = []
+
+        states.forEach((state, clientId) => {
+          if (state.user) {
+            users.push({
+              name: state.user.name,
+              color: state.user.color,
+              isMe: clientId === provider.awareness.clientID
+            })
+          }
+        })
+
+        // Online Nutzer anzeigen:
+        if (users.length === 0) {
+          usersList.innerHTML = 'niemand'
+        } else {
+          usersList.innerHTML = users.map(u => 
+            `<span class="user-badge" style="background: ${u.color}">
+              ${u.isMe ? '👤 ' : '🧑 '}${u.name}
+            </span>`
+          ).join('')
+        }
+
+        addLog(
+          `👥 Online: ${users.map(u => u.name).join(', ')}`,
+          '#ffff00'
+        )
+
+        // Cursor aktualisieren:
+        updateCursors()
+      })
+
+      addLog('⏳ Warte auf Verbindung...', '#ffff00')
+    }
+  </script>
+</body>
+</html>

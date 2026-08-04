@@ -1,0 +1,1510 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SQL Playground – Kollaborativ</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: sans-serif; background: #eff1f5; color: #4c4f69; height: 100vh; display: flex; flex-direction: column; }
+
+    /* ── Header ── */
+    header { padding: 10px 20px; background: #e6e9ef; border-bottom: 1px solid #ccd0da; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+    header h1 { font-size: 16px; font-weight: 600; }
+    #user-list { display: flex; gap: 6px; align-items: center; }
+    .user-badge { padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; color: #eff1f5; }
+    #session-info { font-size: 12px; color: #6c6f85; margin-left: auto; display: flex; align-items: center; gap: 8px; }
+    #role-badge { font-size: 11px; padding: 2px 8px; border-radius: 999px; font-weight: 600; display: none; }
+    /* Rollen-Badges: GRAUSTUFEN (owner dunkel → spectator hell), bewusst disjunkt von den bunten
+       Personen-Farben (colorForUser), damit sich Rolle und Identität nicht überlagern. */
+    #role-badge.owner  { background: #4c4f69; color: #eff1f5; }
+    #role-badge.member { background: #7c7f93; color: #eff1f5; }
+    #role-badge.commentator { background: #acb0be; color: #11111b; }
+    #role-badge.viewer { background: #ccd0da; color: #4c4f69; }
+    #btn-copy-id { font-size: 11px; padding: 2px 8px; border-radius: 4px; border: none; background: #ccd0da; color: #4c4f69; cursor: pointer; transition: background 0.2s, color 0.2s; }
+    #btn-copy-id.copied { background: #2d7a1f; color: #eff1f5; }
+    #btn-share { font-size: 11px; padding: 2px 8px; border-radius: 4px; border: none; background: #ccd0da; color: #4c4f69; cursor: pointer; }
+    #btn-share:hover { background: #bcc0cc; }
+    #btn-leave { font-size: 11px; padding: 2px 8px; border-radius: 4px; border: 1px solid #d20f39; background: transparent; color: #d20f39; cursor: pointer; }
+    #btn-leave:hover { background: #d20f3922; }
+
+    /* ── Session-Setup ── */
+    #session-setup { display: flex; flex-direction: column; align-items: center; justify-content: center; flex: 1; gap: 16px; }
+    #session-setup input { padding: 10px 14px; border-radius: 6px; border: 1px solid #ccd0da; background: #ccd0da; color: #4c4f69; font-size: 14px; width: 280px; }
+    #session-setup input:focus { outline: none; border-color: #1e66f5; }
+    #btn-create, #btn-join { padding: 10px 24px; border-radius: 6px; border: none; background: #1e66f5; color: #eff1f5; font-weight: 600; cursor: pointer; font-size: 14px; width: 280px; }
+    #btn-create:hover, #btn-join:hover { background: #04a5e5; }
+    .divider { color: #acb0be; font-size: 13px; }
+    #recent-sessions { display: flex; flex-direction: column; gap: 6px; width: 280px; margin-top: 8px; }
+    #recent-sessions h3 { font-size: 11px; color: #acb0be; text-transform: uppercase; letter-spacing: 0.05em; }
+    .recent-card { background: #ccd0da; border-radius: 6px; padding: 8px 10px; display: flex; align-items: center; gap: 8px; cursor: pointer; border: 1px solid transparent; }
+    .recent-card:hover { border-color: #1e66f5; }
+    .recent-card .rc-name { font-size: 13px; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .recent-card .rc-meta { font-size: 10px; color: #acb0be; margin-top: 2px; }
+    .recent-card .rc-rename { font-size: 10px; color: #acb0be; cursor: pointer; padding: 2px 4px; border-radius: 3px; border: none; background: transparent; }
+    .recent-card .rc-rename:hover { color: #1e66f5; background: #eff1f5; }
+    .recent-card .rc-del { font-size: 10px; color: #acb0be; cursor: pointer; padding: 2px 4px; border-radius: 3px; border: none; background: transparent; }
+    .recent-card .rc-del:hover { color: #d20f39; }
+
+    /* ── Read-only Banner ── */
+    #readonly-banner { display: none; padding: 6px 16px; background: #ccd0da; border-bottom: 1px solid #bcc0cc; font-size: 12px; color: #4c4f69; text-align: center; }
+    #readonly-banner strong { color: #8f3300; }
+
+    /* ── Editor-Tabs ── */
+    #editor-tabs { background: #e6e9ef; border-bottom: 1px solid #ccd0da; gap: 0; }
+    .editor-tab { padding: 8px 18px; font-size: 12px; font-weight: 600; cursor: pointer; border: none; background: none; color: #acb0be; border-bottom: 3px solid transparent; transition: color 0.15s; }
+    .editor-tab:hover { color: #6c6f85; }
+    .editor-tab.active-group { color: #1e66f5; border-bottom-color: #1e66f5; }
+    .editor-tab.active-draft { color: #40a02b; border-bottom-color: #40a02b; }
+    #editor-panel { flex: 1; display: flex; flex-direction: column; border-right: 1px solid #ccd0da; transition: border-color 0.2s; }
+    #editor-panel.mode-group { border-top: 2px solid #1e66f544; }
+    #editor-panel.mode-draft { border-top: 2px solid #40a02b44; }
+
+    /* ── Toolbar ── */
+    #toolbar { display: none; padding: 6px 16px; background: #e6e9ef; border-bottom: 1px solid #ccd0da; gap: 8px; align-items: center; }
+    #btn-clear { padding: 4px 10px; border-radius: 5px; border: 1px solid #ccd0da; background: transparent; color: #6c6f85; font-size: 12px; cursor: pointer; }
+    #btn-clear:hover { background: #ccd0da; }
+    #btn-author-view { padding: 4px 10px; border-radius: 5px; border: 1px solid #8839ef; background: transparent; color: #8839ef; font-size: 12px; cursor: pointer; }
+    #btn-author-view:hover { background: #8839ef22; }
+    #btn-author-view.off { border-color: #ccd0da; color: #9ca0b0; }
+    #draft-actions { display: none; gap: 6px; align-items: center; margin-left: auto; }
+    #btn-save-draft { padding: 4px 12px; border-radius: 5px; border: 1px solid #40a02b; background: transparent; color: #40a02b; font-size: 12px; cursor: pointer; font-weight: 600; transition: background 0.2s, color 0.2s; }
+    #btn-save-draft:hover { background: #40a02b22; }
+    #btn-save-session { padding: 4px 12px; border-radius: 5px; border: 1px solid #1e66f5; background: transparent; color: #1e66f5; font-size: 12px; cursor: pointer; font-weight: 600; display: none; }
+    #btn-save-session:hover { background: #1e66f522; }
+    #btn-request-review { padding: 4px 12px; border-radius: 5px; border: none; background: #8839ef; color: #eff1f5; font-size: 12px; cursor: pointer; font-weight: 600; }
+    #btn-request-review:hover { background: #7287fd; }
+    #btn-request-review:hover { background: #7287fd; }
+    #draft-status { font-size: 11px; color: #acb0be; }
+
+    /* ── Main Layout ── */
+    #main { display: none; flex: 1; overflow: hidden; flex-direction: column; }
+    #editor-area { display: flex; flex: 1; overflow: hidden; position: relative; }
+    #editor-panel .panel-header { padding: 8px 16px; background: #e6e9ef; font-size: 12px; font-weight: 500; border-bottom: 1px solid #ccd0da; display: flex; align-items: center; gap: 8px; color: #6c6f85; }
+    #sync-status { font-size: 11px; }
+    #draft-indicator { font-size: 11px; color: #40a02b; display: none; }
+    #editor-wrapper { flex: 1; overflow: auto; min-height: 0; }
+    .cm-editor { height: 100%; font-size: 14px; }
+    #editor-wrapper.readonly { opacity: 0.75; pointer-events: none; }
+
+    /* ── Rechtes Panel ── */
+    #right-panel { width: 320px; display: flex; flex-direction: column; flex-shrink: 0; transition: width 0.2s; }
+    #right-panel.collapsed { width: 0; overflow: hidden; }
+    .panel-tabs { display: flex; background: #e6e9ef; border-bottom: 1px solid #ccd0da; overflow-x: auto; }
+    .panel-tab { padding: 8px 10px; font-size: 11px; font-weight: 500; color: #acb0be; cursor: pointer; border: none; background: none; border-bottom: 2px solid transparent; transition: color 0.15s; white-space: nowrap; }
+    .panel-tab:hover { color: #6c6f85; }
+    .panel-tab.active { color: #4c4f69; border-bottom-color: #1e66f5; }
+    .panel-tab-close { margin-left: auto; background: none; border: none; color: #acb0be; cursor: pointer; font-size: 14px; padding: 8px 10px; flex-shrink: 0; }
+    .panel-tab-close:hover { color: #4c4f69; }
+    .tab-content { display: none; flex: 1; overflow: hidden; flex-direction: column; }
+    .tab-content.active { display: flex; }
+
+    /* Kommentare */
+    #comment-list { flex: 1; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+    .comment-card { background: #ccd0da; border-radius: 8px; padding: 10px 12px; font-size: 13px; }
+    .comment-card-header { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+    .comment-author { font-size: 11px; color: #1e66f5; font-weight: 600; }
+    .comment-line { font-size: 10px; padding: 1px 5px; border-radius: 3px; background: #eff1f5; color: #8839ef; font-family: monospace; cursor: pointer; border: none; margin-left: auto; white-space: nowrap; }
+    .comment-line:hover { background: #acb0be; }
+    .comment-text { color: #4c4f69; line-height: 1.4; word-break: break-word; }
+    .comment-footer { display: flex; justify-content: space-between; align-items: center; margin-top: 6px; }
+    .comment-time { font-size: 10px; color: #acb0be; }
+    .comment-delete { font-size: 10px; color: #d20f39; cursor: pointer; background: none; border: none; padding: 0; display: none; }
+    .comment-card:hover .comment-delete { display: inline; }
+    .comment-delete:hover { text-decoration: underline; }
+    #comment-line-hint { font-size: 11px; color: #8839ef; font-family: monospace; }
+    #comment-form { padding: 10px; border-top: 1px solid #ccd0da; display: flex; flex-direction: column; gap: 6px; }
+    #comment-form.disabled { opacity: 0.4; pointer-events: none; }
+    #comment-input { padding: 8px 10px; border-radius: 6px; border: 1px solid #ccd0da; background: #ccd0da; color: #4c4f69; font-size: 13px; resize: none; height: 64px; }
+    #comment-input:focus { outline: none; border-color: #1e66f5; }
+    .form-row { display: flex; align-items: center; gap: 8px; }
+    #comment-submit { padding: 7px 12px; border-radius: 6px; border: none; background: #1e66f5; color: #eff1f5; font-weight: 600; cursor: pointer; font-size: 12px; }
+    #comment-submit:hover { background: #04a5e5; }
+
+    /* Reviews */
+    #review-list { flex: 1; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+    .review-card { background: #ccd0da; border-radius: 8px; padding: 10px 12px; font-size: 13px; border-left: 3px solid #acb0be; }
+    .review-card.open { border-left-color: #fe640b; }
+    .review-card.approved { border-left-color: #40a02b; }
+    .review-card.rejected { border-left-color: #d20f39; }
+    .review-header { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+    .review-title { font-size: 12px; font-weight: 600; color: #4c4f69; flex: 1; }
+    .review-status { font-size: 10px; padding: 1px 6px; border-radius: 3px; font-weight: 600; }
+    .review-status.open { background: #fe640b22; color: #4c4f69; }
+    .review-status.approved { background: #40a02b22; color: #4c4f69; }
+    .review-status.changes_requested { background: #d20f3914; color: #4c4f69; }
+    .review-status.rejected { background: #d20f3914; color: #4c4f69; }
+    .review-meta { font-size: 10px; color: #6c6f85; margin-bottom: 6px; }
+    .review-feedback { margin-top: 6px; padding-top: 6px; border-top: 1px solid #bcc0cc; font-size: 12px; }
+    .feedback-item { padding: 4px 0; display: flex; gap: 6px; align-items: flex-start; }
+    .feedback-verdict { font-size: 10px; padding: 1px 5px; border-radius: 3px; font-weight: 600; flex-shrink: 0; }
+    .feedback-verdict.approved { background: #40a02b22; color: #4c4f69; }
+    .feedback-verdict.changes_requested { background: #fe640b22; color: #4c4f69; }
+    .feedback-verdict.rejected { background: #d20f3914; color: #4c4f69; }
+    .review-actions { display: flex; gap: 6px; margin-top: 8px; }
+    .btn-verdict { padding: 4px 10px; border-radius: 4px; border: none; font-size: 11px; font-weight: 600; cursor: pointer; background: #bcc0cc; color: #4c4f69; }
+    .btn-verdict:hover { background: #acb0be; }
+    #review-empty { padding: 20px; text-align: center; color: #acb0be; font-size: 12px; display: none; }
+
+    /* History */
+    #history-list { flex: 1; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 6px; }
+    .history-card { background: #ccd0da; border-radius: 8px; padding: 10px 12px; font-size: 12px; display: flex; flex-direction: column; gap: 6px; border: 1px solid transparent; }
+    .history-card:hover { border-color: #bcc0cc; }
+    .history-card.current { border: 1px solid #1e66f566; border-left: 3px solid #1e66f5; background: #1e66f50d; }
+    .history-card.system-version { border-left: 3px solid #bcc0cc; opacity: 0.6; }
+    .history-card-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .history-card-info { flex: 1; min-width: 0; }
+    .history-card-meta { font-size: 10px; color: #6c6f85; margin-top: 2px; }
+    .history-card-preview { font-size: 10px; color: #6c6f85; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: monospace; }
+    .btn-history-preview { padding: 5px 10px; border-radius: 5px; border: 1px solid #bcc0cc; background: transparent; color: #6c6f85; font-size: 11px; cursor: pointer; flex-shrink: 0; }
+    .btn-history-preview:hover { background: #bcc0cc; color: #4c4f69; }
+    .btn-history-load { padding: 5px 12px; border-radius: 5px; border: none; background: #1e66f5; color: #eff1f5; font-size: 11px; font-weight: 600; cursor: pointer; flex-shrink: 0; }
+    .btn-history-load:hover { background: #04a5e5; }
+    .history-card.system-version .btn-history-load { background: #bcc0cc; color: #4c4f69; }
+    .history-card.system-version .btn-history-load:hover { background: #acb0be; }
+    #history-empty { padding: 20px; text-align: center; color: #acb0be; font-size: 12px; }
+
+    /* Chat */
+    #chat-list { flex: 1; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 6px; }
+    .chat-msg { display: flex; flex-direction: column; gap: 2px; }
+    .chat-msg.own { align-items: flex-end; }
+    .chat-bubble { max-width: 85%; padding: 7px 10px; border-radius: 10px; font-size: 13px; line-height: 1.4; word-break: break-word; background: #ccd0da; color: #4c4f69; }
+    .chat-msg.own .chat-bubble { background: #1e66f5; color: #eff1f5; border-bottom-right-radius: 3px; }
+    .chat-msg:not(.own) .chat-bubble { border-bottom-left-radius: 3px; }
+    .chat-meta { font-size: 10px; color: #acb0be; padding: 0 4px; display: flex; gap: 6px; align-items: center; }
+    .chat-author { color: #6c6f85; }
+    .chat-delete { font-size: 10px; color: #d20f39; cursor: pointer; background: none; border: none; padding: 0; margin-left: auto; display: none; }
+    .chat-msg:hover .chat-delete { display: inline; }
+    .chat-delete:hover { text-decoration: underline; }
+    .chat-bubble.deleted { font-style: italic; opacity: 0.5; }
+    #chat-form { padding: 10px; border-top: 1px solid #ccd0da; display: flex; gap: 6px; }
+    #chat-input { flex: 1; padding: 8px 10px; border-radius: 6px; border: 1px solid #ccd0da; background: #ccd0da; color: #4c4f69; font-size: 13px; resize: none; height: 38px; }
+    #chat-input:focus { outline: none; border-color: #1e66f5; }
+    #chat-submit { padding: 7px 12px; border-radius: 6px; border: none; background: #1e66f5; color: #eff1f5; font-weight: 600; cursor: pointer; font-size: 12px; white-space: nowrap; }
+    #chat-submit:hover { background: #04a5e5; }
+
+    #btn-show-panel { display: none; position: absolute; right: 0; top: 50%; transform: translateY(-50%); background: #ccd0da; border: none; color: #4c4f69; padding: 8px 4px; cursor: pointer; border-radius: 4px 0 0 4px; font-size: 12px; writing-mode: vertical-rl; }
+    .tab-badge { display: inline-block; background: #d20f39; color: #eff1f5; font-size: 9px; font-weight: 700; border-radius: 999px; padding: 0 4px; margin-left: 4px; min-width: 14px; text-align: center; }
+
+    /* ── Modals ── */
+    .modal-overlay { display: none; position: fixed; inset: 0; background: #00000088; z-index: 100; align-items: center; justify-content: center; }
+    .modal-overlay.open { display: flex; }
+    .modal { background: #eff1f5; border: 1px solid #ccd0da; border-radius: 12px; padding: 24px; width: 400px; max-width: 90vw; display: flex; flex-direction: column; gap: 14px; }
+    .modal h2 { font-size: 15px; font-weight: 600; }
+    .modal label { font-size: 12px; color: #6c6f85; display: flex; flex-direction: column; gap: 6px; }
+    .modal input, .modal textarea, .modal select { padding: 8px 10px; border-radius: 6px; border: 1px solid #ccd0da; background: #ccd0da; color: #4c4f69; font-size: 13px; }
+    .modal textarea { resize: none; height: 60px; }
+    .modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
+    .btn-modal-cancel { padding: 7px 14px; border-radius: 6px; border: 1px solid #ccd0da; background: transparent; color: #6c6f85; cursor: pointer; font-size: 12px; }
+    .btn-modal-confirm { padding: 7px 14px; border-radius: 6px; border: none; background: #8839ef; color: #eff1f5; font-weight: 600; cursor: pointer; font-size: 12px; }
+
+    /* ── Konflikt-Toasts (semantic_conflict) ── */
+    #toast-container { position: fixed; bottom: 20px; right: 20px; z-index: 200; display: flex; flex-direction: column; gap: 8px; max-width: 340px; }
+    .toast { background: #ccd0da; border-left: 3px solid #fe640b; border-radius: 8px; padding: 10px 34px 10px 14px; font-size: 13px; color: #4c4f69; box-shadow: 0 4px 12px #00000055; animation: toast-in 0.2s ease-out; position: relative; }
+    .toast.severity-warning { border-left-color: #d20f39; }
+    .toast.severity-info { border-left-color: #1e66f5; }
+    .toast-close { position: absolute; top: 6px; right: 8px; background: none; border: none; color: #6c6f85; font-size: 14px; line-height: 1; cursor: pointer; padding: 4px; }
+    .toast-close:hover { color: #4c4f69; }
+    @keyframes toast-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>SQL Playground</h1>
+  <div id="user-list"></div>
+  <div id="session-info">
+    <span id="role-badge"></span>
+    <span id="session-label"></span>
+    <button id="btn-copy-id" style="display:none">ID kopieren</button>
+    <button id="btn-share" style="display:none">⬆ Teilen</button>
+    <button id="btn-leave" style="display:none">← Verlassen</button>
+  </div>
+</header>
+
+<div id="session-setup">
+  <input id="input-session-name" type="text" placeholder="Session-Name eingeben..." autocomplete="off" name="session-name-x7k" />
+  <button id="btn-create">Neue Session erstellen</button>
+  <span class="divider">oder</span>
+  <input id="input-session-id" type="text" placeholder="Session-ID eingeben..." autocomplete="off" name="session-id-x7k" />
+  <button id="btn-join">Beitreten</button>
+  <div id="recent-sessions" style="display:none">
+    <h3>Zuletzt beigetreten</h3>
+    <div id="recent-list"></div>
+  </div>
+</div>
+
+<div id="readonly-banner">
+  <strong>Lesezugriff</strong> — Du kannst die Query sehen, aber nicht bearbeiten.
+</div>
+
+<div id="editor-tabs" style="display:none">
+  <button class="editor-tab active-group" data-mode="group">Gemeinsam</button>
+  <button class="editor-tab" data-mode="draft">Privat</button>
+</div>
+
+<div id="toolbar">
+  <button id="btn-clear">Leeren</button>
+  <button id="btn-author-view" title="Text nach Autor einfärben (wer hat was geschrieben)">🎨 Autor-Text</button>
+  <button id="btn-save-session">Stand speichern</button>
+  <button id="btn-request-review" style="display:none">Review anfragen</button>
+  <span id="draft-status" style="font-size:11px; color:#acb0be;"></span>
+</div>
+
+<div id="main">
+  <div id="editor-area">
+    <div id="editor-panel" class="mode-group">
+      <div class="panel-header">
+        <span id="editor-mode-label">SQL-Editor</span>
+        <span id="sync-status" style="color:#40a02b;">● verbunden</span>
+      </div>
+      <div id="editor-wrapper"></div>
+    </div>
+
+    <button id="btn-show-panel" title="Panel anzeigen">💬</button>
+
+    <div id="right-panel">
+      <div class="panel-tabs">
+        <button class="panel-tab active" data-tab="comments">Kommentare</button>
+        <button class="panel-tab" data-tab="history">Verlauf <span id="history-badge" class="tab-badge" style="display:none"></span></button>
+        <button class="panel-tab" data-tab="reviews">Reviews <span id="review-badge" class="tab-badge" style="display:none"></span></button>
+        <button class="panel-tab" data-tab="chat">Chat <span id="chat-badge" class="tab-badge" style="display:none"></span></button>
+        <button class="panel-tab-close" id="btn-toggle-panel">✕</button>
+      </div>
+
+      <!-- Kommentare -->
+      <div class="tab-content active" id="tab-comments">
+        <div id="comment-list"></div>
+        <div id="comment-form">
+          <textarea id="comment-input" placeholder="Kommentar schreiben..." autocomplete="off"></textarea>
+          <div class="form-row">
+            <span id="comment-line-hint"></span>
+            <button id="comment-submit">Senden</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Verlauf -->
+      <div class="tab-content" id="tab-history">
+        <div id="history-list">
+          <div id="history-empty">Noch keine Stände vorhanden.</div>
+        </div>
+      </div>
+
+      <!-- Reviews -->
+      <div class="tab-content" id="tab-reviews">
+        <div id="review-list">
+          <div id="review-empty">Noch keine Reviews in dieser Session.</div>
+        </div>
+      </div>
+
+      <!-- Chat -->
+      <div class="tab-content" id="tab-chat">
+        <div id="chat-list"></div>
+        <div id="chat-form">
+          <textarea id="chat-input" placeholder="Nachricht..." autocomplete="off"></textarea>
+          <button id="chat-submit">Senden</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: Stand speichern -->
+<div class="modal-overlay" id="modal-save-name">
+  <div class="modal">
+    <h2>Stand speichern</h2>
+    <label>Name des Stands
+      <input id="save-name-input" type="text" placeholder="z.B. vor dem Refactor" autocomplete="off" name="save-name-x7k" />
+    </label>
+    <div class="modal-actions">
+      <button class="btn-modal-cancel" id="btn-save-name-cancel">Abbrechen</button>
+      <button class="btn-modal-confirm" id="btn-save-name-confirm">Speichern</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: Review anfragen -->
+<div class="modal-overlay" id="modal-review">
+  <div class="modal">
+    <h2>Review anfragen</h2>
+    <div style="font-size:12px; color:#6c6f85; padding: 6px 10px; background:#ccd0da66; border-radius:6px;" id="review-version-label"></div>
+    <input type="hidden" id="review-version-id" />
+    <label>An wen?
+      <select id="review-audience">
+        <option value="all">Alle Mitglieder</option>
+        <option value="selected">Bestimmte Personen</option>
+      </select>
+    </label>
+    <label id="review-assignees-label" style="display:none">Nutzernamen (kommagetrennt)
+      <input id="review-assignees" type="text" placeholder="z.B. alice, bob" autocomplete="off" name="review-assignees-x7k" />
+    </label>
+    <div class="modal-actions">
+      <button class="btn-modal-cancel" id="btn-review-cancel">Abbrechen</button>
+      <button class="btn-modal-confirm" id="btn-review-confirm">Anfragen</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: Feedback geben -->
+<div class="modal-overlay" id="modal-feedback">
+  <div class="modal">
+    <h2>Feedback geben</h2>
+    <label>Kommentar
+      <textarea id="feedback-text" placeholder="Was hast du festgestellt?" autocomplete="off"></textarea>
+    </label>
+    <label>Bewertung
+      <select id="feedback-verdict">
+        <option value="approved">Approved</option>
+        <option value="changes_requested">Änderungen nötig</option>
+        <option value="rejected">Abgelehnt</option>
+      </select>
+    </label>
+    <div class="modal-actions">
+      <button class="btn-modal-cancel" id="btn-feedback-cancel">Abbrechen</button>
+      <button class="btn-modal-confirm" id="btn-feedback-confirm">Absenden</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: Stand laden -->
+<div class="modal-overlay" id="modal-load-confirm">
+  <div class="modal">
+    <h2>Stand laden</h2>
+    <p style="font-size:13px; color:#6c6f85;">Wo soll der Stand geladen werden?</p>
+    <div class="modal-actions" style="justify-content:space-between;">
+      <button class="btn-modal-cancel" id="btn-load-cancel">Abbrechen</button>
+      <div style="display:flex; gap:8px;">
+        <button class="btn-modal-cancel" id="btn-load-private" style="border-color:#40a02b; color:#40a02b;">Privater Editor</button>
+        <button class="btn-modal-confirm" id="btn-load-shared">Gemeinsamer Editor</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="/dist/editor-bundle.js"></script>
+<script type="module">
+  const {
+    EditorView, basicSetup, sql,
+    autocompletion, completionKeymap, acceptCompletion,
+    keymap, Y, WebsocketProvider, yCollab,
+    Decoration, ViewPlugin, RangeSetBuilder, Compartment, StateEffect,
+  } = window.PGVendor;
+
+  // Farb-Schema wie in M11 (identisch): 9er-Palette + feste Zuordnung für die Seed-Nutzer — so hat
+  // dieselbe Person in M10 UND M11 dieselbe Farbe und jede Session ist in sich eindeutig:
+  // Alle Seed-Nutzer haben einen festen Platz in der Palette; unbekannte Nutzer
+  // bekommen per Hash stabil eine Farbe aus derselben Palette.
+  const USER_COLORS = ['#e74c3c', '#3498db', '#2ecc71', '#f39c12', '#9b59b6', '#1abc9c', '#f1c40f', '#e84393', '#34495e', '#16a085', '#d35400', '#7f8c8d', '#2980b9'];
+  const USER_COLOR_INDEX = {
+    alice: 0, bob: 1, carol: 2, dave: 3, erin: 4, frank: 5, grace: 6, heidi: 7, ivan: 8,
+    judy: 9, mallory: 10, niaj: 11, olivia: 12,
+  };
+  function colorForUser(name) {
+    if (name in USER_COLOR_INDEX) return USER_COLORS[USER_COLOR_INDEX[name]];
+    let h = 0;
+    for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
+    return USER_COLORS[h % USER_COLORS.length];
+  }
+  // Sehr helle Variante (für den Text-Hintergrund beim Autor-Coloring): ~75 % mit Weiß gemischt.
+  function colorLight(hex) {
+    const m = /^#?([0-9a-f]{6})$/i.exec(hex); if (!m) return 'transparent';
+    const n = parseInt(m[1], 16), mix = c => Math.round(c + (255 - c) * 0.75);
+    const r = mix((n >> 16) & 255), g = mix((n >> 8) & 255), b = mix(n & 255);
+    return `#${((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1)}`;
+  }
+  const currentUser = new URLSearchParams(window.location.search).get('user') || 'dev-user';
+  // M10/2-Kanäle-Branch: REST-Auth liest jetzt den Header X-Dev-User-Id statt ?user=.
+  // apiFetch() haengt den Header automatisch an jeden /api-Request an, damit
+  // unterschiedliche Browser-Tabs (?user=alice / ?user=bob, rein clientseitig
+  // zur Anzeige genutzt) auch serverseitig als unterschiedliche Identitaeten ankommen.
+  function apiFetch(url, options = {}) {
+    const headers = { ...(options.headers || {}), 'X-Dev-User-Id': currentUser };
+    return fetch(url, { ...options, headers });
+  }
+  let sessionId = null;
+
+  // ── /events-Kanal: reiner JSON-Event-Kanal (M10/2-Kanäle) ───────────────────
+  // Session-weit, nicht an einen Editor-Tab gebunden — Kommentare/Chat/Reviews/Konflikt-Toast
+  // sollen unabhängig davon ankommen, ob gerade "Gemeinsam" oder "Privat" aktiv ist.
+  // Muss VOR jedem möglichen Aufruf von startSession() deklariert sein (auch dem
+  // automatischen Beitritt direkt beim Laden über ?session= in der URL) — sonst
+  // ReferenceError durch die "temporal dead zone" von let.
+  let eventsWs = null;
+  function connectEventsChannel() {
+    if (eventsWs) return; // schon verbunden, nicht doppelt öffnen
+    eventsWs = new WebSocket(`ws://${window.location.host}/events/${sessionId}?devUser=${encodeURIComponent(currentUser)}`);
+    eventsWs.addEventListener('message', handleJsonMessage);
+    eventsWs.addEventListener('close', () => { eventsWs = null; setTimeout(connectEventsChannel, 1000); });
+    eventsWs.addEventListener('error', () => { eventsWs?.close(); });
+  }
+  let canEdit = true;
+  let unreadChat = 0;
+  let chatTabActive = false;
+  let currentMode = 'group';
+  let draftSaveTimer = null;
+  let activeFeedbackReviewId = null;
+  let pendingLoadContent = null;
+  let pendingLoadVersionId = null;
+  let loadedVersionIdGroup = null; // zuletzt geladener Stand im Gemeinsam-Editor
+  let loadedVersionIdDraft = null; // zuletzt geladener Stand im Privat-Editor
+
+  // Persistiert die "Aktuell"-Markierung pro Session + Modus, damit sie einen Reload übersteht.
+  function loadedVersionStorageKey(mode) { return `pg_loaded_${mode}_${sessionId}`; }
+  function persistLoadedVersion(mode, versionId) {
+    try {
+      if (versionId) localStorage.setItem(loadedVersionStorageKey(mode), versionId);
+      else localStorage.removeItem(loadedVersionStorageKey(mode));
+    } catch {}
+  }
+  function restoreLoadedVersions() {
+    try {
+      loadedVersionIdGroup = localStorage.getItem(loadedVersionStorageKey('group'));
+      loadedVersionIdDraft = localStorage.getItem(loadedVersionStorageKey('draft'));
+    } catch { loadedVersionIdGroup = null; loadedVersionIdDraft = null; }
+  }
+
+  let groupYdoc = null;
+  let draftYdoc = new Y.Doc();
+  let groupEditorView = null;
+  let draftEditorView = null;
+  let groupProvider = null;   // Referenz auf den /sync-Provider, damit er beim Modus-Wechsel geschlossen werden kann
+  // Autor-Text-Coloring (früh deklariert, da mountGroupEditor beim Auto-Start darauf zugreift):
+  let authorViewVisible = true;
+  const authorCompartment = new Compartment();
+  const authorRefreshEffect = StateEffect.define();
+
+  // ── Editor-Tabs ───────────────────────────────────────────────────────────
+  document.querySelectorAll('.editor-tab').forEach(tab => {
+    tab.addEventListener('click', () => switchEditorMode(tab.dataset.mode));
+  });
+
+  function switchEditorMode(mode) {
+    currentMode = mode;
+    renderUserList(); // sofort umschalten: privat → nur eigener Name, gemeinsam → alle
+    document.querySelectorAll('.editor-tab').forEach(t => t.classList.remove('active-group', 'active-draft'));
+    document.querySelector(`.editor-tab[data-mode="${mode}"]`).classList.add(mode === 'group' ? 'active-group' : 'active-draft');
+    document.getElementById('editor-panel').className = `mode-${mode}`;
+
+    const label = document.getElementById('editor-mode-label');
+    const syncStatus = document.getElementById('sync-status');
+    const clearBtn = document.getElementById('btn-clear');
+
+    if (mode === 'group') {
+      label.textContent = 'SQL-Editor';
+      syncStatus.style.display = 'inline';
+      document.getElementById('btn-request-review').style.display = 'none';
+      clearBtn.style.display = canEdit ? 'inline-block' : 'none';
+      document.getElementById('btn-save-session').style.display = canEdit ? 'inline-block' : 'none';
+      document.getElementById('editor-wrapper').innerHTML = '';
+      if (groupEditorView) groupEditorView.destroy();
+      mountGroupEditor();
+      if (document.querySelector('.panel-tab[data-tab="history"]')?.classList.contains('active')) loadHistory();
+    } else {
+      label.textContent = 'Privater Editor';
+      syncStatus.style.display = 'none';
+      document.getElementById('btn-request-review').style.display = 'inline-block';
+      clearBtn.style.display = 'inline-block';
+      document.getElementById('btn-save-session').style.display = 'inline-block';
+      document.getElementById('editor-wrapper').innerHTML = '';
+      if (draftEditorView) draftEditorView.destroy();
+      mountDraftEditor();
+      loadDraft();
+      if (document.querySelector('.panel-tab[data-tab="history"]')?.classList.contains('active')) loadHistory();
+    }
+  }
+
+  // ── Panel Tab-Navigation ──────────────────────────────────────────────────
+  document.querySelectorAll('.panel-tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      document.querySelectorAll('.panel-tab').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+      tab.classList.add('active');
+      const tabId = tab.dataset.tab;
+      document.getElementById(`tab-${tabId}`).classList.add('active');
+      chatTabActive = tabId === 'chat';
+      if (chatTabActive) {
+        unreadChat = 0;
+        document.getElementById('chat-badge').style.display = 'none';
+        document.getElementById('chat-list').scrollTop = document.getElementById('chat-list').scrollHeight;
+      }
+      if (tabId === 'reviews') loadReviews();
+      if (tabId === 'history') loadHistory();
+    });
+  });
+
+  document.getElementById('btn-toggle-panel').addEventListener('click', () => {
+    document.getElementById('right-panel').classList.add('collapsed');
+    document.getElementById('btn-show-panel').style.display = 'block';
+  });
+  document.getElementById('btn-show-panel').addEventListener('click', () => {
+    document.getElementById('right-panel').classList.remove('collapsed');
+    document.getElementById('btn-show-panel').style.display = 'none';
+  });
+
+  // ── Recent Sessions ───────────────────────────────────────────────────────
+  const RECENT_KEY = 'sql_playground_recent';
+  function getRecent() { try { return JSON.parse(localStorage.getItem(RECENT_KEY) || '[]'); } catch { return []; } }
+  function saveRecent(s) { localStorage.setItem(RECENT_KEY, JSON.stringify(s.slice(0, 8))); }
+  function addRecentSession(id, name, createdAt) {
+    const existing = getRecent().find(x => x.id === id);
+    const s = getRecent().filter(x => x.id !== id);
+    s.unshift({ id, name: name || id.slice(0, 8).toUpperCase(), createdAt: createdAt || existing?.createdAt || null });
+    saveRecent(s); renderRecentSessions();
+  }
+  function renameRecentSession(id, newName) { saveRecent(getRecent().map(s => s.id === id ? { ...s, name: newName } : s)); renderRecentSessions(); }
+  async function removeRecentSession(id) {
+    if (!confirm('Session wirklich löschen?')) return;
+
+    try {
+      const res = await fetch(`/api/sessions/${id}`, {
+        method: 'DELETE',
+        headers: {
+          'X-Dev-User-Id': currentUser
+        }
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        alert(err?.error?.message || 'Session konnte nicht gelöscht werden.');
+        return;
+      }
+
+      saveRecent(getRecent().filter(s => s.id !== id));
+      renderRecentSessions();
+    } catch (err) {
+      console.error(err);
+      alert('Server nicht erreichbar.');
+    }
+  }
+  function renderRecentSessions() {
+    const sessions = getRecent();
+    const container = document.getElementById('recent-sessions');
+    const list = document.getElementById('recent-list');
+    if (!sessions.length) { list.innerHTML = ''; container.style.display = 'none'; return; }
+    container.style.display = 'flex'; list.innerHTML = '';
+    sessions.forEach(({ id, name, createdAt }) => {
+      const card = document.createElement('div');
+      card.className = 'recent-card';
+      const createdStr = createdAt ? 'Erstellt: ' + new Date(createdAt).toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: '2-digit' }) + ' ' + new Date(createdAt).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' }) : '';
+      card.innerHTML = `<div style="flex:1;min-width:0"><div class="rc-name">${name}</div><div class="rc-meta">${createdStr}</div></div><button class="rc-rename" title="Umbenennen">✏️</button><button class="rc-del" title="Entfernen">✕</button>`;
+      card.addEventListener('click', (e) => { if (e.target.closest('.rc-rename') || e.target.closest('.rc-del')) return; startSession(id); });
+      card.querySelector('.rc-rename').addEventListener('click', (e) => { e.stopPropagation(); const n = prompt('Session umbenennen:', name); if (n?.trim()) renameRecentSession(id, n.trim()); });
+      card.querySelector('.rc-del').addEventListener('click', (e) => { e.stopPropagation(); removeRecentSession(id); });
+      list.appendChild(card);
+    });
+  }
+
+  // ── Zeitformat ────────────────────────────────────────────────────────────
+  function formatTime(isoString) {
+    const date = new Date(isoString);
+    const diffMs = Date.now() - date;
+    const diffMin = Math.floor(diffMs / 60000);
+    const diffH = Math.floor(diffMs / 3600000);
+    const diffDays = Math.floor(diffMs / 86400000);
+    if (diffMin < 1) return 'gerade eben';
+    if (diffMin < 60) return `vor ${diffMin} Min.`;
+    if (diffH < 24) return `vor ${diffH} Std.`;
+    if (diffDays === 1) return `gestern ${date.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}`;
+    return date.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' }) + ' ' + date.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
+  }
+  function startTimeRefresh() {
+    setInterval(() => { document.querySelectorAll('[data-iso]').forEach(el => { el.textContent = formatTime(el.dataset.iso); }); }, 60_000);
+  }
+
+  // ── Cursor-Position ───────────────────────────────────────────────────────
+  function getCurrentLine() {
+    const view = currentMode === 'group' ? groupEditorView : draftEditorView;
+    if (!view) return null;
+    const pos = view.state.selection.main.head;
+    const line = view.state.doc.lineAt(pos);
+    return { line: line.number - 1, character: pos - line.from };
+  }
+  function updateLineHint() {
+    const hint = document.getElementById('comment-line-hint');
+    if (!hint) return;
+    const pos = getCurrentLine();
+    hint.textContent = pos ? `Zeile ${pos.line + 1}` : '';
+  }
+  function jumpToLine(lineNumber) {
+    const view = groupEditorView;
+    if (!view) return;
+    const line = view.state.doc.line(Math.min(lineNumber, view.state.doc.lines));
+    view.dispatch({ selection: { anchor: line.from }, effects: EditorView.scrollIntoView(line.from, { y: 'center' }) });
+    view.focus();
+  }
+
+  // ── WS JSON-Events ────────────────────────────────────────────────────────
+  function handleJsonMessage(event) {
+    if (typeof event.data !== 'string' || event.data.length === 0) return;
+    try {
+      const msg = JSON.parse(event.data);
+      if (msg.type === 'session.role') applyRole(msg.payload.role, msg.payload.can_edit);
+      if (msg.type === 'comment.created') {
+        // Eigene Kommentare NICHT nochmal über WS rendern — die stehen durch die
+        // sofortige lokale Anzeige beim Absenden schon da. Verhindert Duplikate,
+        // unabhängig davon, ob der Server ein id-Feld mitschickt oder den Absender
+        // vom Echo ausschließt.
+        if (msg.payload.author_id !== currentUser && !document.querySelector(`[data-id="${msg.payload.id}"]`)) {
+          renderComment(msg.payload);
+        }
+      }
+      if (msg.type === 'comment.deleted') { document.querySelector(`[data-id="${msg.payload.id}"]`)?.remove(); }
+      if (msg.type === 'review.created' || msg.type === 'review.feedback_added') {
+        const badge = document.getElementById('review-badge');
+        badge.style.display = 'inline-block';
+        badge.textContent = '!';
+        if (document.querySelector('.panel-tab[data-tab="reviews"]')?.classList.contains('active')) loadReviews();
+      }
+      if (msg.type === 'chat.message') {
+        // Eigene Nachrichten NICHT nochmal über WS rendern — stehen durch die sofortige
+        // lokale Anzeige beim Absenden schon da (siehe submitChat()). Vorher gab es hier
+        // einen id-basierten Duplikat-Check, der nicht griff, wenn Server/Antwort kein
+        // verlässliches id-Feld liefert — deshalb erschienen eigene Nachrichten doppelt.
+        if (msg.payload?.user_id !== currentUser) {
+          renderChatMessage(msg.payload);
+        }
+        if (!chatTabActive) {
+          unreadChat++;
+          const badge = document.getElementById('chat-badge');
+          badge.style.display = 'inline-block';
+          badge.textContent = unreadChat > 9 ? '9+' : unreadChat;
+        }
+      }
+      if (msg.type === 'chat.deleted') {
+        // Löscht bei ALLEN anderen offenen Clients live mit — Backend erlaubt Autor ODER
+        // Session-Owner (Moderation), daher kann das auch fremde eigene Nachrichten treffen.
+        markChatMessageDeleted(msg.payload.id);
+      }
+      if (msg.type === 'history.created') {
+        // Broadcast kommt nur bei scope='session' (siehe history/routes.ts) — persönliche
+        // Stände lösen kein Event aus. Deshalb nur im gemeinsamen Editor-Modus reagieren.
+        // Eigene Speicherungen NICHT nochmal über WS verarbeiten — der Save-Handler ruft
+        // bei Erfolg bereits selbst loadHistory() auf. Ohne diesen Ausschluss liefe der
+        // eigene WS-Echo parallel zum lokalen Aufruf und dupliziert die Liste (zwei
+        // überlappende loadHistory()-Fetches, siehe auch comment.created/chat.message,
+        // die aus demselben Grund den eigenen Absender ausschließen).
+        if (currentMode === 'group' && msg.payload?.author !== currentUser) {
+          if (document.querySelector('.panel-tab[data-tab="history"]')?.classList.contains('active')) {
+            loadHistory();
+          } else {
+            const badge = document.getElementById('history-badge');
+            badge.style.display = 'inline-block';
+            badge.textContent = '!';
+          }
+        }
+      }
+      if (msg.type === 'semantic_conflict') {
+        const p = msg.payload;
+        console.debug('[semantic_conflict RAW]', p); // TEMPORÄR zum Debuggen — später wieder entfernen
+        // Nur echte Edit-vs-Delete-Konflikte (Regel B, what: 'delete') als Toast zeigen —
+        // Cursor-Overlap (Regel A) und gleiche-SQL-Anweisung (Regel C) nutzen ebenfalls
+        // semantic_conflict, feuern aber schon bei reinem Klicken/Cursor-Bewegen, ohne
+        // dass tatsächlich etwas überschrieben wurde. Das wollen wir hier nicht anzeigen.
+        if (p.victim?.userId === currentUser && p.what === 'delete') showConflictToast(p);
+      }
+    } catch { /* Yjs Binary */ }
+  }
+
+  // ── Konflikt-Toast (semantic_conflict, nur ans Opfer) ────────────────────
+  function showConflictToast(payload) {
+    // Diagnose: bis die Zeilennummer-Anzeige zuverlässig bestätigt ist, hier mitloggen,
+    // damit man bei Abweichungen sofort die reale Rohstruktur sieht statt zu raten.
+    console.debug('[conflict-toast] payload:', payload);
+
+    const rawIndex = payload?.where?.index;
+    const hasIndex = typeof rawIndex === 'number' && Number.isFinite(rawIndex);
+    let position = hasIndex ? `Position ${rawIndex}` : null;
+    if (hasIndex && groupEditorView) {
+      try {
+        const docLen = groupEditorView.state.doc.length;
+        const clamped = Math.max(0, Math.min(rawIndex, docLen));
+        position = `Zeile ${groupEditorView.state.doc.lineAt(clamped).number}`;
+      } catch (err) {
+        console.debug('[conflict-toast] Zeilenberechnung fehlgeschlagen:', err);
+      }
+    }
+    if (!position) {
+      // Fallback ohne verlässliche Position: den betroffenen Text-Ausschnitt zeigen statt "irgendwo".
+      const snippet = (payload?.how?.before || '').trim().replace(/\s+/g, ' ').slice(0, 40);
+      position = snippet ? `„${snippet}${payload.how.before.length > 40 ? '…' : ''}"` : 'Eine Stelle im Code';
+    }
+    const who = payload.who?.name || payload.who?.userId || 'jemand';
+    const container = document.getElementById('toast-container');
+    const toast = document.createElement('div');
+    toast.className = `toast severity-${payload.severity || 'info'}`;
+    const text = document.createElement('span');
+    text.textContent = `${position} wurde von ${who} geändert`;
+    const closeBtn = document.createElement('button');
+    closeBtn.className = 'toast-close';
+    closeBtn.textContent = '✕';
+    closeBtn.title = 'Schließen';
+    const timer = setTimeout(() => toast.remove(), 5000);
+    closeBtn.addEventListener('click', () => { clearTimeout(timer); toast.remove(); });
+    toast.appendChild(text);
+    toast.appendChild(closeBtn);
+    container.appendChild(toast);
+  }
+
+  // ── Rollen-UI ─────────────────────────────────────────────────────────────
+  function applyRole(role, editAllowed) {
+    canEdit = editAllowed;
+    const badge = document.getElementById('role-badge');
+    badge.style.display = 'inline-block';
+    badge.textContent = role;
+    badge.className = role === 'owner' ? 'owner' : role === 'member' ? 'member' : role === 'commentator' ? 'commentator' : 'viewer';
+    if (role === 'owner') {
+      document.getElementById('btn-save-session').style.display = 'inline-block';
+    }
+    if (!editAllowed) {
+      document.getElementById('readonly-banner').style.display = 'block';
+      document.getElementById('editor-wrapper').classList.add('readonly');
+      document.getElementById('btn-clear').style.display = 'none';
+      document.getElementById('btn-save-session').style.display = 'none';
+      document.getElementById('comment-form').classList.add('disabled');
+    }
+  }
+
+  async function loadSessionName(id) {
+    try { const res = await apiFetch(`/api/sessions/${id}`); if (!res.ok) return null; const d = await res.json(); return { name: d.name || null, createdAt: d.created_at || null, role: d.your_role || null }; } catch { return null; }
+  }
+  function setupCopyButton(id) {
+    const btn = document.getElementById('btn-copy-id'); btn.style.display = 'inline-block';
+    btn.onclick = () => navigator.clipboard.writeText(id).then(() => { btn.textContent = '✓ Kopiert'; btn.classList.add('copied'); setTimeout(() => { btn.textContent = 'ID kopieren'; btn.classList.remove('copied'); }, 2000); });
+  }
+  function setupShareButton(id) {
+    const btn = document.getElementById('btn-share');
+    const shareUrl = `${window.location.origin}/playground.html?session=${id}`;
+    btn.style.display = 'inline-block';
+    if (navigator.share) { btn.onclick = () => navigator.share({ title: 'SQL Playground Session', url: shareUrl }).catch(() => {}); }
+    else { btn.onclick = () => navigator.clipboard.writeText(shareUrl).then(() => { btn.textContent = '✓ Link kopiert'; setTimeout(() => { btn.textContent = '⬆ Teilen'; }, 2000); }); }
+  }
+  function setupLeaveButton() {
+    const btn = document.getElementById('btn-leave'); btn.style.display = 'inline-block';
+    btn.onclick = () => {
+      window.history.pushState(
+              {},
+              '',
+              `/playground.html?user=${encodeURIComponent(currentUser)}`
+      );
+      location.reload();
+    };
+  }
+
+  // ── Session starten ───────────────────────────────────────────────────────
+  async function startSession(id) {
+    sessionId = id;
+    restoreLoadedVersions();
+    document.getElementById('session-setup').style.display = 'none';
+    document.getElementById('editor-tabs').style.display = 'flex';
+    document.getElementById('toolbar').style.display = 'flex';
+    document.getElementById('main').style.display = 'flex';
+
+    const short = id.slice(0, 8).toUpperCase();
+    document.getElementById('session-label').innerHTML = `Session: <strong>${short}</strong>`;
+    loadSessionName(id).then(result => {
+      if (result?.name) { document.getElementById('session-label').innerHTML = `Session: <strong>${result.name}</strong>`; addRecentSession(id, result.name, result.createdAt); }
+      // Rollen-Badge NUR anzeigen (Fallback, falls das session.role-WS-Event nicht ankommt).
+      // Bewusst KEIN applyRole() → das setzt can_edit/read-only + blendet Buttons aus;
+      // die Editier-Rechte kommen weiterhin ausschließlich vom session.role-WS-Event.
+      if (result?.role) {
+        const rb = document.getElementById('role-badge');
+        rb.style.display = 'inline-block';
+        rb.textContent = result.role;
+        rb.className = result.role === 'owner' ? 'owner' : result.role === 'member' ? 'member' : result.role === 'commentator' ? 'commentator' : 'viewer';
+      }
+    });
+
+    setupCopyButton(id); setupShareButton(id); setupLeaveButton();
+    const url = new URL(window.location.href);
+    url.searchParams.set('session', id);
+    window.history.pushState({}, '', url.toString());
+    addRecentSession(id, short, null);
+    startTimeRefresh();
+    connectEventsChannel();
+    mountGroupEditor();
+    await loadComments();
+    await loadChatHistory();
+  }
+
+  // Chrome ignoriert autocomplete="off" für seine "früher eingegebene Werte"-Vorschläge,
+  // solange der name-Attributwert fest bleibt. Fix: bei jedem Laden zufällig neu vergeben,
+  // dann gibt es nie einen gespeicherten Verlaufseintrag, der dazu passt.
+  ['save-name-input', 'review-assignees'].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) el.name = `${id}-${Math.random().toString(36).slice(2)}`;
+  });
+
+  renderRecentSessions();
+  setInterval(() => {
+    renderRecentSessions();
+  }, 2000);
+  const sessionFromUrl = new URLSearchParams(window.location.search).get('session');
+  if (sessionFromUrl) startSession(sessionFromUrl);
+
+  document.getElementById('btn-create').addEventListener('click', async () => {
+    const nameInput = document.getElementById('input-session-name');
+    const name = nameInput.value.trim();
+    if (!name) { nameInput.style.border = '1px solid #d20f39'; setTimeout(() => nameInput.style.border = '1px solid #ccd0da', 1500); return; }
+    const res = await apiFetch('/api/sessions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, created_by: currentUser }) });
+    const session = await res.json();
+    startSession(session.id);
+  });
+  document.getElementById('btn-join').addEventListener('click', () => { const id = document.getElementById('input-session-id').value.trim(); if (id) startSession(id); });
+  document.getElementById('input-session-id').addEventListener('keydown', (e) => { if (e.key === 'Enter') { const id = e.target.value.trim(); if (id) startSession(id); } });
+  document.getElementById('btn-clear').addEventListener('click', () => {
+    if (currentMode === 'group') {
+      if (!canEdit) return;
+      if (!confirm('Editor leeren?')) return;
+      if (groupEditorView) groupEditorView.dispatch({ changes: { from: 0, to: groupEditorView.state.doc.length, insert: '' } });
+    } else {
+      if (!confirm('Privaten Editor leeren?')) return;
+      if (draftEditorView) draftEditorView.dispatch({ changes: { from: 0, to: draftEditorView.state.doc.length, insert: '' } });
+    }
+  });
+
+  // Autor-Text-Coloring an/aus (nur der Gruppen-Editor). Reconfiguriert das Compartment mit einem
+  // frischen Plugin (an) bzw. leert es (aus) — ändert den Text NICHT, nur die Darstellung.
+  document.getElementById('btn-author-view').addEventListener('click', () => {
+    authorViewVisible = !authorViewVisible;
+    if (groupEditorView && groupYdoc && groupProvider) {
+      groupEditorView.dispatch({ effects: authorCompartment.reconfigure(
+        authorViewVisible ? [makeAuthorshipPlugin(groupYdoc.getText('content'), groupYdoc, groupProvider.awareness)] : []
+      ) });
+    }
+    updateAuthorBtn();
+  });
+
+  // Teilnehmerliste rendern. Im privaten Editor NUR den eigenen Namen (der Entwurf ist
+  // privat, keine Mitbearbeiter); im gemeinsamen Editor alle aus der Yjs-Awareness.
+  function renderUserList() {
+    const el = document.getElementById('user-list');
+    el.innerHTML = '';
+    if (currentMode === 'draft') {
+      const b = document.createElement('span');
+      b.className = 'user-badge';
+      b.textContent = currentUser;
+      b.style.background = colorForUser(currentUser);
+      el.appendChild(b);
+      return;
+    }
+    const states = groupProvider?.awareness?.getStates?.() ?? new Map();
+    // Nach NAME deduplizieren: bei Reconnect / Modus-Wechsel / mehreren Tabs kann derselbe Nutzer
+    // kurzzeitig mit mehreren Yjs-clientIDs in der Awareness stehen → sonst erscheint er doppelt.
+    const seen = new Set();
+    states.forEach((state) => {
+      if (!state.name || seen.has(state.name)) return;
+      seen.add(state.name);
+      const badge = document.createElement('span');
+      badge.className = 'user-badge';
+      badge.textContent = state.name;
+      badge.style.background = state.color || colorForUser(state.name);
+      el.appendChild(badge);
+    });
+  }
+
+  // ── Autor-Text-Coloring (wer hat welche Zeichen geschrieben) ──────────────
+  // Jedes Yjs-Item trägt die clientID des Einfügers → wir färben den Text-HINTERGRUND je Autor.
+  // Persistenz: eine Y.Map('authors') im Doc hält clientID → Nutzername (jeder trägt beim Verbinden
+  // seine eigene ein) → die Zuordnung überlebt Reload/Offline (das Doc wird binär persistiert).
+  // Reines View-Decoration — der Text selbst wird NICHT verändert. Toggle über ein Compartment.
+  // (authorViewVisible / authorCompartment / authorRefreshEffect stehen oben bei den Top-Level-Variablen.)
+
+  // clientID → Nutzername: erst persistente Map, dann Awareness (live), sonst null (unbekannt → ungefärbt).
+  function resolveAuthor(ydoc, awareness, client) {
+    const persisted = ydoc.getMap('authors').get(String(client));
+    if (persisted) return String(persisted);
+    const st = awareness.getStates().get(client);
+    if (st && st.user && st.user.id) return String(st.user.id);
+    return null;
+  }
+
+  // Baut die Hintergrund-Decorations: durch die (nicht gelöschten) Yjs-Text-Items laufen → Bereiche
+  // je clientID, gleiche Nachbarn zusammenfassen, mit hellem Autor-Hintergrund einfärben.
+  function makeAuthorshipPlugin(ytext, ydoc, awareness) {
+    const build = () => {
+      const b = new RangeSetBuilder();
+      let item = ytext._start, index = 0, run = null;
+      const flush = () => {
+        if (!run) return;
+        const uid = resolveAuthor(ydoc, awareness, run.client);
+        if (uid) b.add(run.from, run.to, Decoration.mark({ attributes: { style: `background-color:${colorLight(colorForUser(uid))}` } }));
+        run = null;
+      };
+      while (item) {
+        if (!item.deleted && item.length > 0) {
+          if (run && run.client === item.id.client && run.to === index) run.to = index + item.length;
+          else { flush(); run = { from: index, to: index + item.length, client: item.id.client }; }
+          index += item.length;
+        }
+        item = item.right;
+      }
+      flush();
+      return b.finish();
+    };
+    return ViewPlugin.fromClass(class {
+      constructor() { this.decorations = build(); }
+      update(u) {
+        if (u.docChanged || u.transactions.some(tr => tr.effects.some(e => e.is(authorRefreshEffect)))) {
+          this.decorations = build();
+        }
+      }
+    }, { decorations: v => v.decorations });
+  }
+
+  function updateAuthorBtn() {
+    const btn = document.getElementById('btn-author-view');
+    if (!btn) return;
+    btn.textContent = authorViewVisible ? '🎨 Autor-Text' : '🎨 Autor-Text (aus)';
+    btn.classList.toggle('off', !authorViewVisible);
+  }
+
+  // ── Gruppen-Editor ────────────────────────────────────────────────────────
+  function mountGroupEditor() {
+    // Alten Provider (WS + Awareness) sauber schließen — sonst bleibt bei jedem Wechsel
+    // zu „Gemeinsam" eine Verbindung offen und man erscheint mehrfach in der Teilnehmerliste.
+    if (groupProvider) groupProvider.destroy();
+    groupYdoc = new Y.Doc();
+    const provider = groupProvider = new WebsocketProvider(`ws://${window.location.host}/sync/`, sessionId, groupYdoc, { params: { devUser: currentUser } });
+    const userColor = colorForUser(currentUser);
+    provider.awareness.setLocalState({ user: { id: currentUser, name: currentUser, color: userColor }, name: currentUser, color: userColor, colorLight: userColor + '33' });
+    provider.awareness.on('change', renderUserList);
+    // M10/2-Kanäle-Branch: /sync ist jetzt ein reiner Yjs-Binärkanal, JSON-Events (session.role,
+    // comment.created, ...) laufen über den separaten /events-Kanal (siehe connectEventsChannel()).
+    // Der frühere JSON-Filter-Workaround für den gemischten Kanal ist damit nicht mehr nötig.
+    provider.on('status', ({ status }) => {
+      const el = document.getElementById('sync-status');
+      el.textContent = status === 'connected' ? '● verbunden' : '○ getrennt';
+      el.style.color = status === 'connected' ? '#40a02b' : '#d20f39';
+    });
+    const yText = groupYdoc.getText('content');
+    groupEditorView = new EditorView({
+      doc: yText.toString(),
+      extensions: [
+        basicSetup, sql(),
+        autocompletion(),
+        keymap.of([{ key: 'Tab', run: acceptCompletion }, ...completionKeymap]),
+        yCollab(yText, provider.awareness),
+        authorCompartment.of(authorViewVisible ? [makeAuthorshipPlugin(yText, groupYdoc, provider.awareness)] : []),
+        EditorView.theme({ '&': { height: '100%' } }),
+        EditorView.updateListener.of((update) => { if (update.selectionSet) updateLineHint(); }),
+      ],
+      parent: document.getElementById('editor-wrapper')
+    });
+    window._editorView = groupEditorView;
+    // Autor-Coloring verdrahten: eigene clientID → Nutzer in die persistente Map schreiben; bei
+    // Map-/Awareness-Änderungen (neue Verbindung) die Färbung neu berechnen.
+    groupYdoc.getMap('authors').set(String(groupYdoc.clientID), currentUser);
+    groupYdoc.getMap('authors').observe(() => { if (groupEditorView) groupEditorView.dispatch({ effects: authorRefreshEffect.of(null) }); });
+    provider.awareness.on('change', ({ added, removed }) => {
+      if ((added && added.length) || (removed && removed.length)) {
+        if (groupEditorView) groupEditorView.dispatch({ effects: authorRefreshEffect.of(null) });
+      }
+    });
+    updateAuthorBtn();
+    window._testToast = showConflictToast; // TEMPORÄR zum Testen — später wieder entfernen
+  }
+
+  // ── Entwurf-Editor ────────────────────────────────────────────────────────
+  function mountDraftEditor() {
+    const draftText = draftYdoc.getText('draft');
+    draftEditorView = new EditorView({
+      doc: draftText.toString(),
+      extensions: [
+        basicSetup, sql(),
+        autocompletion(),
+        keymap.of([{ key: 'Tab', run: acceptCompletion }, ...completionKeymap]),
+        EditorView.theme({ '&': { height: '100%' } }),
+        EditorView.updateListener.of((update) => {
+          if (!update.docChanged) return;
+          const newContent = update.state.doc.toString();
+          draftYdoc.transact(() => { draftText.delete(0, draftText.length); draftText.insert(0, newContent); });
+          clearTimeout(draftSaveTimer);
+          draftSaveTimer = setTimeout(() => autoSaveDraft(newContent), 3000);
+        }),
+      ],
+      parent: document.getElementById('editor-wrapper')
+    });
+  }
+
+  async function loadDraft() {
+    try {
+      const res = await apiFetch(`/api/sessions/${sessionId}/draft`);
+      if (!res.ok) return;
+      const draft = await res.json();
+      if (draft.content && draftEditorView) {
+        draftEditorView.dispatch({ changes: { from: 0, to: draftEditorView.state.doc.length, insert: draft.content } });
+      }
+    } catch {}
+  }
+
+  async function autoSaveDraft(content) {
+    try {
+      await apiFetch(`/api/sessions/${sessionId}/draft`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content })
+      }).catch(() => {});
+    } catch {}
+  }
+
+  // ── Stand speichern ───────────────────────────────────────────────────────
+  document.getElementById('btn-save-session').addEventListener('click', () => {
+    const content = currentMode === 'group'
+      ? groupEditorView?.state.doc.toString()
+      : (draftEditorView?.state.doc.toString() || draftYdoc.getText('draft').toString());
+    if (!content?.trim()) return;
+    document.getElementById('save-name-input').value = '';
+    document.getElementById('save-name-input').style.border = '1px solid #ccd0da';
+    document.getElementById('modal-save-name').classList.add('open');
+  });
+
+  document.getElementById('btn-save-name-cancel').addEventListener('click', () => {
+    document.getElementById('modal-save-name').classList.remove('open');
+  });
+
+  document.getElementById('btn-save-name-confirm').addEventListener('click', async () => {
+    const name = document.getElementById('save-name-input').value.trim();
+    if (!name) {
+      document.getElementById('save-name-input').style.border = '1px solid #d20f39';
+      return;
+    }
+    const content = currentMode === 'group'
+      ? groupEditorView?.state.doc.toString()
+      : (draftEditorView?.state.doc.toString() || draftYdoc.getText('draft').toString());
+    const scope = currentMode === 'group' ? 'session' : 'personal';
+    const btn = document.getElementById('btn-save-session');
+    try {
+      const res = await apiFetch(`/api/sessions/${sessionId}/history`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content, name, scope })
+      });
+      if (!res.ok) throw new Error();
+      document.getElementById('modal-save-name').classList.remove('open');
+      const color = currentMode === 'group' ? '#1e66f5' : '#40a02b';
+      btn.style.background = color;
+      btn.style.color = '#eff1f5';
+      btn.style.borderColor = color;
+      setTimeout(() => { btn.style.background = ''; btn.style.color = ''; btn.style.borderColor = ''; }, 2000);
+      if (document.querySelector('.panel-tab[data-tab="history"]')?.classList.contains('active')) {
+        loadHistory();
+      }
+    } catch {}
+  });
+
+  // ── Review anfragen ───────────────────────────────────────────────────────
+  document.getElementById('btn-request-review').addEventListener('click', async () => {
+    try {
+      const res = await apiFetch(`/api/sessions/${sessionId}/history?scope=personal`);
+      const versions = await res.json();
+      const userVersions = versions.filter(v => v.author_id !== 'system' && v.name && v.name !== new Date(v.created_at).toLocaleString('de-DE')).sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+      if (!userVersions.length) { alert('Noch kein gespeicherter Stand vorhanden. Bitte erst "Stand speichern" klicken.'); return; }
+      const latest = userVersions[0];
+      document.getElementById('review-version-id').value = latest.id;
+      document.getElementById('review-version-label').textContent = `Dein zuletzt gespeicherter Stand wird zur Überprüfung eingereicht.`;
+    } catch { alert('Fehler beim Laden der Stände.'); return; }
+    document.getElementById('modal-review').classList.add('open');
+  });
+  document.getElementById('review-audience').addEventListener('change', (e) => {
+    document.getElementById('review-assignees-label').style.display = e.target.value === 'selected' ? 'flex' : 'none';
+  });
+  document.getElementById('btn-review-cancel').addEventListener('click', () => { document.getElementById('modal-review').classList.remove('open'); });
+  document.getElementById('btn-review-confirm').addEventListener('click', async () => {
+    const versionId = document.getElementById('review-version-id').value;
+    if (!versionId) { alert('Kein Stand gefunden.'); return; }
+    const audience = document.getElementById('review-audience').value;
+    const assigneesRaw = document.getElementById('review-assignees').value;
+    const assignees = assigneesRaw.split(',').map(s => s.trim()).filter(Boolean);
+    try {
+      await apiFetch('/api/reviews', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId, versionId, audience, assignees: audience === 'selected' ? assignees : [] }) });
+      document.getElementById('modal-review').classList.remove('open');
+      document.querySelector('.panel-tab[data-tab="reviews"]').click();
+    } catch { alert('Fehler beim Anfragen.'); }
+  });
+
+  // ── History laden + anzeigen ──────────────────────────────────────────────
+  async function loadHistory() {
+    document.getElementById('history-badge').style.display = 'none';
+    const list = document.getElementById('history-list');
+    const empty = document.getElementById('history-empty');
+    list.innerHTML = '';
+    list.appendChild(empty);
+    empty.style.display = 'block';
+    const scope = currentMode === 'group' ? 'session' : 'personal';
+    try {
+      const res = await apiFetch(`/api/sessions/${sessionId}/history?scope=${scope}`);
+      if (!res.ok) { empty.textContent = 'Fehler beim Laden.'; empty.style.display = 'block'; return; }
+      const versions = await res.json();
+      const userVersions = versions.filter(v => v.author_id !== 'system' && v.name && v.name !== new Date(v.created_at).toLocaleString('de-DE'));
+      // Zusätzlich zum author_id-Check: unbenannte automatische Stände (Auto-Save,
+      // System-Snapshots) haben entweder keinen Namen oder nur einen automatisch
+      // vergebenen Zeitstempel als Name — deliberate gespeicherte Stände immer einen
+      // echten Namen (Pflichtfeld beim Speichern). Robuster als nur author_id, falls
+      // automatische Stände serverseitig nicht mehr mit "system" markiert sind.
+      if (!userVersions.length) { empty.textContent = 'Noch keine Stände vorhanden.'; return; }
+      empty.style.display = 'none';
+      const sorted = [...userVersions].sort((a, b) => new Date(b.created_at) - new Date(a.created_at)).slice(0, 10);
+      sorted.forEach((v, i) => {
+        const activeLoadedId = currentMode === 'group' ? loadedVersionIdGroup : loadedVersionIdDraft;
+        const isCurrent = i === 0 && !activeLoadedId;
+        const isLoaded = activeLoadedId === v.id;
+        const card = document.createElement('div');
+        card.className = `history-card user-version${(isCurrent || isLoaded) ? ' current' : ''}`;
+        card.dataset.versionId = v.id;
+        const displayName = v.name && v.name !== new Date(v.created_at).toLocaleString('de-DE') ? v.name : `Stand #${v.version_number}`;
+        card.innerHTML = `
+          <div class="history-card-top">
+            <div class="history-card-info">
+              <div style="font-size:11px; font-weight:600; color:#1e66f5;">${(isCurrent || isLoaded) ? `${displayName} · Aktuell` : displayName}</div>
+              <div class="history-card-meta">${new Date(v.created_at).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })} · ${formatTime(v.created_at)}</div>
+            </div>
+            <div style="display:flex; gap:4px;">
+              <button class="btn-history-preview">Vorschau</button>
+              <button class="btn-history-load">Laden</button>
+            </div>
+          </div>
+          <div class="history-card-preview-content" style="display:none; margin-top:6px; background:#e6e9ef; border-radius:4px; padding:8px; font-size:11px; font-family:monospace; color:#4c4f69; white-space:pre-wrap; max-height:120px; overflow-y:auto;">${(v.content || '').replace(/</g, '&lt;')}</div>
+        `;
+        card.querySelector('.btn-history-preview').addEventListener('click', () => {
+          const pre = card.querySelector('.history-card-preview-content');
+          const btn = card.querySelector('.btn-history-preview');
+          const isOpen = pre.style.display !== 'none';
+          pre.style.display = isOpen ? 'none' : 'block';
+          btn.textContent = isOpen ? 'Vorschau' : 'Schließen';
+        });
+        card.querySelector('.btn-history-load').addEventListener('click', () => {
+          pendingLoadContent = v.content;
+          pendingLoadVersionId = v.id;
+          // FIX: #load-preview existiert nicht mehr im Markup (siehe modal-load-confirm) —
+          // die Zeile, die versucht hat, dessen textContent zu setzen, warf einen TypeError
+          // und verhinderte dadurch das Öffnen des Modals. Vorschau ist über den
+          // "Vorschau"-Button auf der Karte (oben) bereits abgedeckt.
+          document.getElementById('modal-load-confirm').classList.add('open');
+        });
+        list.appendChild(card);
+      });
+    } catch { empty.textContent = 'Fehler beim Laden der History.'; empty.style.display = 'block'; }
+  }
+
+  document.getElementById('btn-load-cancel').addEventListener('click', () => {
+    document.getElementById('modal-load-confirm').classList.remove('open');
+    pendingLoadContent = null;
+    pendingLoadVersionId = null;
+  });
+  document.getElementById('btn-load-shared').addEventListener('click', () => {
+    if (pendingLoadContent !== null && groupEditorView) {
+      groupEditorView.dispatch({ changes: { from: 0, to: groupEditorView.state.doc.length, insert: pendingLoadContent } });
+      switchEditorMode('group');
+      // Blauer Rahmen auf geladenen Stand setzen
+      const loadedId = pendingLoadVersionId;
+      document.getElementById('modal-load-confirm').classList.remove('open');
+      pendingLoadContent = null;
+      pendingLoadVersionId = null;
+      loadedVersionIdGroup = loadedId;
+      persistLoadedVersion('group', loadedId);
+      setTimeout(() => updateCurrentMarker(loadedId), 100);
+    } else {
+      document.getElementById('modal-load-confirm').classList.remove('open');
+    }
+  });
+  document.getElementById('btn-load-private').addEventListener('click', () => {
+    if (pendingLoadContent !== null) {
+      const contentToLoad = pendingLoadContent;
+      const loadedId = pendingLoadVersionId;
+      document.getElementById('modal-load-confirm').classList.remove('open');
+      pendingLoadContent = null;
+      pendingLoadVersionId = null;
+      loadedVersionIdDraft = loadedId;
+      persistLoadedVersion('draft', loadedId);
+      switchEditorMode('draft');
+      setTimeout(() => {
+        if (draftEditorView) {
+          draftEditorView.dispatch({ changes: { from: 0, to: draftEditorView.state.doc.length, insert: contentToLoad } });
+          updateCurrentMarker(loadedId);
+        }
+      }, 300);
+    } else {
+      document.getElementById('modal-load-confirm').classList.remove('open');
+    }
+  });
+
+  function updateCurrentMarker(loadedId) {
+    document.querySelectorAll('.history-card').forEach(card => {
+      card.classList.remove('current');
+      if (card.dataset.versionId === loadedId) {
+        card.classList.add('current');
+      }
+    });
+  }
+
+  // ── Reviews ───────────────────────────────────────────────────────────────
+  async function loadReviews() {
+    document.getElementById('review-badge').style.display = 'none';
+    try {
+      const res = await apiFetch(`/api/sessions/${sessionId}/reviews`);
+      if (!res.ok) return;
+      const reviews = await res.json();
+      const list = document.getElementById('review-list');
+      const empty = document.getElementById('review-empty');
+      list.innerHTML = '';
+      list.appendChild(empty);
+      if (!reviews.length) { empty.style.display = 'block'; return; }
+      empty.style.display = 'none';
+      reviews.forEach(renderReview);
+    } catch {}
+  }
+
+  function renderReview(review) {
+    const list = document.getElementById('review-list');
+    const card = document.createElement('div');
+    const verdicts = (review.feedback || []).map(f => f.verdict).filter(Boolean);
+    const hasApproved = verdicts.includes('approved');
+    const statusClass = review.status === 'closed' ? (hasApproved ? 'approved' : 'rejected') : 'open';
+    const statusLabel = review.status === 'closed' ? (hasApproved ? 'Approved' : 'Abgelehnt') : 'In Review';
+    card.className = `review-card ${statusClass}`;
+    // Defensiv gegen mehrere mögliche API-Formen, da das exakte Feld auf diesem Branch
+    // nicht verifiziert werden konnte (siehe Doku, offener Punkt "Stand #?"):
+    const versionNumber = review.version?.version_number ?? review.version_number
+      ?? review.version?.number ?? review.versionNumber ?? null;
+    if (versionNumber == null) console.debug('[review] keine Versionsnummer gefunden, Rohdaten:', review);
+    // Falls der Stand einen echten Namen hat (beim Speichern vergeben), den zeigen statt
+    // der reinen Nummer — genau wie im Verlauf-Tab.
+    const versionName = review.version?.name || review.version_name || null;
+    const versionLabel = versionName ? versionName : `Stand #${versionNumber ?? '?'}`;
+    card.innerHTML = `
+      <div class="review-header">
+        <span class="review-title">${versionLabel} · ${review.created_at ? new Date(review.created_at).toLocaleDateString('de-DE') : ''}</span>
+        <span class="review-status ${statusClass}">${statusLabel}</span>
+      </div>
+      <div class="review-meta">Von ${review.requester_id} · ${formatTime(review.created_at)}</div>
+      <div style="display:flex; gap:6px;">
+        <button class="btn-history-preview">Code ansehen</button>
+        <button class="btn-review-load-draft" style="padding:5px 10px; border-radius:5px; border:1px solid #40a02b; background:transparent; color:#40a02b; font-size:11px; cursor:pointer;">In privaten Editor laden</button>
+      </div>
+      <div class="history-card-preview-content" style="display:none; margin-top:6px; background:#e6e9ef; border-radius:4px; padding:8px; font-size:11px; font-family:monospace; color:#4c4f69; white-space:pre-wrap; max-height:160px; overflow-y:auto;"></div>
+      <div class="review-feedback" id="feedback-${review.id}"></div>
+      <div class="review-actions" id="actions-${review.id}"></div>
+    `;
+
+    const previewBtn = card.querySelector('.btn-history-preview');
+    const previewBox = card.querySelector('.history-card-preview-content');
+    const loadDraftBtn = card.querySelector('.btn-review-load-draft');
+    let versionContent = null;
+
+    async function fetchVersionContent() {
+      if (versionContent !== null) return versionContent;
+      // Reviewten Stand über die Review-Route holen — NICHT über /sessions/:id/history/:version:
+      // die Route gibt es nicht (→ 404), und die reviewte Version ist oft ein PRIVATER Entwurf,
+      // den erst das Review für die Reviewer freigibt. GET /reviews/:id liefert die eingefrorene
+      // Version inkl. content mit (identisch zu M11s Vorgehen, korrekte review-scoped Zugriffslogik).
+      const res = await apiFetch(`/api/reviews/${review.id}`);
+      if (!res.ok) { console.debug('[review] Abruf fehlgeschlagen', res.status, 'für Review', review.id); return null; }
+      const full = await res.json();
+      const v = full.version;
+      if (!v) { console.debug('[review] Review ohne Version:', review.id); return null; }
+      versionContent = v.content || '';
+      // Die Review-Liste liefert keinen Namen mit — Titel nachträglich aktualisieren, sobald bekannt.
+      if (v.name) {
+        const titleEl = card.querySelector('.review-title');
+        if (titleEl) titleEl.textContent = titleEl.textContent.replace(/^Stand #\S+/, v.name);
+      }
+      return versionContent;
+    }
+
+    // Sofort beim Anzeigen der Karte den echten Namen nachladen (nicht erst bei Klick) —
+    // die Review-Liste selbst liefert keinen Namen mit, nur der Einzel-Versions-Abruf.
+    if (!versionName && versionNumber != null) fetchVersionContent();
+
+    previewBtn.addEventListener('click', async () => {
+      const isOpen = previewBox.style.display !== 'none';
+      if (isOpen) { previewBox.style.display = 'none'; previewBtn.textContent = 'Code ansehen'; return; }
+      previewBox.textContent = 'Lädt…';
+      previewBox.style.display = 'block';
+      try {
+        const content = await fetchVersionContent();
+        previewBox.textContent = content || '(kein Inhalt)';
+      } catch { previewBox.textContent = 'Fehler beim Laden.'; }
+      previewBtn.textContent = 'Schließen';
+    });
+
+    loadDraftBtn.addEventListener('click', async () => {
+      loadDraftBtn.textContent = 'Lädt…';
+      try {
+        const content = await fetchVersionContent();
+        switchEditorMode('draft');
+        setTimeout(() => {
+          if (draftEditorView) {
+            draftEditorView.dispatch({ changes: { from: 0, to: draftEditorView.state.doc.length, insert: content || '' } });
+          }
+        }, 300);
+      } catch {
+        alert('Fehler beim Laden des Stands.');
+      } finally {
+        loadDraftBtn.textContent = 'In privaten Editor laden';
+      }
+    });
+
+    const feedbackEl = card.querySelector(`#feedback-${review.id}`);
+    if (review.feedback?.length) {
+      review.feedback.forEach(f => {
+        const item = document.createElement('div');
+        item.className = 'feedback-item';
+        const verdictLabel = f.verdict === 'approved' ? 'Approved' : f.verdict === 'changes_requested' ? 'Änderungen' : 'Abgelehnt';
+        item.innerHTML = `<span class="feedback-verdict ${f.verdict}">${verdictLabel}</span><span><strong>${f.author_id}:</strong> ${f.feedback}</span>`;
+        feedbackEl.appendChild(item);
+      });
+    }
+    if (review.status !== 'closed') {
+      const actionsEl = card.querySelector(`#actions-${review.id}`);
+      const feedbackBtn = document.createElement('button');
+      feedbackBtn.className = 'btn-verdict';
+      feedbackBtn.textContent = 'Feedback geben';
+      feedbackBtn.addEventListener('click', () => openFeedbackModal(review.id));
+      actionsEl.appendChild(feedbackBtn);
+    }
+    list.appendChild(card);
+  }
+
+  function openFeedbackModal(reviewId) {
+    activeFeedbackReviewId = reviewId;
+    document.getElementById('feedback-text').value = '';
+    document.getElementById('modal-feedback').classList.add('open');
+  }
+  document.getElementById('btn-feedback-cancel').addEventListener('click', () => { document.getElementById('modal-feedback').classList.remove('open'); });
+  document.getElementById('btn-feedback-confirm').addEventListener('click', async () => {
+    const feedback = document.getElementById('feedback-text').value.trim();
+    const verdict = document.getElementById('feedback-verdict').value;
+    if (!feedback) { document.getElementById('feedback-text').style.border = '1px solid #d20f39'; return; }
+    try {
+      await apiFetch(`/api/reviews/${activeFeedbackReviewId}/feedback`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ feedback, verdict }) });
+      document.getElementById('modal-feedback').classList.remove('open');
+      loadReviews();
+    } catch { alert('Fehler beim Absenden.'); }
+  });
+
+  // ── Kommentare ────────────────────────────────────────────────────────────
+  async function loadComments() {
+    const res = await apiFetch(`/api/sessions/${sessionId}/comments`);
+    const comments = await res.json();
+    comments.forEach(renderComment);
+  }
+  function renderComment(comment) {
+    const list = document.getElementById('comment-list');
+    const card = document.createElement('div');
+    card.className = 'comment-card';
+    card.dataset.id = comment.id;
+    const isOwn = comment.author_id === currentUser;
+    const lineNumber = comment.position?.line != null ? comment.position.line + 1 : null;
+    const lineBadge = lineNumber ? `<button class="comment-line" title="Zu Zeile ${lineNumber} springen">Zeile ${lineNumber}</button>` : '';
+    card.innerHTML = `
+      <div class="comment-card-header"><span class="comment-author">${comment.author_id}</span>${lineBadge}</div>
+      <div class="comment-text">${comment.content}</div>
+      <div class="comment-footer">
+        <span class="comment-time" data-iso="${comment.created_at}" title="${new Date(comment.created_at).toLocaleString('de-DE')}">${formatTime(comment.created_at)}</span>
+        ${isOwn ? `<button class="comment-delete" data-id="${comment.id}">Löschen</button>` : ''}
+      </div>
+    `;
+    if (lineNumber) card.querySelector('.comment-line').addEventListener('click', () => jumpToLine(lineNumber));
+    if (isOwn) card.querySelector('.comment-delete').addEventListener('click', async () => { await apiFetch(`/api/comments/${comment.id}`, { method: 'DELETE' }); card.remove(); });
+    list.appendChild(card);
+    list.scrollTop = list.scrollHeight;
+  }
+  async function submitComment() {
+    const input = document.getElementById('comment-input');
+    const content = input.value.trim();
+    if (!content) { input.style.border = '1px solid #d20f39'; setTimeout(() => input.style.border = '1px solid #ccd0da', 1000); return; }
+    const position = getCurrentLine();
+    try {
+      const res = await apiFetch(`/api/sessions/${sessionId}/comments`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content, position }) });
+      if (res.ok) {
+        // Sofort lokal anzeigen. Duplikate durch ein evtl. eigenes WS-Echo sind
+        // ausgeschlossen, weil der comment.created-Handler eigene Kommentare grundsätzlich
+        // überspringt (siehe handleJsonMessage).
+        const created = await res.json();
+        renderComment(created?.id ? created : { ...created, author_id: currentUser, created_at: new Date().toISOString() });
+      }
+    } catch {}
+    input.value = '';
+    document.getElementById('comment-line-hint').textContent = '';
+  }
+  document.getElementById('comment-submit').addEventListener('click', submitComment);
+  document.getElementById('comment-input').addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); submitComment(); } });
+  document.getElementById('comment-input').addEventListener('focus', updateLineHint);
+
+  // ── Chat ──────────────────────────────────────────────────────────────────
+  async function loadChatHistory() {
+    try {
+      const res = await apiFetch(`/api/sessions/${sessionId}/chat`);
+      if (!res.ok) return;
+      const messages = await res.json();
+      messages.forEach(msg => renderChatMessage(msg, false));
+    } catch {}
+  }
+  function markChatMessageDeleted(id) {
+    const el = document.querySelector(`.chat-msg[data-id="${id}"]`);
+    if (!el) return;
+    el.querySelector('.chat-bubble').innerHTML = '<em>Nachricht gelöscht</em>';
+    el.querySelector('.chat-bubble').classList.add('deleted');
+    el.querySelector('.chat-delete')?.remove();
+  }
+  function renderChatMessage(msg, scroll = true) {
+    const list = document.getElementById('chat-list');
+    const isOwn = msg.user_id === currentUser;
+    const el = document.createElement('div');
+    el.className = `chat-msg${isOwn ? ' own' : ''}`;
+    if (msg.id) el.dataset.id = msg.id;
+    el.innerHTML = `
+      <div class="chat-bubble">${msg.content}</div>
+      <div class="chat-meta">
+        <span class="chat-author">${msg.user_id}</span>
+        <span data-iso="${msg.created_at}" title="${new Date(msg.created_at).toLocaleString('de-DE')}">${formatTime(msg.created_at)}</span>
+        ${isOwn ? `<button class="chat-delete">Löschen</button>` : ''}
+      </div>
+    `;
+    if (isOwn) {
+      el.querySelector('.chat-delete').addEventListener('click', async () => {
+        // Ohne id (z. B. sehr alte Nachricht vor der id-Umstellung) kann nicht serverseitig
+        // gelöscht werden — dann nur lokal ausblenden statt eine 404-Anfrage zu schicken.
+        if (!msg.id) { markChatMessageDeleted(msg.id); return; }
+        try {
+          const res = await apiFetch(`/api/chat/${msg.id}`, { method: 'DELETE' });
+          if (res.status === 204 || res.status === 404) {
+            markChatMessageDeleted(msg.id);
+          } else if (res.status === 403) {
+            alert('Keine Berechtigung zum Löschen dieser Nachricht.');
+          } else {
+            alert('Löschen fehlgeschlagen. Bitte später erneut versuchen.');
+          }
+        } catch {
+          alert('Löschen fehlgeschlagen — keine Verbindung zum Server.');
+        }
+      });
+    }
+    list.appendChild(el);
+    if (scroll) list.scrollTop = list.scrollHeight;
+  }
+  async function submitChat() {
+    const input = document.getElementById('chat-input');
+    const content = input.value.trim();
+    if (!content) return;
+    input.value = '';
+    try {
+      const res = await apiFetch(`/api/sessions/${sessionId}/chat`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content }) });
+      if (res.ok) {
+        // Sofort lokal anzeigen. Duplikate durch ein evtl. eigenes WS-Echo sind
+        // ausgeschlossen, weil der chat.message-Handler eigene Nachrichten grundsätzlich
+        // überspringt (siehe handleJsonMessage).
+        const created = await res.json();
+        renderChatMessage(created?.id ? created : { ...created, user_id: currentUser, content, created_at: new Date().toISOString() });
+      }
+    } catch {}
+  }
+  document.getElementById('chat-submit').addEventListener('click', submitChat);
+  document.getElementById('chat-input').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submitChat(); } });
+</script>
+
+<div id="toast-container"></div>
+
+</body>
+</html>

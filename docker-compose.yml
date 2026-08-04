@@ -1,0 +1,68 @@
+services:
+
+  # ── App-Server ────────────────────────────────────────────────────────────
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - '3000:3000'  # HTTP-API und WebSocket
+      - '3001:3001'  # reserviert für spätere Nutzung
+    environment:
+      # Im Docker-Netzwerk sind Services über ihren Namen erreichbar
+      - NODE_ENV=development
+      - CORS_ORIGIN=http://localhost:8085
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=projekt5
+      - DB_USER=postgres
+      - DB_PASSWORD=postgres
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - CALLBACK_DEBOUNCE_WAIT=2000
+      - CALLBACK_DEBOUNCE_MAXWAIT=5000
+    volumes:
+      - /app/node_modules   # node_modules im Container bleiben erhalten (nicht überschrieben)
+    depends_on:
+      # App startet erst wenn PostgreSQL und Redis tatsächlich bereit sind
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: node dist/index.js
+  # ── PostgreSQL ────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped   # automatisch neustarten bei Absturz
+    environment:
+      POSTGRES_DB: projekt5
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - '5432:5432'           # Entwicklung: extern erreichbar für DBeaver/psql — in Produktion geschlossen (docker-compose.prod.yml)
+    volumes:
+      - postgres_data:/var/lib/postgresql/data  # Daten überleben Container-Neustarts
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres']
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ── Redis ─────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - '6379:6379'           # Entwicklung: extern erreichbar für redis-cli — in Produktion geschlossen (docker-compose.prod.yml)
+    volumes:
+      - redis_data:/data      # persistente Daten (optional für Entwicklung)
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+# Benannte Volumes — bleiben bei docker-compose down erhalten (nur down -v löscht sie)
+volumes:
+  postgres_data:
+  redis_data:
