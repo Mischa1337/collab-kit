@@ -6,7 +6,7 @@
 export type ChangeWhat =
   | 'insert' | 'delete' | 'format'                 // Text  (Y.Text)
   | 'node.added' | 'node.moved' | 'node.deleted'   // Modell-Knoten (Y.Map 'elements')
-  | 'edge.created' | 'edge.deleted'                 // Modell-Kanten (Y.Array 'edges')
+  | 'edge.created' | 'edge.deleted'                 // Modell-Kanten (Y.Map 'edges', ID-adressiert)
   | 'field.changed';                               // Feld innerhalb eines Knotens
 
 // where — Adressierung der betroffenen Stelle. Bei Text: index/length. Bei Modell: target='model'

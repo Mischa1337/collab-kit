@@ -42,3 +42,6 @@ documents/
 
 # Urheberrechtlich geschuetzte Fremdliteratur - nur lokal, nie veroeffentlichen
 literatur-quellen/
+literatur-quellen*.zip
+**/literatur-quellen*.zip
+*.pdf

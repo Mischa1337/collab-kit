@@ -1,5 +1,6 @@
 // Change/Conflict-Awareness (Schicht 2) für das strukturierte MODELL (M11) — Y.Map 'elements'
-// (Knoten) + Y.Array 'edges' (Kanten). Pendant zu changeTracker.ts (Text), gleiche Relevanz-Tore
+// (Knoten) + Y.Map 'edges' (Kanten, ID-adressiert — NICHT Y.Array, siehe model.types.ts:74).
+// Pendant zu changeTracker.ts (Text), gleiche Relevanz-Tore
 // (Frische, Opfer-aktiv, eigene-Aktion), advisory (ändert das Modell nie).
 //
 // Erkennung über SNAPSHOT-DIFF: pro Transaktion wird der aktuelle Plain-Stand (toPlainModel)

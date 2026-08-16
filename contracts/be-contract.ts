@@ -158,11 +158,13 @@ export type WSEvent =
   | { type: 'change_awareness'; payload: ChangeRecord }
   | { type: 'semantic_conflict'; payload: ChangeRecord & { severity: 'info' | 'warning'; victim: { userId: string; name?: string } } }
   | { type: 'comment.created' | 'comment.updated' | 'comment.deleted'; payload: Comment | { id: string } }
+  | { type: 'comment-visibility.changed'; payload: { hidden: boolean } }   // Kommentare für Reviewer aus-/einblenden
   | { type: 'review.created' | 'review.feedback_added' | 'review.closed'; payload: ReviewAggregate }
+  | { type: 'review.deleted'; payload: { id: string } }
   | { type: 'task.created' | 'task.updated'; payload: SessionTask } | { type: 'task.deleted'; payload: { id: string } }
   | { type: 'chat.message'; payload: { id: string; session_id: string; user_id: string; content: string; created_at: string } }
   | { type: 'chat.deleted'; payload: { id: string } }
-  | { type: 'history.restored'; payload: { version: number; by: string } }
+  | { type: 'history.restored'; payload: { version: number; by: string; name?: string | null } }
   | { type: 'history.created' | 'history.updated'; payload: { version_number: number; name: string | null; author: string } }
   | { type: 'history.active_version'; payload: { version_id: string | null } }  // sessionweite „Aktuell geladen"-Markierung
   | { type: 'draft.published'; payload: { by: string; mode: 'merge' | 'replace' } };
