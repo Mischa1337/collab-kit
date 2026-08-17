@@ -62,7 +62,7 @@ Alle Variablen aus `.env.example` kopieren und anpassen:
 ## Betriebsmodi
 
 - **Standalone (Dev):** Ohne `AUTH_SERVICE_URL` entfällt die Token-Prüfung, alle Anfragen gelten als `dev-user`. Für Entwicklung und die eigenständige Nutzung.
-- **An Projekt 1 angebunden:** Mit gesetztem `AUTH_SERVICE_URL` wird jeder Aufruf gegen die Auth-Schnittstelle von Projekt 1 validiert. Details: [`docs/Integrationsleitfaden-Projekt1.md`](docs/Integrationsleitfaden-Projekt1.md).
+- **An Projekt 1 angebunden:** Mit gesetztem `AUTH_SERVICE_URL` wird jeder Aufruf gegen die Auth-Schnittstelle von Projekt 1 validiert. Details: [`docs/funktionsorientiert/Integrationsleitfaden-Projekt1.md`](docs/funktionsorientiert/Integrationsleitfaden-Projekt1.md).
 
 ---
 
@@ -71,7 +71,7 @@ Alle Variablen aus `.env.example` kopieren und anpassen:
 | Dokument | Inhalt |
 |---|---|
 | [`docs/API-und-Nutzungshandbuch.md`](docs/API-und-Nutzungshandbuch.md) | Start, Anbindung, Kernabläufe **und** vollständige Endpunkt-/Event-Referenz |
-| [`docs/Integrationsleitfaden-Projekt1.md`](docs/Integrationsleitfaden-Projekt1.md) | Ankopplung an die Plattform aus Projekt 1 |
+| [`docs/funktionsorientiert/Integrationsleitfaden-Projekt1.md`](docs/funktionsorientiert/Integrationsleitfaden-Projekt1.md) | Ankopplung an die Plattform aus Projekt 1 |
 | [`docs/Projektstruktur.md`](docs/Projektstruktur.md) | Aufbau des Repositories |
 | [`docs/Meilensteine.md`](docs/Meilensteine.md) | Auflösung der Kürzel M1 bis M23 |
 | [`docs/Handbuch.md`](docs/Handbuch.md) | **Vollständiges Projekt-Handbuch**: Architektur, Datenmodell, Abläufe, Betrieb, Hintergrund |

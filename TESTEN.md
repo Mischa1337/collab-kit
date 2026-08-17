@@ -42,5 +42,5 @@ Rollen, Live-Events). Die dafuer noetigen Endpunkte und Ereignisse stehen in
 
 ## Weiterführend
 - Bedienung & Endpunkte: `docs/API-und-Nutzungshandbuch.md`
-- Anbindung an Projekt 1: `docs/Integrationsleitfaden-Projekt1.md`
+- Anbindung an Projekt 1: `docs/funktionsorientiert/Integrationsleitfaden-Projekt1.md`
 - Ordnerstruktur: `docs/Projektstruktur.md`
