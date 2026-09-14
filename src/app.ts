@@ -2,7 +2,6 @@
 // Bewusst getrennt von index.ts, damit Tests (Jest/supertest) die App direkt importieren können
 // ohne einen echten Server zu starten.
 import 'dotenv/config'; // lädt .env-Datei als erstes, damit alle Umgebungsvariablen verfügbar sind
-import path from 'path';
 import express from 'express';
 import cors from 'cors';
 import rateLimit from 'express-rate-limit';
@@ -28,25 +27,19 @@ import { httpMetrics } from './middleware/httpMetrics';
 
 export const app = express();
 
-// ── Statische Dev-UIs (nur in Entwicklung) ───────────────────────────────────
-// /ui/ → Test-UI (volltest.html);  / → public/ (M10 SQL-Playground, z. B. playground.html).
-// Im Dev ist Helmets CSP ohnehin aus (siehe helmet() unten), daher laden externe
-// ESM-Imports von https://esm.sh/. In Produktion werden diese Routen nicht registriert.
-if (process.env.NODE_ENV !== 'production') {
-  app.use('/ui', express.static(path.join(__dirname, '../test')));
-  app.use(express.static(path.join(__dirname, '..', 'public')));
-}
+// Der Dienst liefert keine statischen Oberflächen mehr aus. Die früheren Dev-UIs
+// (SQL-Playground unter public/, Testseiten unter test/) wurden entfernt, weil die
+// Frontends nicht zum Liefergegenstand gehören. Siehe Git-Historie.
 
 // ── Middleware ────────────────────────────────────────────────────────────────
 // Middleware läuft bei JEDER Anfrage in dieser Reihenfolge durch, bevor die Route antwortet.
 
 // Sicherheits-Header: X-Frame-Options, X-Content-Type-Options, HSTS u.a.
 // Muss als erstes stehen damit alle Antworten — auch Fehler — die Header tragen.
-// M10: CSP nur im Dev abschalten, damit der SQL-Playground externe ESM-Imports
-// (esm.sh) laden kann. In Produktion bleibt die volle Helmet-CSP aktiv.
-app.use(helmet({
-  contentSecurityPolicy: process.env.NODE_ENV === 'production' ? undefined : false,
-}));
+// Die CSP ist in allen Umgebungen aktiv. Die frühere Dev-Ausnahme gab es nur, damit der
+// SQL-Playground externe ESM-Imports (esm.sh) laden konnte; seit der Dienst keine
+// statischen Oberflächen mehr ausliefert, entfällt sie.
+app.use(helmet());
 
 // CORS: erlaubt Anfragen aus dem Browser (andere Domain/Port).
 // Ohne diesen Header blockiert der Browser die Antwort aus Sicherheitsgründen.

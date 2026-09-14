@@ -18,6 +18,3 @@ services:
       # ⚠️ Damit bekommt ein Nicht-Mitglied 403 — die Test-Nutzer müssen der Session
       #    beitreten/als Mitglied eingetragen sein (siehe M10-Test-Guide.md).
       - DEV_ENFORCE_ROLES=true
-    # Optional: public/ live mounten → FE-Änderungen an playground.html greifen ohne Image-Rebuild:
-    # volumes:
-    #   - ./public:/app/public

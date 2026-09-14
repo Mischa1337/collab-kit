@@ -28,6 +28,12 @@ docker-compose.override.yml
 # bleibt auf dem lokalen Branch des Kollegen, nicht im geteilten Stand.
 MaxGraphTest/
 
+# Projektkontext fuer Claude Code — reine Werkzeugkonfiguration, nur lokal
+CLAUDE.md
+
+# Dokumentation und Arbeitsdokumente — bleiben lokal, nicht im geteilten Stand
+docs/
+
 # Lokale Arbeitsdateien, nicht Teil der Veroeffentlichung
 demo-links.sh
 seed-praesi.sql

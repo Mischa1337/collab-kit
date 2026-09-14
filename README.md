@@ -117,7 +117,6 @@ npm run migrate
 | `npm run build` / `npm start` | kompilieren / kompiliert starten |
 | `npm run migrate` | Datenbankmigration ausführen |
 | `npm test` | Testsuite |
-| `npm run mock:auth` | lokalen Auth-Mock starten (Projekt-1-Anbindung testen) |
 | `npm run retention` / `anonymize-user` | DSGVO-Wartungsjobs |
 
 ---
@@ -138,7 +137,7 @@ Vollständig beschrieben in [`docs/Projektstruktur.md`](docs/Projektstruktur.md)
 
 ## Stand
 
-Das Backend ist funktional abgeschlossen und durch 305 Tests abgesichert. Der SQL Playground (M10) ist integriert, das Modellierungstool (M11) als vorführbarer Stand eingefroren, die Auth-Anbindung (M12) als Middleware bereit. Ein Lasttest über 1.000 gleichzeitige WebSocket-Verbindungen wurde bestanden.
+Das Backend ist funktional abgeschlossen und durch 305 Tests abgesichert. Die Anbindung der Zielwerkzeuge (SQL-Playground, Modellierungstool) ist protokollseitig vorbereitet, die Auth-Anbindung (M12) als Middleware bereit. Ein Lasttest über 1.000 gleichzeitige WebSocket-Verbindungen wurde bestanden.
 
 ---
 

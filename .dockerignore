@@ -1,11 +1,9 @@
 # Host-node_modules NICHT ins Image kopieren — sonst überschreiben die plattform-
-# spezifischen Binaries (z. B. esbuild für macOS) die im Container per `npm ci`
-# installierten Linux-Binaries → "syntax error: unexpected (" beim Build.
+# spezifischen Binaries die im Container per `npm ci` installierten Linux-Binaries.
 node_modules
 
 # Build-Artefakte werden im Container frisch gebaut
 dist
-public/dist
 
 # Nicht ins Image nötig
 .git

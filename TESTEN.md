@@ -1,6 +1,7 @@
 # Abgabe testen — Kurzanleitung
 
-Beide Werkzeuge sprechen dasselbe Backend an: **M10 = SQL-Playground**, **M11 = Modellierungstool**.
+Dieses Repository enthält den Backend-Dienst. Die Frontends (SQL-Playground, Modellierungstool)
+werden separat gepflegt und sind nicht Teil der Abgabe.
 
 ## 1. Backend starten
 ```bash
@@ -21,13 +22,13 @@ docker compose exec -T postgres psql -U postgres -d projekt5 < db/seed-roles.sql
 # legt stabile Sessions mit den Nutzern alice / bob / carol / dave an
 ```
 
-## 4. M10 — SQL-Playground (wird vom Backend ausgeliefert)
-Im Browser öffnen (ein Tab je Nutzer):
+## 4. Backend prüfen
+```bash
+curl http://localhost:3000/health
+npm test                   # 27 Suiten, 305 Tests
 ```
-http://localhost:3000/playground.html?session=10111111-1111-1111-1111-111111111111&user=alice
-http://localhost:3000/playground.html?session=10111111-1111-1111-1111-111111111111&user=bob
-```
-→ In einem Tab tippen, im anderen erscheint die Änderung in Echtzeit.
+Der Dienst liefert keine eigene Oberfläche aus. Echtzeit-Verhalten lässt sich mit einem
+WebSocket-Client gegen `ws://localhost:3000/sync/<session-id>?devUser=alice` prüfen.
 
 ## 5. M11 — Modellierungstool
 
@@ -38,7 +39,7 @@ Rollen, Live-Events). Die dafuer noetigen Endpunkte und Ereignisse stehen in
 
 ## 6. Auth-Modi
 - **Standard:** Dev-Modus (keine Token-Prüfung, jeder Aufruf = `dev-user`).
-- **Mit Rollen/echten Nutzer-IDs:** `npm run mock:auth` starten und `AUTH_SERVICE_URL=http://localhost:4000/validate` setzen (Token = Nutzername, z. B. `alice`).
+- **Mit Rollen/echten Nutzer-IDs:** `DEV_ENFORCE_ROLES=true` setzen (`AUTH_SERVICE_URL` bleibt leer). Die Identität kommt dann pro Aufruf mit: REST über den Header `X-Dev-User-Id: alice`, WebSocket über den Query-Parameter `?devUser=alice`. Es gelten die echten Rollen, der Nutzer muss also Mitglied der Session sein (Seed-Nutzer aus `db/seed-roles.sql`).
 
 ## Weiterführend
 - Bedienung & Endpunkte: `docs/API-und-Nutzungshandbuch.md`
