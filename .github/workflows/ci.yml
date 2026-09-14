@@ -115,6 +115,13 @@ jobs:
       # /ready fragt DB und Redis wirklich an. Und weil der Entrypoint mit "set -e"
       # zuerst migriert, kann /ready ueberhaupt erst antworten, wenn die Migration
       # durchgelaufen ist. Eine gruene Antwort beweist damit beides.
+      #
+      # CORS_ORIGIN und AUTH_SERVICE_URL sind Pflicht, sobald NODE_ENV=production
+      # gilt: app.ts bricht sonst absichtlich ab, bevor der Port offen ist. Beide
+      # tragen hier nur Platzhalter. Die Adresse des Auth-Dienstes darf ins Leere
+      # zeigen, weil /ready ausschliesslich Datenbank und Redis abfragt und keine
+      # geschuetzte Route beruehrt. NODE_ENV bleibt bewusst auf production, sonst
+      # pruefte der Job einen Codepfad, den im Betrieb niemand benutzt.
       - name: Container starten und /ready abfragen
         run: |
           docker run -d --name pruefstand --network host \
@@ -124,6 +131,8 @@ jobs:
             -e DB_NAME=projekt5_test \
             -e DB_USER=postgres -e DB_PASSWORD=postgres \
             -e REDIS_HOST=localhost -e REDIS_PORT=6379 \
+            -e CORS_ORIGIN=http://localhost:3000 \
+            -e AUTH_SERVICE_URL=http://localhost:9999 \
             -e RUN_MIGRATIONS=true \
             collab-kit:pruefstand
 
