@@ -5,15 +5,15 @@
 # ==============================================================================
 
 app:
-  name: "coworking-api"
+  name: "collab-kit"
 # Verhindert K8s-Namensdopplungen — identisch zu app.name.
-fullnameOverride: "coworking-api"
+fullnameOverride: "collab-kit"
 
 replicaCount: 1
 
 image:
-  # GHCR-Package aus der CI (.github/workflows/package.yml), OHNE Tag am Ende.
-  repository: "ghcr.io/<owner>/<repo>/coworking-api"
+  # GHCR-Package aus der CI (.github/workflows/ci.yml), OHNE Tag am Ende.
+  repository: "ghcr.io/<owner>/collab-kit"
   # Erstes Deployment mit "latest"; danach übernimmt ArgoCD die Aktualisierung.
   tag: "latest"
 
@@ -28,7 +28,7 @@ service:
 ingress:
   # Die Plattform routet zentral über das Traefik-Gateway → hier zwingend false.
   enabled: false
-  path: "/coworking"
+  path: "/collab-kit"
 
 env:
   NODE_ENV: "production"

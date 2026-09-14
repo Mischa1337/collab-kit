@@ -1,10 +1,10 @@
-# Projekt 5 – Co-Working-Umgebung
+# Collab Kit
 
 Studienprojekt · Technische Hochschule Mittelhessen, Fachbereich MNI · 2026
 
 **Team:** Michael Albach · Egemen Demir · Silas Teutschländer · Pierre Simon Oyono Essam · Alex Roy Nyamsi Nitchougno
 
-Kollaborativer Backend-Dienst, der aus einem Einzelnutzer-Werkzeug ein Co-Working-Werkzeug macht: mehrere Nutzer bearbeiten dieselben Inhalte in Echtzeit und nachvollziehbar. Als Testfall dienen der **SQL Playground** und das **Modellierungstool**. Grundlage sind **Yjs-CRDT** + **WebSocket** für konfliktfreie Synchronisation, **PostgreSQL** für die Persistenz und **Redis** als schneller Session-Cache und Pub/Sub.
+Kollaborativer Backend-Dienst, der aus einem Einzelnutzer-Werkzeug ein Mehrbenutzer-Werkzeug macht: mehrere Nutzer bearbeiten dieselben Inhalte in Echtzeit und nachvollziehbar. Als Testfall dienen der **SQL Playground** und das **Modellierungstool**. Grundlage sind **Yjs-CRDT** + **WebSocket** für konfliktfreie Synchronisation, **PostgreSQL** für die Persistenz und **Redis** als schneller Session-Cache und Pub/Sub.
 
 ---
 

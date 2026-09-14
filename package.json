@@ -1,8 +1,8 @@
 {
-  "name": "projekt5-coworking",
+  "name": "collab-kit",
   "version": "0.1.0",
   "license": "MIT",
-  "description": "Co-Working-Umgebung für SQL und Modellierung – Projekt 5 THM MNI",
+  "description": "Collab Kit: Kollaborations-Backend, das Einzelnutzer-Werkzeuge mehrbenutzerfähig macht",
   "main": "dist/index.js",
   "scripts": {
     "dev": "ts-node-dev --respawn --transpile-only src/index.ts",

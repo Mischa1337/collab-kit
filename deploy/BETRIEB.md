@@ -2,7 +2,7 @@
 
 ## 1. Einleitung
 
-Dieses Dokument beschreibt die Inbetriebnahme und den Betrieb der Co-Working-Schnittstelle für kollaboratives Arbeiten in Lernumgebungen.
+Dieses Dokument beschreibt die Inbetriebnahme und den Betrieb der Collab-Kit-Schnittstelle für kollaboratives Arbeiten in Lernumgebungen.
 
 Das System ermöglicht die gemeinsame Bearbeitung von Dokumenten durch mehrere Nutzer und stellt Funktionen für Versionsverwaltung, Kommentare, Peer Reviews, Benachrichtigungen und Echtzeit-Synchronisation bereit.
 
@@ -191,7 +191,7 @@ Vor dem ersten Proxy-Start ein Zertifikat erzeugen (certbot auf dem Host, einmal
 
 ```bash
 # Port 80 muss frei/erreichbar sein
-certbot certonly --standalone -d coworking.example.org
+certbot certonly --standalone -d collab-kit.example.org
 ```
 
 Die Zertifikate landen unter `/etc/letsencrypt` und werden vom nginx-Container schreibgeschützt eingebunden. Verlängerung via `certbot renew` (Cron); die ACME-HTTP-01-Challenge ist über `/.well-known/acme-challenge/` vorbereitet.
@@ -207,7 +207,7 @@ Die Zertifikate landen unter `/etc/letsencrypt` und werden vom nginx-Container s
 
 ```yaml
 scrape_configs:
-  - job_name: 'coworking'
+  - job_name: 'collab-kit'
     metrics_path: /metrics
     authorization:
       credentials: '${METRICS_TOKEN}'

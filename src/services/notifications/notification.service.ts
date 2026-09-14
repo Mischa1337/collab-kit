@@ -114,7 +114,7 @@ export async function buildDigest(userId: string) {
   const lines = [...byType.entries()].map(([type, c]) => `${c}× ${type}`);
   return {
     count: unread.length,
-    subject: `Co-Working: ${unread.length} ungelesene Benachrichtigung${unread.length === 1 ? '' : 'en'}`,
+    subject: `Collab Kit: ${unread.length} ungelesene Benachrichtigung${unread.length === 1 ? '' : 'en'}`,
     lines,
   };
 }

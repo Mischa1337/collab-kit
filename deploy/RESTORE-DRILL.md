@@ -7,21 +7,21 @@
 - **RTO** (max. Wiederanlaufzeit): 1 h.
 
 ## Voraussetzung
-Mindestens eine Backup-Datei `coworking_<stamp>.sql.gz.gpg` (aus `deploy/backup.sh`) und die `BACKUP_PASSPHRASE`.
+Mindestens eine Backup-Datei `collab-kit_<stamp>.sql.gz.gpg` (aus `deploy/backup.sh`) und die `BACKUP_PASSPHRASE`.
 
 ## Drill-Schritte
 ```bash
 # 1. Test-Datenbank anlegen (getrennt von Produktion!)
-createdb coworking_restore_test
+createdb collabkit_restore_test
 
 # 2. Backup entschlüsseln → entpacken → einspielen
-gpg --batch --yes --decrypt --passphrase "$BACKUP_PASSPHRASE" coworking_<stamp>.sql.gz.gpg \
+gpg --batch --yes --decrypt --passphrase "$BACKUP_PASSPHRASE" collab-kit_<stamp>.sql.gz.gpg \
   | gunzip \
-  | psql "postgresql://postgres:postgres@localhost:5432/coworking_restore_test"
+  | psql "postgresql://postgres:postgres@localhost:5432/collabkit_restore_test"
 
 # 3. Integrität prüfen (Tabellen + Zeilen vorhanden?)
-psql "postgresql://.../coworking_restore_test" -c "\dt"
-psql "postgresql://.../coworking_restore_test" -c "SELECT
+psql "postgresql://.../collabkit_restore_test" -c "\dt"
+psql "postgresql://.../collabkit_restore_test" -c "SELECT
   (SELECT count(*) FROM sessions)  AS sessions,
   (SELECT count(*) FROM documents) AS documents,
   (SELECT count(*) FROM comments)  AS comments,
@@ -29,7 +29,7 @@ psql "postgresql://.../coworking_restore_test" -c "SELECT
   (SELECT count(*) FROM history)   AS history;"
 
 # 4. Test-DB wieder entfernen
-dropdb coworking_restore_test
+dropdb collabkit_restore_test
 ```
 
 ## Erfolgskriterien

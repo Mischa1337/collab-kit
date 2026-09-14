@@ -114,11 +114,11 @@ describe('M20 — /metrics Zugriffsschutz (METRICS_TOKEN)', () => {
   it('200 + Prometheus-Metriken mit korrektem Bearer-Token', async () => {
     const res = await request(app).get('/metrics').set('Authorization', 'Bearer secret-123');
     expect(res.status).toBe(200);
-    expect(res.text).toContain('coworking_active_sessions');
-    expect(res.text).toContain('coworking_ws_connections');
-    expect(res.text).toContain('coworking_db_pool_total');
-    expect(res.text).toContain('coworking_db_pool_idle');
-    expect(res.text).toContain('coworking_db_pool_waiting');
+    expect(res.text).toContain('collabkit_active_sessions');
+    expect(res.text).toContain('collabkit_ws_connections');
+    expect(res.text).toContain('collabkit_db_pool_total');
+    expect(res.text).toContain('collabkit_db_pool_idle');
+    expect(res.text).toContain('collabkit_db_pool_waiting');
   });
 
   it('200 auch via ?token= Query-Parameter (für Prometheus-Scrape-Config)', async () => {

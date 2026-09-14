@@ -10,27 +10,27 @@ export const healthRoutes = Router();
 client.collectDefaultMetrics();
 
 const activeSessions = new client.Gauge({
-  name: 'coworking_active_sessions',
+  name: 'collabkit_active_sessions',
   help: 'Anzahl aktiver Sessions mit mindestens einer WS-Verbindung',
 });
 
 const wsConnections = new client.Gauge({
-  name: 'coworking_ws_connections',
+  name: 'collabkit_ws_connections',
   help: 'Anzahl offener WebSocket-Verbindungen',
 });
 
 const dbPoolTotal = new client.Gauge({
-  name: 'coworking_db_pool_total',
+  name: 'collabkit_db_pool_total',
   help: 'Gesamte Verbindungen im DB-Pool',
 });
 
 const dbPoolIdle = new client.Gauge({
-  name: 'coworking_db_pool_idle',
+  name: 'collabkit_db_pool_idle',
   help: 'Idle-Verbindungen im DB-Pool',
 });
 
 const dbPoolWaiting = new client.Gauge({
-  name: 'coworking_db_pool_waiting',
+  name: 'collabkit_db_pool_waiting',
   help: 'Wartende Anfragen im DB-Pool',
 });
 

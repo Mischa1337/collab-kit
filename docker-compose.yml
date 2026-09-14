@@ -1,6 +1,6 @@
 # Fester Projektname. Ohne diese Zeile leitet Docker ihn vom Ordnernamen ab, die
 # Container hiessen dann je nach Klon anders.
-name: coworking-plattform
+name: collab-kit
 
 services:
 

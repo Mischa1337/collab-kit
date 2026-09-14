@@ -7,7 +7,7 @@ set -euo pipefail
 BACKUP_DIR="${BACKUP_DIR:-/backups}"
 RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-14}"
 STAMP="$(date +%F_%H-%M)"
-OUT="$BACKUP_DIR/coworking_${STAMP}.sql.gz.gpg"
+OUT="$BACKUP_DIR/collab-kit_${STAMP}.sql.gz.gpg"
 
 mkdir -p "$BACKUP_DIR"
 
@@ -20,8 +20,8 @@ pg_dump "${DATABASE_URL:?DATABASE_URL nicht gesetzt}" \
 echo "[backup] erstellt: $OUT"
 
 # Rotation: Backups aelter als RETENTION_DAYS Tage entfernen
-find "$BACKUP_DIR" -name 'coworking_*.sql.gz.gpg' -mtime +"$RETENTION_DAYS" -delete
+find "$BACKUP_DIR" -name 'collab-kit_*.sql.gz.gpg' -mtime +"$RETENTION_DAYS" -delete
 echo "[backup] Rotation: Backups aelter als ${RETENTION_DAYS} Tage entfernt."
 
 # Beispiel-Cron (taeglich 02:30):
-#   30 2 * * *  BACKUP_DIR=/backups DATABASE_URL=... BACKUP_PASSPHRASE=... /pfad/deploy/backup.sh >> /var/log/coworking-backup.log 2>&1
+#   30 2 * * *  BACKUP_DIR=/backups DATABASE_URL=... BACKUP_PASSPHRASE=... /pfad/deploy/backup.sh >> /var/log/collab-kit-backup.log 2>&1
