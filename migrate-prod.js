@@ -29,7 +29,13 @@ async function migrate() {
     const sql = readFileSync(join(migrationsDir, file), 'utf-8');
     console.log(`Führe Migration aus: ${file}`);
     await db.query(sql);
-    await db.query('INSERT INTO schema_migrations (filename) VALUES ($1)', [file]);
+    // ON CONFLICT: Starten mehrere Instanzen gleichzeitig gegen eine leere Datenbank,
+    // schreiben beide denselben Dateinamen. Ohne diesen Zusatz stirbt die zweite am
+    // Primärschlüssel, obwohl die Migration selbst erfolgreich war.
+    await db.query(
+      'INSERT INTO schema_migrations (filename) VALUES ($1) ON CONFLICT (filename) DO NOTHING',
+      [file]
+    );
     console.log(`✓ ${file} erfolgreich`);
   }
 

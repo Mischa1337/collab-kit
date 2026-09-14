@@ -26,8 +26,10 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    # Kein Volume-Mount: Code ist im Image eingebacken, kein Hot-Reload
-    command: sh -c "npm run build && npm start"
+    # Kein Volume-Mount: Code ist im Image eingebacken, kein Hot-Reload.
+    # Kein "command:": Das Image migriert beim Start (Entrypoint) und startet dann
+    # den Server. Das frühere "npm run build && npm start" konnte hier gar nicht
+    # funktionieren, weil im Produktions-Image kein TypeScript installiert ist.
     restart: unless-stopped
 
   # ── PostgreSQL (Produktion) ───────────────────────────────────────────────

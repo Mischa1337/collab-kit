@@ -1,3 +1,7 @@
+# Fester Projektname. Ohne diese Zeile leitet Docker ihn vom Ordnernamen ab, die
+# Container hiessen dann je nach Klon anders.
+name: coworking-plattform
+
 services:
 
   # ── App-Server ────────────────────────────────────────────────────────────
@@ -21,6 +25,9 @@ services:
       - REDIS_PORT=6379
       - CALLBACK_DEBOUNCE_WAIT=2000
       - CALLBACK_DEBOUNCE_MAXWAIT=5000
+      # Migrationen beim Containerstart einspielen. Auf false setzen, wenn der
+      # Datenbankbenutzer keine Tabellen anlegen darf und das Schema separat kommt.
+      - RUN_MIGRATIONS=true
     volumes:
       - /app/node_modules   # node_modules im Container bleiben erhalten (nicht überschrieben)
     depends_on:
@@ -29,7 +36,10 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    command: node dist/index.js
+    # Kein "command:" mehr: Das Image bringt Entrypoint (Migration) und Startbefehl
+    # selbst mit. Ein command hier wuerde nur den Startbefehl ersetzen, nicht die
+    # Migration, aber es waere eine zweite Stelle, die dasselbe festlegt.
+
   # ── PostgreSQL ────────────────────────────────────────────────────────────
   postgres:
     image: postgres:16-alpine
