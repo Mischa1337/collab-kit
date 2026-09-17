@@ -1,0 +1,25 @@
+services:
+  # Single-node replica set. Without --replSet and a one-time rs.initiate() there are
+  # no transactions across documents, which the service needs later on.
+  mongo:
+    image: mongo:8.0
+    container_name: collab-kit-mongo
+    command: ['mongod', '--replSet', 'rs0', '--bind_ip_all']
+    ports:
+      - '27017:27017'
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      # Initiates the replica set on first start and reports healthy once it is primary.
+      test: >
+        mongosh --quiet --eval "
+          try { rs.status().ok }
+          catch { rs.initiate({ _id: 'rs0', members: [{ _id: 0, host: 'localhost:27017' }] }).ok }
+        "
+      interval: 5s
+      timeout: 10s
+      retries: 20
+      start_period: 10s
+
+volumes:
+  mongo-data:
