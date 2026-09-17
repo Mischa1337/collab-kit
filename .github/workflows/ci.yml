@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: lint, types and unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run format:check
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+  integration:
+    name: integration tests against a real database
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+
+      # Reuses the compose file of local development, so the replica set is set up
+      # exactly once and in one place. A service container cannot replace the image
+      # command and therefore cannot start mongod with --replSet.
+      - run: docker compose up -d --wait mongo
+
+      # Stays green until the script exists, which is the case from the database step on.
+      - run: npm run test:integration --if-present
+        env:
+          MONGODB_URI: mongodb://localhost:27017/?replicaSet=rs0&directConnection=true
+          MONGODB_DB: collab_kit_test
+          JWT_SECRET: ci-secret
+
+      - if: always()
+        run: docker compose down -v

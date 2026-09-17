@@ -5,7 +5,7 @@
   "description": "Backend service that makes single-user tools collaborative and cooperative",
   "type": "module",
   "engines": {
-    "node": ">=24"
+    "node": "^24"
   },
   "scripts": {
     "dev": "node --watch --env-file-if-exists=.env src/index.ts",
