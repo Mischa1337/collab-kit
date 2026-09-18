@@ -1,0 +1,14 @@
+.git
+.github
+node_modules
+dist
+coverage
+docs
+tests
+scripts
+.env
+.env.*
+!.env.example
+*.md
+CLAUDE.md
+.claude
