@@ -1,0 +1,179 @@
+import type { CollectionDefinition } from './apply.ts';
+
+// While the field layout is still moving, every collection only warns instead of
+// refusing. Switch validationAction to 'error' once the shapes have settled.
+const whileDeveloping: Pick<CollectionDefinition, 'validationAction'> = {
+  validationAction: 'warn',
+};
+
+/** A reference into a free scope: a room, a document, a group, an actor. */
+const scope = {
+  bsonType: 'object',
+  required: ['kind', 'id'],
+  properties: { kind: { bsonType: 'string' }, id: {} },
+} as const;
+
+const rooms: CollectionDefinition = {
+  ...whileDeveloping,
+  name: 'rooms',
+  schema: {
+    bsonType: 'object',
+    required: ['name', 'createdAt'],
+    properties: {
+      name: { bsonType: 'string' },
+      settings: {
+        bsonType: 'object',
+        description: 'switch positions chosen by the docking tool, deliberately unconstrained',
+      },
+      grants: {
+        bsonType: 'array',
+        items: {
+          bsonType: 'object',
+          required: ['subject', 'role'],
+          properties: {
+            scope,
+            subject: {
+              bsonType: 'object',
+              required: ['kind', 'id'],
+              properties: { kind: { enum: ['actor', 'group'] }, id: {} },
+            },
+            role: { bsonType: 'string' },
+            grantedAt: { bsonType: 'date' },
+            grantedBy: { bsonType: 'string' },
+          },
+        },
+      },
+      createdAt: { bsonType: 'date' },
+      createdBy: { bsonType: 'string' },
+    },
+  },
+  indexes: [{ key: { 'grants.subject.id': 1 }, name: 'grants_subject' }],
+};
+
+const groups: CollectionDefinition = {
+  ...whileDeveloping,
+  name: 'groups',
+  schema: {
+    bsonType: 'object',
+    required: ['name', 'members', 'createdAt'],
+    properties: {
+      name: { bsonType: 'string' },
+      members: {
+        bsonType: 'array',
+        description: 'opaque actor keys, nothing else hangs on a group',
+        items: { bsonType: 'string' },
+      },
+      createdAt: { bsonType: 'date' },
+      createdBy: { bsonType: 'string' },
+    },
+  },
+  indexes: [{ key: { members: 1 }, name: 'members' }],
+};
+
+const actors: CollectionDefinition = {
+  ...whileDeveloping,
+  name: 'actors',
+  schema: {
+    bsonType: 'object',
+    required: ['_id', 'firstSeenAt'],
+    properties: {
+      _id: {
+        bsonType: 'string',
+        description: 'the sub of the token, the service never issues a key of its own',
+      },
+      label: { bsonType: 'string' },
+      firstSeenAt: { bsonType: 'date' },
+      lastSeenAt: { bsonType: 'date' },
+      pseudonyms: {
+        bsonType: 'array',
+        items: {
+          bsonType: 'object',
+          required: ['scope', 'alias'],
+          properties: { scope, alias: { bsonType: 'string' } },
+        },
+      },
+      readMarks: {
+        bsonType: 'array',
+        items: {
+          bsonType: 'object',
+          required: ['documentId', 'seenAt'],
+          properties: {
+            documentId: { bsonType: 'objectId' },
+            seenAt: { bsonType: 'date' },
+            lastVersionId: { bsonType: 'objectId' },
+          },
+        },
+      },
+    },
+  },
+  indexes: [{ key: { 'readMarks.documentId': 1 }, name: 'read_marks_document' }],
+};
+
+/** number with multipleOf, because the driver writes a plain number as double. */
+const versionNumber = { bsonType: 'number', minimum: 1, multipleOf: 1 } as const;
+
+const documents: CollectionDefinition = {
+  ...whileDeveloping,
+  name: 'documents',
+  schema: {
+    bsonType: 'object',
+    required: ['documentId', 'version', 'isCurrent', 'roomId', 'createdAt'],
+    properties: {
+      documentId: {
+        bsonType: 'objectId',
+        description: 'stays the same across all versions, this is the identity',
+      },
+      version: versionNumber,
+      isCurrent: { bsonType: 'bool' },
+      roomId: { bsonType: 'objectId' },
+      name: { bsonType: 'string' },
+      contract: {
+        bsonType: 'object',
+        description: 'what the tool registered while docking, deliberately unconstrained',
+      },
+      state: { bsonType: 'binData', description: 'full Yjs state, opaque to the service' },
+      label: { bsonType: 'string', description: 'only set when a person named this version' },
+      reason: { bsonType: 'string', description: 'the why, D6.6, can only come from a person' },
+      actorId: { bsonType: 'string' },
+      createdAt: { bsonType: 'date' },
+    },
+  },
+  indexes: [
+    { key: { documentId: 1, version: 1 }, name: 'document_version_unique', unique: true },
+    {
+      key: { documentId: 1 },
+      name: 'document_current_unique',
+      unique: true,
+      partialFilterExpression: { isCurrent: true },
+    },
+    { key: { roomId: 1, isCurrent: 1 }, name: 'room_current' },
+  ],
+};
+
+const versions: CollectionDefinition = {
+  ...whileDeveloping,
+  name: 'versions',
+  schema: {
+    bsonType: 'object',
+    required: ['documentId', 'baseVersion', 'update', 'createdAt'],
+    properties: {
+      documentId: { bsonType: 'objectId' },
+      baseVersion: {
+        ...versionNumber,
+        description: 'the document version this change builds on',
+      },
+      update: { bsonType: 'binData', description: 'the Yjs bytes, opaque to the service' },
+      actorId: { bsonType: 'string', description: 'D6.19, author on every single change' },
+      createdAt: { bsonType: 'date' },
+    },
+  },
+  indexes: [{ key: { documentId: 1, baseVersion: 1, _id: 1 }, name: 'document_chain' }],
+};
+
+export const collectionDefinitions: readonly CollectionDefinition[] = [
+  actors,
+  documents,
+  groups,
+  rooms,
+  versions,
+];

@@ -19,7 +19,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "db:up": "docker compose up -d --wait mongo",
-    "db:down": "docker compose down"
+    "db:down": "docker compose down",
+    "test:integration": "vitest run --config vitest.integration.config.ts"
   },
   "dependencies": {
     "cors": "^2.8.6",
