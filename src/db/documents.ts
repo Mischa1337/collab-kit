@@ -51,3 +51,68 @@ export async function createDocument(db: Db, input: NewDocument): Promise<Docume
   await db.collection<DocumentVersion>('documents').insertOne(created);
   return created;
 }
+
+export interface NewDocumentVersion {
+  readonly documentId: ObjectId;
+  /** The complete state at this moment, produced by the caller. */
+  readonly state: Uint8Array;
+  readonly actorId: string;
+  /** Set when a person named this version. An automatic one carries neither. */
+  readonly label?: string;
+  /** The why behind it, the one thing no protocol can derive. */
+  readonly reason?: string;
+}
+
+/**
+ * Writes the current state as the next version and moves isCurrent to it. Both writes
+ * belong together: half of it would leave the document either without a valid row or
+ * with two, which the unique partial index would refuse anyway.
+ *
+ * Nothing is deleted. The previous row and every change on it stay, which is what
+ * makes looking back possible.
+ */
+export async function createVersion(
+  db: Db,
+  input: NewDocumentVersion,
+  now = new Date(),
+): Promise<DocumentVersion> {
+  const documents = db.collection<DocumentVersion>('documents');
+  const session = db.client.startSession();
+
+  try {
+    return await session.withTransaction(async () => {
+      const current = await documents.findOne(
+        { documentId: input.documentId, isCurrent: true },
+        { session },
+      );
+
+      if (current === null) {
+        throw new Error(`no current version for document ${input.documentId.toHexString()}`);
+      }
+
+      const created: DocumentVersion = {
+        _id: new ObjectId(),
+        documentId: input.documentId,
+        version: current.version + 1,
+        isCurrent: true,
+        roomId: current.roomId,
+        name: current.name,
+        contract: current.contract,
+        state: new Binary(input.state),
+        actorId: input.actorId,
+        createdAt: now,
+        ...(input.label === undefined ? {} : { label: input.label }),
+        ...(input.reason === undefined ? {} : { reason: input.reason }),
+      };
+
+      // The old row loses isCurrent first: the other way round the unique index would
+      // see two valid rows and refuse the insert.
+      await documents.updateOne({ _id: current._id }, { $set: { isCurrent: false } }, { session });
+      await documents.insertOne(created, { session });
+
+      return created;
+    });
+  } finally {
+    await session.endSession();
+  }
+}

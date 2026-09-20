@@ -4,7 +4,7 @@ import * as awarenessProtocol from 'y-protocols/awareness';
 import * as Y from 'yjs';
 
 import type { Actor } from '../auth/token.ts';
-import type { DocumentVersion } from '../db/documents.ts';
+import { createVersion, type DocumentVersion } from '../db/documents.ts';
 import { appendVersion, readVersions } from '../db/versions.ts';
 import { encodeAwareness, encodeSyncUpdate } from './sync.ts';
 
@@ -18,14 +18,23 @@ export interface OpenDocument {
   readonly documentId: ObjectId;
   readonly doc: Y.Doc;
   readonly awareness: awarenessProtocol.Awareness;
-  /** The document version every incoming change is stored against. */
-  readonly baseVersion: number;
+  /** The document version every incoming change is stored against. Moves on when a
+   * new version is set, which is why it is not readonly. */
+  baseVersion: number;
   readonly connections: Set<Connection>;
+}
+
+export interface MarkVersion {
+  readonly actorId: string;
+  readonly label?: string;
+  readonly reason?: string;
 }
 
 export interface DocumentHub {
   join(documentId: ObjectId, connection: Connection): Promise<OpenDocument>;
   leave(documentId: ObjectId, connection: Connection): Promise<void>;
+  /** Fixes the current state as a new version, named and reasoned by a person. */
+  markVersion(documentId: ObjectId, input: MarkVersion): Promise<DocumentVersion>;
   count(documentId: string): number;
   close(): Promise<void>;
 }
@@ -214,6 +223,39 @@ export function createDocumentHub(options: HubOptions): DocumentHub {
 
       if (entry.document.connections.size === 0) {
         await release(key, entry);
+      }
+    },
+
+    markVersion: async (documentId, input) => {
+      const key = documentId.toHexString();
+      const wasOpen = entries.has(key);
+      const entry = await entryFor(documentId);
+
+      try {
+        // Queued like a change, so nothing slips between the state being read and the
+        // new version being written. A change that arrives meanwhile lands either in
+        // the new state or behind it, and applying it twice is harmless in Yjs.
+        let created: DocumentVersion | undefined;
+        const run = entry.queue.then(async () => {
+          created = await createVersion(options.db, {
+            documentId,
+            state: Y.encodeStateAsUpdate(entry.document.doc),
+            ...input,
+          });
+          entry.document.baseVersion = created.version;
+        });
+
+        entry.queue = run.catch(() => undefined);
+        await run;
+
+        if (created === undefined) {
+          throw new Error('the version was not written');
+        }
+        return created;
+      } finally {
+        if (!wasOpen && entry.document.connections.size === 0) {
+          await release(key, entry);
+        }
       }
     },
 
