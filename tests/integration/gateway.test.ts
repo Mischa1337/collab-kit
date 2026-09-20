@@ -12,6 +12,7 @@ import { connect, type Storage } from '../../src/db/client.ts';
 import { createDocument } from '../../src/db/documents.ts';
 import { createRoom } from '../../src/db/rooms.ts';
 import { collectionDefinitions } from '../../src/db/schemas.ts';
+import { createDocumentHub } from '../../src/realtime/documents.ts';
 import { attachGateway, type Gateway } from '../../src/realtime/gateway.ts';
 import { createServer } from '../../src/server.ts';
 
@@ -93,6 +94,7 @@ beforeAll(async () => {
   gateway = attachGateway({
     server,
     db: storage.db,
+    hub: createDocumentHub({ db: storage.db, logger: pino({ level: 'silent' }) }),
     checkToken: createTokenCheck({ secret }),
     logger: pino({ level: 'silent' }),
   });

@@ -7,6 +7,10 @@ import { WebSocketServer, type WebSocket } from 'ws';
 
 import { mayOpenDocument } from '../auth/access.ts';
 import type { Actor } from '../auth/token.ts';
+import type { Connection, DocumentHub, OpenDocument } from './documents.ts';
+import { encodeAwarenessUpdate } from 'y-protocols/awareness';
+
+import { encodeAwareness, encodeSyncStep1, handleMessage } from './sync.ts';
 
 /** The client announces two subprotocols: this marker and the token itself. */
 const BEARER = 'bearer';
@@ -14,6 +18,7 @@ const BEARER = 'bearer';
 export interface GatewayOptions {
   readonly server: Server;
   readonly db: Db;
+  readonly hub: DocumentHub;
   readonly checkToken: (token: string) => Actor;
   readonly logger: Logger;
   /** Left out during development, which lets every origin in. */
@@ -40,7 +45,7 @@ interface Opened {
  */
 export function attachGateway(options: GatewayOptions): Gateway {
   const prefix = options.path ?? '/ws/';
-  const sockets = new Map<string, Set<WebSocket>>();
+  const sockets = new Set<WebSocket>();
 
   const wss = new WebSocketServer({
     noServer: true,
@@ -60,20 +65,7 @@ export function attachGateway(options: GatewayOptions): Gateway {
       }
 
       wss.handleUpgrade(request, socket, head, (ws) => {
-        const key = opened.documentId.toHexString();
-        const forDocument = sockets.get(key) ?? new Set<WebSocket>();
-        forDocument.add(ws);
-        sockets.set(key, forDocument);
-
-        options.logger.info({ documentId: key, actorId: opened.actor.actorId }, 'connection open');
-
-        ws.on('close', () => {
-          forDocument.delete(ws);
-          if (forDocument.size === 0) {
-            sockets.delete(key);
-          }
-          options.logger.info({ documentId: key }, 'connection closed');
-        });
+        void welcome(ws, opened, options, sockets);
       });
     })();
   };
@@ -81,18 +73,102 @@ export function attachGateway(options: GatewayOptions): Gateway {
   options.server.on('upgrade', onUpgrade);
 
   return {
-    countFor: (documentId) => sockets.get(documentId)?.size ?? 0,
+    countFor: (documentId) => options.hub.count(documentId),
     close: async () => {
       options.server.off('upgrade', onUpgrade);
-      for (const forDocument of sockets.values()) {
-        for (const ws of forDocument) {
-          ws.close(1001, 'server shutting down');
-        }
+      for (const ws of sockets) {
+        ws.close(1001, 'server shutting down');
       }
       sockets.clear();
       await new Promise<void>((resolve) => wss.close(() => resolve()));
+      await options.hub.close();
     },
   };
+}
+
+/**
+ * Hands the fresh socket to the document it asked for and starts the exchange. The
+ * service opens with "this is what I have", the client answers with what it is missing.
+ */
+async function welcome(
+  ws: WebSocket,
+  opened: Opened,
+  options: GatewayOptions,
+  sockets: Set<WebSocket>,
+): Promise<void> {
+  const key = opened.documentId.toHexString();
+  const connection: Connection = {
+    actor: opened.actor,
+    send: (message) => {
+      if (ws.readyState === ws.OPEN) {
+        ws.send(message);
+      }
+    },
+  };
+
+  sockets.add(ws);
+
+  // Listeners go up before the document is loaded. A client may send its first message
+  // the instant the handshake succeeds, and an event without a listener is simply lost.
+  const state: { open?: OpenDocument; left: boolean } = { left: false };
+  const waiting: Uint8Array[] = [];
+
+  const apply = (open: OpenDocument, data: Uint8Array): void => {
+    const reply = handleMessage(
+      { doc: open.doc, awareness: open.awareness, origin: connection },
+      data,
+    );
+    if (reply !== undefined) {
+      connection.send(reply);
+    }
+  };
+
+  ws.on('message', (data: Buffer) => {
+    const bytes = new Uint8Array(data);
+    if (state.open === undefined) {
+      waiting.push(bytes);
+      return;
+    }
+    apply(state.open, bytes);
+  });
+
+  ws.on('close', () => {
+    state.left = true;
+    sockets.delete(ws);
+    void options.hub.leave(opened.documentId, connection);
+    options.logger.info({ documentId: key }, 'connection closed');
+  });
+
+  let open: OpenDocument;
+  try {
+    open = await options.hub.join(opened.documentId, connection);
+  } catch (error) {
+    options.logger.error({ error, documentId: key }, 'could not open the document');
+    ws.close(1011, 'document could not be opened');
+    sockets.delete(ws);
+    return;
+  }
+
+  if (state.left) {
+    // Gone again while the document was still loading.
+    await options.hub.leave(opened.documentId, connection);
+    return;
+  }
+
+  options.logger.info({ documentId: key, actorId: opened.actor.actorId }, 'connection open');
+
+  connection.send(encodeSyncStep1(open.doc));
+
+  const others = [...open.awareness.getStates().keys()];
+  if (others.length > 0) {
+    connection.send(encodeAwareness(encodeAwarenessUpdate(open.awareness, others)));
+  }
+
+  state.open = open;
+  for (const data of waiting) {
+    apply(open, data);
+  }
+  waiting.length = 0;
 }
 
 interface Refused {

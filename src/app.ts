@@ -5,6 +5,7 @@ import { createTokenCheck } from './auth/token.ts';
 import { applyDefinitions } from './db/apply.ts';
 import { connect } from './db/client.ts';
 import { collectionDefinitions } from './db/schemas.ts';
+import { createDocumentHub } from './realtime/documents.ts';
 import { attachGateway } from './realtime/gateway.ts';
 import { createServer } from './server.ts';
 
@@ -16,9 +17,11 @@ await applyDefinitions(storage.db, collectionDefinitions);
 log.info({ database: config.mongoDb, collections: collectionDefinitions.length }, 'database ready');
 
 const server = createServer({ logger: log });
+const hub = createDocumentHub({ db: storage.db, logger: log });
 const gateway = attachGateway({
   server,
   db: storage.db,
+  hub,
   checkToken: createTokenCheck({ secret: config.jwtSecret }),
   logger: log,
 });
