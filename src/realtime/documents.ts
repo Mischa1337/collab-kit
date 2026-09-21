@@ -3,9 +3,12 @@ import type { Logger } from 'pino';
 import * as awarenessProtocol from 'y-protocols/awareness';
 import * as Y from 'yjs';
 
+import { touchActor } from '../db/actors.ts';
+import type { Anchor } from '../db/anchor.ts';
 import type { Actor } from '../auth/token.ts';
 import { findDocument, foldState } from '../db/documents.ts';
-import { appendUpdate, readUpdatesSince } from '../db/updates.ts';
+import { recordEvent, type EventRecord } from '../db/events.ts';
+import { appendUpdate, newestUpdate, readUpdatesSince } from '../db/updates.ts';
 import { encodeAwareness, encodeSyncUpdate } from './sync.ts';
 
 /** What the hub needs from a connection, so it does not depend on the transport. */
@@ -21,9 +24,21 @@ export interface OpenDocument {
   readonly connections: Set<Connection>;
 }
 
+export interface Checkpoint {
+  readonly actorId: string;
+  readonly label?: string;
+  readonly reason?: string;
+}
+
 export interface DocumentHub {
   join(documentId: ObjectId, connection: Connection): Promise<OpenDocument>;
   leave(documentId: ObjectId, connection: Connection): Promise<void>;
+  /**
+   * Holds this moment as an event that a person named. Not a technical matter: a
+   * checkpoint says that a state is worth coming back to, and reason is the only
+   * place in the whole model where the why of a change can live.
+   */
+  checkpoint(documentId: ObjectId, input: Checkpoint): Promise<EventRecord>;
   /**
    * Writes the current state as the shortcut for the next load. Pure bookkeeping:
    * nothing becomes visible by it and nothing is lost without it.
@@ -147,6 +162,26 @@ export function createDocumentHub(options: HubOptions): DocumentHub {
     return written;
   }
 
+  /**
+   * Keeping a trace may never break the work it is a trace of. A lost event costs a
+   * line in a history, a thrown one would cost the connection.
+   */
+  async function trace(documentId: ObjectId, kind: string, actor: string, at?: ObjectId) {
+    try {
+      await recordEvent(options.db, {
+        kind,
+        actorId: actor,
+        anchor: anchorOf(documentId),
+        ...(at === undefined ? {} : { at }),
+      });
+    } catch (error) {
+      options.logger.error(
+        { error, kind, documentId: documentId.toHexString() },
+        'could not keep the trace, the work carries on without it',
+      );
+    }
+  }
+
   /** Stores first, distributes second: nobody shall see a change that is nowhere kept. */
   function onChange(entry: Entry, update: Uint8Array, origin: unknown): void {
     const from = asConnection(origin);
@@ -268,7 +303,16 @@ export function createDocumentHub(options: HubOptions): DocumentHub {
       connectionsByKey.get(key)?.add(connection);
 
       try {
-        return (await pending).document;
+        const document = (await pending).document;
+
+        await Promise.all([
+          trace(documentId, 'joined', connection.actor.actorId),
+          touchActor(options.db, connection.actor).catch((error: unknown) => {
+            options.logger.error({ error }, 'could not record the actor');
+          }),
+        ]);
+
+        return document;
       } catch (error) {
         entries.delete(key);
         connectionsByKey.delete(key);
@@ -291,6 +335,11 @@ export function createDocumentHub(options: HubOptions): DocumentHub {
         awarenessProtocol.removeAwarenessStates(entry.document.awareness, [...ids], null);
       }
       entry.clientIds.delete(connection);
+
+      // The position is what makes D6.18 answerable later: everything after it is
+      // what this person was not around for. It says delivered, not read; what a
+      // person actually looked at only the tool can report.
+      await trace(documentId, 'left', connection.actor.actorId, entry.lastUpdateId);
 
       if (entry.document.connections.size === 0) {
         await release(key, entry);
@@ -320,6 +369,38 @@ export function createDocumentHub(options: HubOptions): DocumentHub {
       }
     },
 
+    checkpoint: async (documentId, input) => {
+      const pending = entries.get(documentId.toHexString());
+      let at: ObjectId | undefined;
+
+      if (pending === undefined) {
+        // Nothing in flight on a document nobody holds, and loading the whole Y.Doc
+        // only to read the newest id would be wasteful.
+        if ((await findDocument(options.db, documentId)) === null) {
+          throw new Error(`unknown document ${documentId.toHexString()}`);
+        }
+        at = await newestUpdate(options.db, documentId);
+      } else {
+        // Queued like a change, so a change still being written lands before the
+        // mark and not behind it.
+        const entry = await pending;
+        const run = entry.queue.then(() => {
+          at = entry.lastUpdateId;
+        });
+        entry.queue = run.catch(() => undefined);
+        await run;
+      }
+
+      return recordEvent(options.db, {
+        kind: 'checkpoint',
+        actorId: input.actorId,
+        anchor: anchorOf(documentId),
+        ...(at === undefined ? {} : { at }),
+        ...(input.label === undefined ? {} : { label: input.label }),
+        ...(input.reason === undefined ? {} : { reason: input.reason }),
+      });
+    },
+
     count: (documentId) => connectionsByKey.get(documentId)?.size ?? 0,
 
     close: async () => {
@@ -332,6 +413,10 @@ export function createDocumentHub(options: HubOptions): DocumentHub {
       }
     },
   };
+}
+
+function anchorOf(documentId: ObjectId): Anchor {
+  return { kind: 'document', id: documentId };
 }
 
 function asConnection(origin: unknown): Connection | undefined {

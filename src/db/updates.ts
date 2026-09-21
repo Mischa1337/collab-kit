@@ -57,3 +57,12 @@ export async function readUpdatesSince(
 
   return db.collection<UpdateRecord>('updates').find(filter).sort({ _id: 1 }).toArray();
 }
+
+/** The newest change of a document, or undefined while it has none. */
+export async function newestUpdate(db: Db, documentId: ObjectId): Promise<ObjectId | undefined> {
+  const found = await db
+    .collection<UpdateRecord>('updates')
+    .findOne({ documentId }, { sort: { _id: -1 }, projection: { _id: 1 } });
+
+  return found?._id;
+}
