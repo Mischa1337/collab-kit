@@ -91,6 +91,32 @@ const actors: CollectionDefinition = {
   },
 };
 
+const comments: CollectionDefinition = {
+  ...whileDeveloping,
+  name: 'comments',
+  schema: {
+    bsonType: 'object',
+    required: ['kind', 'anchor', 'actorId', 'body', 'createdAt'],
+    properties: {
+      kind: { bsonType: 'string', description: 'comment, feedback, message, reaction, ...' },
+      anchor: anchorSchema,
+      parentId: { bsonType: 'objectId', description: 'makes it an answer, D4.13' },
+      actorId: { bsonType: 'string' },
+      body: { bsonType: 'object', description: 'free, the service never reads it' },
+      state: {
+        bsonType: 'string',
+        description: 'free, D8.20: open, read, answered, applied, rejected',
+      },
+      createdAt: { bsonType: 'date' },
+    },
+  },
+  indexes: [
+    { key: { 'anchor.id': 1, _id: 1 }, name: 'anchor_id' },
+    { key: { parentId: 1, _id: 1 }, name: 'parent_thread' },
+    { key: { actorId: 1, _id: 1 }, name: 'actor_said' },
+  ],
+};
+
 const documents: CollectionDefinition = {
   ...whileDeveloping,
   name: 'documents',
@@ -195,6 +221,7 @@ const tasks: CollectionDefinition = {
 
 export const collectionDefinitions: readonly CollectionDefinition[] = [
   actors,
+  comments,
   documents,
   events,
   groups,

@@ -1,7 +1,7 @@
 import { ObjectId, type Db, type Document, type Filter } from 'mongodb';
 
 import { anchoredAt, type Anchor, type AnchorQuery } from './anchor.ts';
-import { recordEvent } from './events.ts';
+import { changeWithEvent } from './events.ts';
 
 /** Who a task belongs to. A group can hold one, the change it leads to cannot. */
 export interface TaskSubject {
@@ -70,11 +70,7 @@ export async function findTask(db: Db, id: ObjectId): Promise<TaskRecord | null>
   return db.collection<TaskRecord>('tasks').findOne({ _id: id });
 }
 
-/**
- * Changes one field of a task and keeps the trace of it in the same transaction. Both
- * belong together: the field alone would lose who declared it, which is what D8.21
- * asks for, and the trace alone would claim a change that never happened.
- */
+/** Both changing operations go the same way: field and trace, or neither. */
 async function changeTask(
   db: Db,
   taskId: ObjectId,
@@ -82,36 +78,23 @@ async function changeTask(
   event: { kind: string; actorId: string; reason?: string; detail: Document },
   now: Date,
 ): Promise<TaskRecord> {
-  const session = db.client.startSession();
-
-  try {
-    return await session.withTransaction(async () => {
-      const tasks = db.collection<TaskRecord>('tasks');
-      const before = await tasks.findOne({ _id: taskId }, { session });
-
-      if (before === null) {
-        throw new Error(`unknown task ${taskId.toHexString()}`);
-      }
-
-      await tasks.updateOne({ _id: taskId }, { $set: change }, { session });
-      await recordEvent(
-        db,
-        {
-          kind: event.kind,
-          actorId: event.actorId,
-          anchor: { kind: 'task', id: taskId },
-          detail: event.detail,
-          ...(event.reason === undefined ? {} : { reason: event.reason }),
-        },
-        now,
-        session,
-      );
-
-      return { ...before, ...change };
-    });
-  } finally {
-    await session.endSession();
-  }
+  return changeWithEvent<TaskRecord>(
+    db,
+    {
+      what: 'task',
+      collection: 'tasks',
+      id: taskId,
+      change,
+      event: {
+        kind: event.kind,
+        actorId: event.actorId,
+        anchor: { kind: 'task', id: taskId },
+        detail: event.detail,
+        ...(event.reason === undefined ? {} : { reason: event.reason }),
+      },
+    },
+    now,
+  );
 }
 
 export interface StateChange {

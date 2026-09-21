@@ -96,3 +96,45 @@ export async function readEvents(db: Db, query: EventQuery = {}): Promise<EventR
 export async function latestEvent(db: Db, query: EventQuery): Promise<EventRecord | null> {
   return db.collection<EventRecord>('events').findOne(filterOf(query), { sort: { _id: -1 } });
 }
+
+export interface TracedChange {
+  /** The noun for the error when nothing is there, for example "task". */
+  readonly what: string;
+  readonly collection: string;
+  readonly id: ObjectId;
+  readonly change: Document;
+  readonly event: NewEvent;
+}
+
+/**
+ * Changes one row and keeps the trace of it in the same transaction. Both belong
+ * together: the field alone would lose who declared it, and the trace alone would
+ * claim a change that never happened.
+ *
+ * Returns the row as it now stands, without reading it back.
+ */
+export async function changeWithEvent<T extends Document>(
+  db: Db,
+  input: TracedChange,
+  now = new Date(),
+): Promise<T> {
+  const session = db.client.startSession();
+
+  try {
+    return await session.withTransaction(async () => {
+      const collection = db.collection(input.collection);
+      const before = await collection.findOne({ _id: input.id }, { session });
+
+      if (before === null) {
+        throw new Error(`unknown ${input.what} ${input.id.toHexString()}`);
+      }
+
+      await collection.updateOne({ _id: input.id }, { $set: input.change }, { session });
+      await recordEvent(db, input.event, now, session);
+
+      return { ...before, ...input.change } as unknown as T;
+    });
+  } finally {
+    await session.endSession();
+  }
+}
