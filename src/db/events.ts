@@ -1,4 +1,4 @@
-import { ObjectId, type Db, type Document, type Filter } from 'mongodb';
+import { ObjectId, type ClientSession, type Db, type Document, type Filter } from 'mongodb';
 
 import { anchoredAt, type Anchor, type AnchorQuery } from './anchor.ts';
 
@@ -38,7 +38,16 @@ export interface NewEvent {
   readonly detail?: Document;
 }
 
-export async function recordEvent(db: Db, input: NewEvent, now = new Date()): Promise<EventRecord> {
+/**
+ * The session is for callers that change something and keep the trace of it in the
+ * same breath, so the two cannot come apart.
+ */
+export async function recordEvent(
+  db: Db,
+  input: NewEvent,
+  now = new Date(),
+  session?: ClientSession,
+): Promise<EventRecord> {
   const record: EventRecord = {
     _id: new ObjectId(),
     kind: input.kind,
@@ -51,7 +60,10 @@ export async function recordEvent(db: Db, input: NewEvent, now = new Date()): Pr
     ...(input.detail === undefined ? {} : { detail: input.detail }),
   };
 
-  await db.collection<EventRecord>('events').insertOne(record);
+  await db
+    .collection<EventRecord>('events')
+    .insertOne(record, session === undefined ? {} : { session });
+
   return record;
 }
 

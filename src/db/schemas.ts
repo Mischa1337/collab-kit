@@ -160,11 +160,45 @@ const events: CollectionDefinition = {
   ],
 };
 
+const tasks: CollectionDefinition = {
+  ...whileDeveloping,
+  name: 'tasks',
+  schema: {
+    bsonType: 'object',
+    required: ['kind', 'title', 'state', 'createdAt', 'createdBy'],
+    properties: {
+      kind: { bsonType: 'string', description: 'task, review, revision, approval, ...' },
+      title: { bsonType: 'string' },
+      state: {
+        bsonType: 'string',
+        description: 'free, the docking tool brings its own vocabulary',
+      },
+      anchor: anchorSchema,
+      parentId: { bsonType: 'objectId', description: 'makes it a subtask' },
+      subject: {
+        bsonType: 'object',
+        required: ['kind', 'id'],
+        properties: { kind: { enum: ['actor', 'group'] }, id: {} },
+      },
+      order: { bsonType: 'number', description: 'order among siblings, D9.3' },
+      detail: { bsonType: 'object', description: 'free, the service never reads it' },
+      createdAt: { bsonType: 'date' },
+      createdBy: { bsonType: 'string' },
+    },
+  },
+  indexes: [
+    { key: { 'subject.id': 1, state: 1 }, name: 'subject_state' },
+    { key: { 'anchor.id': 1 }, name: 'anchor_id' },
+    { key: { parentId: 1, order: 1 }, name: 'parent_order' },
+  ],
+};
+
 export const collectionDefinitions: readonly CollectionDefinition[] = [
   actors,
   documents,
   events,
   groups,
   rooms,
+  tasks,
   updates,
 ];
