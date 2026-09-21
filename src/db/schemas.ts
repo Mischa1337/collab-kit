@@ -1,3 +1,6 @@
+import type { Document } from 'mongodb';
+
+import { anchorSchema, referenceSchema } from './anchor.ts';
 import type { CollectionDefinition } from './apply.ts';
 
 // While the field layout is still moving, every collection only warns instead of
@@ -22,14 +25,10 @@ const rooms: CollectionDefinition = {
         bsonType: 'array',
         description: 'what the room bundles, pointed at and never owned',
         items: {
-          bsonType: 'object',
-          required: ['kind', 'id', 'addedAt', 'addedBy'],
+          ...referenceSchema,
+          required: [...(referenceSchema['required'] as string[]), 'addedAt', 'addedBy'],
           properties: {
-            kind: {
-              bsonType: 'string',
-              description: 'document or group today, whatever docks later',
-            },
-            id: {},
+            ...(referenceSchema['properties'] as Document),
             addedAt: { bsonType: 'date' },
             addedBy: { bsonType: 'string' },
           },
@@ -135,9 +134,36 @@ const updates: CollectionDefinition = {
   indexes: [{ key: { documentId: 1, _id: 1 }, name: 'document_stream' }],
 };
 
+const events: CollectionDefinition = {
+  ...whileDeveloping,
+  name: 'events',
+  schema: {
+    bsonType: 'object',
+    required: ['kind', 'actorId', 'anchor', 'createdAt'],
+    properties: {
+      kind: {
+        bsonType: 'string',
+        description: 'read, presence, visit, checkpoint, whatever the tool reports',
+      },
+      actorId: { bsonType: 'string' },
+      anchor: anchorSchema,
+      at: { bsonType: 'objectId', description: 'a place in the update stream' },
+      label: { bsonType: 'string', description: 'only when a person named this moment' },
+      reason: { bsonType: 'string', description: 'the why, D6.6, can only come from a person' },
+      detail: { bsonType: 'object', description: 'free, the service never reads it' },
+      createdAt: { bsonType: 'date' },
+    },
+  },
+  indexes: [
+    { key: { 'anchor.id': 1, kind: 1, _id: -1 }, name: 'anchor_kind' },
+    { key: { actorId: 1, kind: 1, _id: -1 }, name: 'actor_kind' },
+  ],
+};
+
 export const collectionDefinitions: readonly CollectionDefinition[] = [
   actors,
   documents,
+  events,
   groups,
   rooms,
   updates,

@@ -1,16 +1,11 @@
 import { ObjectId, type Db, type Document } from 'mongodb';
 
-/**
- * A pointer to something a room bundles. The kind is a free string: the service
- * resolves only the kinds it keeps itself and carries the others through untouched,
- * so a tool can bundle things this service has never heard of.
- */
-export interface Reference {
-  kind: string;
-  id: unknown;
-}
+import type { Reference } from './anchor.ts';
 
-/** A reference plus when it was put into the room and by whom. */
+/**
+ * A reference plus when it was put into the room and by whom. A room bundles whole
+ * things, never a unit inside one, which is why this is a Reference and not an Anchor.
+ */
 export interface Containment extends Reference {
   addedAt: Date;
   addedBy: string;
