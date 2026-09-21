@@ -9,7 +9,7 @@ import { readConfig } from '../src/config.ts';
 import { applyDefinitions } from '../src/db/apply.ts';
 import { connect } from '../src/db/client.ts';
 import { createDocument } from '../src/db/documents.ts';
-import { createRoom } from '../src/db/rooms.ts';
+import { addToRoom, createRoom } from '../src/db/rooms.ts';
 import { collectionDefinitions } from '../src/db/schemas.ts';
 
 const config = readConfig();
@@ -26,6 +26,12 @@ const document = await createDocument(storage.db, {
   name: 'Entwurf',
   createdBy: 'alice',
   contract: {},
+});
+
+await addToRoom(storage.db, room._id, {
+  kind: 'document',
+  id: document._id,
+  addedBy: 'alice',
 });
 
 await storage.close();

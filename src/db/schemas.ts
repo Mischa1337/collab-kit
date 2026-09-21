@@ -6,40 +6,32 @@ const whileDeveloping: Pick<CollectionDefinition, 'validationAction'> = {
   validationAction: 'warn',
 };
 
-/** A reference into a free scope: a room, a document, a group, an actor. */
-const scope = {
-  bsonType: 'object',
-  required: ['kind', 'id'],
-  properties: { kind: { bsonType: 'string' }, id: {} },
-} as const;
-
 const rooms: CollectionDefinition = {
   ...whileDeveloping,
   name: 'rooms',
   schema: {
     bsonType: 'object',
-    required: ['name', 'createdAt'],
+    required: ['name', 'createdAt', 'createdBy'],
     properties: {
       name: { bsonType: 'string' },
       settings: {
         bsonType: 'object',
         description: 'switch positions chosen by the docking tool, deliberately unconstrained',
       },
-      grants: {
+      contains: {
         bsonType: 'array',
+        description: 'what the room bundles, pointed at and never owned',
         items: {
           bsonType: 'object',
-          required: ['subject', 'role'],
+          required: ['kind', 'id', 'addedAt', 'addedBy'],
           properties: {
-            scope,
-            subject: {
-              bsonType: 'object',
-              required: ['kind', 'id'],
-              properties: { kind: { enum: ['actor', 'group'] }, id: {} },
+            kind: {
+              bsonType: 'string',
+              description: 'document or group today, whatever docks later',
             },
-            role: { bsonType: 'string' },
-            grantedAt: { bsonType: 'date' },
-            grantedBy: { bsonType: 'string' },
+            id: {},
+            addedAt: { bsonType: 'date' },
+            addedBy: { bsonType: 'string' },
           },
         },
       },
@@ -47,7 +39,7 @@ const rooms: CollectionDefinition = {
       createdBy: { bsonType: 'string' },
     },
   },
-  indexes: [{ key: { 'grants.subject.id': 1 }, name: 'grants_subject' }],
+  indexes: [{ key: { 'contains.id': 1 }, name: 'contains_id' }],
 };
 
 const groups: CollectionDefinition = {
