@@ -4,8 +4,8 @@ import * as awarenessProtocol from 'y-protocols/awareness';
 import * as Y from 'yjs';
 
 import type { Actor } from '../auth/token.ts';
-import { createVersion, type DocumentVersion } from '../db/documents.ts';
-import { appendVersion, readVersions } from '../db/versions.ts';
+import { findDocument, foldState } from '../db/documents.ts';
+import { appendUpdate, readUpdatesSince } from '../db/updates.ts';
 import { encodeAwareness, encodeSyncUpdate } from './sync.ts';
 
 /** What the hub needs from a connection, so it does not depend on the transport. */
@@ -18,23 +18,17 @@ export interface OpenDocument {
   readonly documentId: ObjectId;
   readonly doc: Y.Doc;
   readonly awareness: awarenessProtocol.Awareness;
-  /** The document version every incoming change is stored against. Moves on when a
-   * new version is set, which is why it is not readonly. */
-  baseVersion: number;
   readonly connections: Set<Connection>;
-}
-
-export interface MarkVersion {
-  readonly actorId: string;
-  readonly label?: string;
-  readonly reason?: string;
 }
 
 export interface DocumentHub {
   join(documentId: ObjectId, connection: Connection): Promise<OpenDocument>;
   leave(documentId: ObjectId, connection: Connection): Promise<void>;
-  /** Fixes the current state as a new version, named and reasoned by a person. */
-  markVersion(documentId: ObjectId, input: MarkVersion): Promise<DocumentVersion>;
+  /**
+   * Writes the current state as the shortcut for the next load. Pure bookkeeping:
+   * nothing becomes visible by it and nothing is lost without it.
+   */
+  fold(documentId: ObjectId): Promise<boolean>;
   count(documentId: string): number;
   close(): Promise<void>;
 }
@@ -44,49 +38,67 @@ interface Entry {
   readonly clientIds: Map<Connection, Set<number>>;
   /** Writes run one after another, so the stored order matches the order of arrival. */
   queue: Promise<void>;
+  /** The newest update written for this document, the cut for the next folding. */
+  lastUpdateId?: ObjectId;
+  /** What stateThrough holds in the database, as far as this process knows. */
+  foldedThrough?: ObjectId;
+  /** Updates that have arrived since the last folding. */
+  sinceFold: number;
 }
 
 export interface HubOptions {
   readonly db: Db;
   readonly logger: Logger;
+  /**
+   * How many changes may pile up before the state is folded again. Only a matter of
+   * loading time, which is why a document that stays open all day still gets folded.
+   */
+  readonly foldEvery?: number;
 }
 
 /**
  * Keeps one Y.Doc per document while somebody has it open. The truth stays in the
- * database: this is only the working copy, rebuilt from the base plus every change
- * on top of it whenever the first connection arrives.
+ * database: this is only the working copy, rebuilt from the folded state plus every
+ * change after it whenever the first connection arrives.
  */
 export function createDocumentHub(options: HubOptions): DocumentHub {
+  const foldEvery = options.foldEvery ?? 400;
   const entries = new Map<string, Promise<Entry>>();
   // Held next to the promise so counting never has to wait for a document to load.
   const connectionsByKey = new Map<string, Set<Connection>>();
 
   async function load(documentId: ObjectId, connections: Set<Connection>): Promise<Entry> {
-    const current = await options.db
-      .collection<DocumentVersion>('documents')
-      .findOne({ documentId, isCurrent: true });
+    const record = await findDocument(options.db, documentId);
 
-    if (current === null) {
-      throw new Error(`no current version for document ${documentId.toHexString()}`);
+    if (record === null) {
+      throw new Error(`unknown document ${documentId.toHexString()}`);
     }
 
     const doc = new Y.Doc();
-    Y.applyUpdate(doc, new Uint8Array(current.state.buffer));
-
-    for (const version of await readVersions(options.db, documentId, current.version)) {
-      Y.applyUpdate(doc, new Uint8Array(version.update.buffer));
+    if (record.state !== undefined) {
+      Y.applyUpdate(doc, new Uint8Array(record.state.buffer));
     }
 
+    // Everything the shortcut does not cover yet. A document that was never folded
+    // starts from nothing and reads its whole history, which is just as correct.
+    const pending = await readUpdatesSince(options.db, documentId, record.stateThrough);
+    for (const row of pending) {
+      Y.applyUpdate(doc, new Uint8Array(row.update.buffer));
+    }
+
+    const newest = pending.at(-1)?._id ?? record.stateThrough;
     const entry: Entry = {
       document: {
         documentId,
         doc,
         awareness: new awarenessProtocol.Awareness(doc),
-        baseVersion: current.version,
         connections,
       },
       clientIds: new Map(),
       queue: Promise.resolve(),
+      sinceFold: pending.length,
+      ...(newest === undefined ? {} : { lastUpdateId: newest }),
+      ...(record.stateThrough === undefined ? {} : { foldedThrough: record.stateThrough }),
     };
 
     // Attached only now: replaying the stored history must not store it a second time.
@@ -104,6 +116,37 @@ export function createDocumentHub(options: HubOptions): DocumentHub {
     return entry;
   }
 
+  /**
+   * Takes the state from memory and writes it as the new shortcut. Runs inside the
+   * queue, so everything up to lastUpdateId has been stored and is contained in it.
+   *
+   * A change that arrives while this runs lands behind the cut and is applied on top
+   * at the next load. Applying it twice is harmless in Yjs.
+   */
+  async function foldNow(entry: Entry): Promise<boolean> {
+    const through = entry.lastUpdateId;
+
+    if (through === undefined) {
+      return false;
+    }
+    if (entry.foldedThrough !== undefined && through.equals(entry.foldedThrough)) {
+      return false;
+    }
+
+    const written = await foldState(options.db, {
+      documentId: entry.document.documentId,
+      state: Y.encodeStateAsUpdate(entry.document.doc),
+      through,
+      ...(entry.foldedThrough === undefined ? {} : { expected: entry.foldedThrough }),
+    });
+
+    if (written) {
+      entry.foldedThrough = through;
+      entry.sinceFold = 0;
+    }
+    return written;
+  }
+
   /** Stores first, distributes second: nobody shall see a change that is nowhere kept. */
   function onChange(entry: Entry, update: Uint8Array, origin: unknown): void {
     const from = asConnection(origin);
@@ -114,19 +157,25 @@ export function createDocumentHub(options: HubOptions): DocumentHub {
           throw new Error('a change arrived without a connection to attribute it to');
         }
 
-        await appendVersion(options.db, {
+        const record = await appendUpdate(options.db, {
           documentId: entry.document.documentId,
-          baseVersion: entry.document.baseVersion,
           update,
           actorId: from.actor.actorId,
         });
+
+        entry.lastUpdateId = record._id;
+        entry.sinceFold += 1;
       })
-      .then(() => {
+      .then(async () => {
         const message = encodeSyncUpdate(update);
         for (const connection of entry.document.connections) {
           if (connection !== from) {
             connection.send(message);
           }
+        }
+
+        if (entry.sinceFold >= foldEvery) {
+          await foldNow(entry);
         }
       })
       .catch((error: unknown) => {
@@ -182,6 +231,18 @@ export function createDocumentHub(options: HubOptions): DocumentHub {
 
   async function release(key: string, entry: Entry): Promise<void> {
     await entry.queue;
+
+    // The last one out folds, because the state is in memory anyway. A failure here
+    // may not stop the cleanup: every change is stored, so nothing is at stake.
+    try {
+      await foldNow(entry);
+    } catch (error) {
+      options.logger.error(
+        { error, documentId: entry.document.documentId.toHexString() },
+        'could not fold on release, the changes stay and the next load reads them',
+      );
+    }
+
     entry.document.awareness.destroy();
     entry.document.doc.destroy();
     entries.delete(key);
@@ -226,32 +287,22 @@ export function createDocumentHub(options: HubOptions): DocumentHub {
       }
     },
 
-    markVersion: async (documentId, input) => {
+    fold: async (documentId) => {
       const key = documentId.toHexString();
       const wasOpen = entries.has(key);
       const entry = await entryFor(documentId);
 
       try {
-        // Queued like a change, so nothing slips between the state being read and the
-        // new version being written. A change that arrives meanwhile lands either in
-        // the new state or behind it, and applying it twice is harmless in Yjs.
-        let created: DocumentVersion | undefined;
+        // Queued like a change, so nothing slips between reading the state and
+        // writing it.
+        let written = false;
         const run = entry.queue.then(async () => {
-          created = await createVersion(options.db, {
-            documentId,
-            state: Y.encodeStateAsUpdate(entry.document.doc),
-            ...input,
-          });
-          entry.document.baseVersion = created.version;
+          written = await foldNow(entry);
         });
 
         entry.queue = run.catch(() => undefined);
         await run;
-
-        if (created === undefined) {
-          throw new Error('the version was not written');
-        }
-        return created;
+        return written;
       } finally {
         if (!wasOpen && entry.document.connections.size === 0) {
           await release(key, entry);

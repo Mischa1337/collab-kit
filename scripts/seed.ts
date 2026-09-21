@@ -5,8 +5,6 @@
  *
  *   npm run seed
  */
-import * as Y from 'yjs';
-
 import { readConfig } from '../src/config.ts';
 import { applyDefinitions } from '../src/db/apply.ts';
 import { connect } from '../src/db/client.ts';
@@ -25,16 +23,14 @@ const room = await createRoom(storage.db, {
 });
 
 const document = await createDocument(storage.db, {
-  roomId: room._id,
   name: 'Entwurf',
-  actorId: 'alice',
-  state: Y.encodeStateAsUpdate(new Y.Doc()),
+  createdBy: 'alice',
   contract: {},
 });
 
 await storage.close();
 
 console.log(`room:     ${room._id.toHexString()}`);
-console.log(`document: ${document.documentId.toHexString()}`);
-console.log(`socket:   ws://localhost:${config.port}/ws/${document.documentId.toHexString()}`);
+console.log(`document: ${document._id.toHexString()}`);
+console.log(`socket:   ws://localhost:${config.port}/ws/${document._id.toHexString()}`);
 console.log('token:    npm run token -- alice');

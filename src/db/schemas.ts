@@ -84,90 +84,51 @@ const actors: CollectionDefinition = {
       label: { bsonType: 'string' },
       firstSeenAt: { bsonType: 'date' },
       lastSeenAt: { bsonType: 'date' },
-      pseudonyms: {
-        bsonType: 'array',
-        items: {
-          bsonType: 'object',
-          required: ['scope', 'alias'],
-          properties: { scope, alias: { bsonType: 'string' } },
-        },
-      },
-      readMarks: {
-        bsonType: 'array',
-        items: {
-          bsonType: 'object',
-          required: ['documentId', 'seenAt'],
-          properties: {
-            documentId: { bsonType: 'objectId' },
-            seenAt: { bsonType: 'date' },
-            lastVersionId: { bsonType: 'objectId' },
-          },
-        },
-      },
     },
   },
-  indexes: [{ key: { 'readMarks.documentId': 1 }, name: 'read_marks_document' }],
 };
-
-/** number with multipleOf, because the driver writes a plain number as double. */
-const versionNumber = { bsonType: 'number', minimum: 1, multipleOf: 1 } as const;
 
 const documents: CollectionDefinition = {
   ...whileDeveloping,
   name: 'documents',
   schema: {
     bsonType: 'object',
-    required: ['documentId', 'version', 'isCurrent', 'roomId', 'createdAt'],
+    required: ['name', 'createdAt', 'createdBy'],
     properties: {
-      documentId: {
-        bsonType: 'objectId',
-        description: 'stays the same across all versions, this is the identity',
-      },
-      version: versionNumber,
-      isCurrent: { bsonType: 'bool' },
-      roomId: { bsonType: 'objectId' },
       name: { bsonType: 'string' },
       contract: {
         bsonType: 'object',
         description: 'what the tool registered while docking, deliberately unconstrained',
       },
-      state: { bsonType: 'binData', description: 'full Yjs state, opaque to the service' },
-      label: { bsonType: 'string', description: 'only set when a person named this version' },
-      reason: { bsonType: 'string', description: 'the why, D6.6, can only come from a person' },
-      actorId: { bsonType: 'string' },
+      state: {
+        bsonType: 'binData',
+        description: 'folded Yjs state, a shortcut for loading, absent until first folded',
+      },
+      stateThrough: {
+        bsonType: 'objectId',
+        description: 'the last update folded into state, absent together with it',
+      },
       createdAt: { bsonType: 'date' },
+      createdBy: { bsonType: 'string' },
+      updatedAt: { bsonType: 'date', description: 'when it was folded last' },
     },
   },
-  indexes: [
-    { key: { documentId: 1, version: 1 }, name: 'document_version_unique', unique: true },
-    {
-      key: { documentId: 1 },
-      name: 'document_current_unique',
-      unique: true,
-      partialFilterExpression: { isCurrent: true },
-    },
-    { key: { roomId: 1, isCurrent: 1 }, name: 'room_current' },
-  ],
 };
 
-const versions: CollectionDefinition = {
+const updates: CollectionDefinition = {
   ...whileDeveloping,
-  name: 'versions',
+  name: 'updates',
   schema: {
     bsonType: 'object',
-    required: ['documentId', 'baseVersion', 'update', 'createdAt'],
+    required: ['documentId', 'update', 'actorId', 'createdAt'],
     properties: {
       documentId: { bsonType: 'objectId' },
-      baseVersion: {
-        ...versionNumber,
-        description: 'the document version this change builds on',
-      },
       update: { bsonType: 'binData', description: 'the Yjs bytes, opaque to the service' },
       actorId: { bsonType: 'string', description: 'D6.19, author on every single change' },
       createdAt: { bsonType: 'date' },
     },
   },
-  indexes: [{ key: { documentId: 1, baseVersion: 1, _id: 1 }, name: 'document_chain' }],
+  indexes: [{ key: { documentId: 1, _id: 1 }, name: 'document_stream' }],
 };
 
 export const collectionDefinitions: readonly CollectionDefinition[] = [
@@ -175,5 +136,5 @@ export const collectionDefinitions: readonly CollectionDefinition[] = [
   documents,
   groups,
   rooms,
-  versions,
+  updates,
 ];

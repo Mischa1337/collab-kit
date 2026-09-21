@@ -9,7 +9,6 @@ import { createTokenCheck } from '../../src/auth/token.ts';
 import { applyDefinitions } from '../../src/db/apply.ts';
 import { connect, type Storage } from '../../src/db/client.ts';
 import { createDocument } from '../../src/db/documents.ts';
-import { createRoom } from '../../src/db/rooms.ts';
 import { collectionDefinitions } from '../../src/db/schemas.ts';
 import { createDocumentHub } from '../../src/realtime/documents.ts';
 import { attachGateway, type Gateway } from '../../src/realtime/gateway.ts';
@@ -31,16 +30,10 @@ let storage: Storage;
 let gateway: Gateway;
 let server: ReturnType<typeof createServer>;
 let port: number;
-let roomId: import('mongodb').ObjectId;
 
 async function freshDocument(): Promise<string> {
-  const document = await createDocument(storage.db, {
-    roomId,
-    name: 'Entwurf',
-    actorId: 'alice',
-    state: Y.encodeStateAsUpdate(new Y.Doc()),
-  });
-  return document.documentId.toHexString();
+  const document = await createDocument(storage.db, { name: 'Entwurf', createdBy: 'alice' });
+  return document._id.toHexString();
 }
 
 const open = (documentId: string, actor: string) =>
@@ -49,9 +42,6 @@ const open = (documentId: string, actor: string) =>
 beforeAll(async () => {
   storage = await connect({ uri, database });
   await applyDefinitions(storage.db, collectionDefinitions);
-
-  const room = await createRoom(storage.db, { name: 'Seminar', createdBy: 'alice' });
-  roomId = room._id;
 
   server = createServer({ logger: silent });
   gateway = attachGateway({
@@ -87,12 +77,12 @@ describe('working on one document together', () => {
     );
 
     const stored = await storage.db
-      .collection('versions')
+      .collection('updates')
       .find({ documentId: new (await import('mongodb')).ObjectId(documentId) })
       .toArray();
 
     expect(stored).toHaveLength(1);
-    expect(stored[0]).toMatchObject({ actorId: 'alice', baseVersion: 1 });
+    expect(stored[0]).toMatchObject({ actorId: 'alice' });
 
     await alice.close();
     await bob.close();
@@ -153,7 +143,7 @@ describe('working on one document together', () => {
     first.doc.getText('t').insert(0, 'bleibt');
 
     expect(
-      await waitFor(async () => (await storage.db.collection('versions').countDocuments({})) > 0),
+      await waitFor(async () => (await storage.db.collection('updates').countDocuments({})) > 0),
     ).toBe(true);
 
     await first.close();

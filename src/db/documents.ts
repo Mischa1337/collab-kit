@@ -1,118 +1,88 @@
 import { Binary, ObjectId, type Db, type Document } from 'mongodb';
 
 /**
- * One row is a document at one version, carrying the full state. The newest row
- * of a documentId is marked with isCurrent.
+ * One row per Y.Doc. The state is the folded shortcut for loading, never the source:
+ * the truth is the stream of updates, and it is never deleted.
  */
-export interface DocumentVersion {
+export interface DocumentRecord {
   _id: ObjectId;
-  /** Stays the same across all versions, this is the identity of the document. */
-  documentId: ObjectId;
-  version: number;
-  isCurrent: boolean;
-  roomId: ObjectId;
   name: string;
   /** What the tool registered while docking. The service never reads into it. */
   contract: Document;
-  /** Full Yjs state, opaque bytes to the service. */
-  state: Binary;
-  /** Only set when a person named this version. */
-  label?: string;
-  /** The why behind the version, which no protocol can derive. */
-  reason?: string;
-  actorId: string;
+  /** Folded Yjs state, absent until the document has been folded for the first time. */
+  state?: Binary;
+  /** The last update folded into state. Absent together with it. */
+  stateThrough?: ObjectId;
   createdAt: Date;
+  createdBy: string;
+  /** When it was folded last. */
+  updatedAt?: Date;
 }
 
 export interface NewDocument {
-  readonly roomId: ObjectId;
   readonly name: string;
-  readonly actorId: string;
-  /** The starting state, produced by the caller, not by the storage layer. */
-  readonly state: Uint8Array;
+  readonly createdBy: string;
   readonly contract?: Document;
 }
 
-/** Creates version 1 of a document and marks it as the current one. */
-export async function createDocument(db: Db, input: NewDocument): Promise<DocumentVersion> {
-  const created: DocumentVersion = {
+/**
+ * Creates an empty document. Deliberately without a starting state: everything that
+ * ever happens to it arrives as an update, so the very beginning stays reachable even
+ * after the first folding has overwritten the state.
+ */
+export async function createDocument(
+  db: Db,
+  input: NewDocument,
+  now = new Date(),
+): Promise<DocumentRecord> {
+  const created: DocumentRecord = {
     _id: new ObjectId(),
-    documentId: new ObjectId(),
-    version: 1,
-    isCurrent: true,
-    roomId: input.roomId,
     name: input.name,
     contract: input.contract ?? {},
-    state: new Binary(input.state),
-    actorId: input.actorId,
-    createdAt: new Date(),
+    createdAt: now,
+    createdBy: input.createdBy,
   };
 
-  await db.collection<DocumentVersion>('documents').insertOne(created);
+  await db.collection<DocumentRecord>('documents').insertOne(created);
   return created;
 }
 
-export interface NewDocumentVersion {
+export async function findDocument(db: Db, id: ObjectId): Promise<DocumentRecord | null> {
+  return db.collection<DocumentRecord>('documents').findOne({ _id: id });
+}
+
+export interface Fold {
   readonly documentId: ObjectId;
-  /** The complete state at this moment, produced by the caller. */
+  /** The state as the caller folded it, produced by Yjs, opaque here. */
   readonly state: Uint8Array;
-  readonly actorId: string;
-  /** Set when a person named this version. An automatic one carries neither. */
-  readonly label?: string;
-  /** The why behind it, the one thing no protocol can derive. */
-  readonly reason?: string;
+  /** The last update contained in that state. */
+  readonly through: ObjectId;
+  /** What stateThrough held when the folding began. Absent means never folded. */
+  readonly expected?: ObjectId;
 }
 
 /**
- * Writes the current state as the next version and moves isCurrent to it. Both writes
- * belong together: half of it would leave the document either without a valid row or
- * with two, which the unique partial index would refuse anyway.
+ * Replaces the shortcut with a newer one, but only if nobody else folded in the
+ * meantime: expected has to still match, otherwise a slower folding would push an
+ * older state over a newer one.
  *
- * Nothing is deleted. The previous row and every change on it stay, which is what
- * makes looking back possible.
+ * Losing this race costs nothing. The updates all stay where they are, and the next
+ * load simply applies a few more of them.
  */
-export async function createVersion(
-  db: Db,
-  input: NewDocumentVersion,
-  now = new Date(),
-): Promise<DocumentVersion> {
-  const documents = db.collection<DocumentVersion>('documents');
-  const session = db.client.startSession();
-
-  try {
-    return await session.withTransaction(async () => {
-      const current = await documents.findOne(
-        { documentId: input.documentId, isCurrent: true },
-        { session },
-      );
-
-      if (current === null) {
-        throw new Error(`no current version for document ${input.documentId.toHexString()}`);
-      }
-
-      const created: DocumentVersion = {
-        _id: new ObjectId(),
-        documentId: input.documentId,
-        version: current.version + 1,
-        isCurrent: true,
-        roomId: current.roomId,
-        name: current.name,
-        contract: current.contract,
+export async function foldState(db: Db, input: Fold, now = new Date()): Promise<boolean> {
+  const result = await db.collection<DocumentRecord>('documents').updateOne(
+    {
+      _id: input.documentId,
+      stateThrough: input.expected ?? { $exists: false },
+    },
+    {
+      $set: {
         state: new Binary(input.state),
-        actorId: input.actorId,
-        createdAt: now,
-        ...(input.label === undefined ? {} : { label: input.label }),
-        ...(input.reason === undefined ? {} : { reason: input.reason }),
-      };
+        stateThrough: input.through,
+        updatedAt: now,
+      },
+    },
+  );
 
-      // The old row loses isCurrent first: the other way round the unique index would
-      // see two valid rows and refuse the insert.
-      await documents.updateOne({ _id: current._id }, { $set: { isCurrent: false } }, { session });
-      await documents.insertOne(created, { session });
-
-      return created;
-    });
-  } finally {
-    await session.endSession();
-  }
+  return result.matchedCount === 1;
 }

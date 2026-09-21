@@ -210,11 +210,11 @@ async function admit(
     return { status: 401, text: 'Unauthorized', reason: 'token rejected' };
   }
 
-  const current = await options.db
+  const known = await options.db
     .collection('documents')
-    .findOne({ documentId, isCurrent: true }, { projection: { _id: 1 } });
+    .findOne({ _id: documentId }, { projection: { _id: 1 } });
 
-  if (current === null) {
+  if (known === null) {
     return { status: 404, text: 'Not Found', reason: 'unknown document' };
   }
 

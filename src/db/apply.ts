@@ -46,8 +46,18 @@ export async function applyDefinitions(
       await db.createCollection(definition.name, options);
     }
 
+    const collection = db.collection(definition.name);
     if (definition.indexes !== undefined && definition.indexes.length > 0) {
-      await db.collection(definition.name).createIndexes([...definition.indexes]);
+      await collection.createIndexes([...definition.indexes]);
+    }
+
+    // Indexes the definition no longer names are dropped. Without this an index from
+    // an earlier field layout would keep refusing writes that the current one allows.
+    const wanted = new Set((definition.indexes ?? []).map((index) => index.name));
+    for (const existing of await collection.indexes()) {
+      if (existing.name !== undefined && existing.name !== '_id_' && !wanted.has(existing.name)) {
+        await collection.dropIndex(existing.name);
+      }
     }
   }
   /* eslint-enable no-await-in-loop */

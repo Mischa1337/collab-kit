@@ -5,7 +5,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { applyDefinitions } from '../../src/db/apply.ts';
 import { connect, type Storage } from '../../src/db/client.ts';
 import { collectionDefinitions } from '../../src/db/schemas.ts';
-import { createDocument } from '../../src/db/documents.ts';
+import { createDocument, findDocument, foldState } from '../../src/db/documents.ts';
 import { createRoom, findRoom } from '../../src/db/rooms.ts';
 
 const uri = process.env['MONGODB_URI'];
@@ -58,61 +58,78 @@ describe('rooms', () => {
 });
 
 describe('documents', () => {
-  it('starts at version 1 and is the current one', async () => {
-    const room = await createRoom(storage.db, { name: 'Seminar', createdBy: 'alice' });
+  it('is born empty, without a state and without a shortcut', async () => {
+    const created = await createDocument(storage.db, { name: 'Entwurf', createdBy: 'alice' });
 
-    const created = await createDocument(storage.db, {
-      roomId: room._id,
-      name: 'Entwurf',
-      actorId: 'alice',
-      state: Y.encodeStateAsUpdate(new Y.Doc()),
-    });
-
-    expect(created).toMatchObject({ version: 1, isCurrent: true, name: 'Entwurf' });
-    expect(created.documentId).not.toEqual(created._id);
+    expect(created).toMatchObject({ name: 'Entwurf', createdBy: 'alice', contract: {} });
+    expect(created.state).toBeUndefined();
+    expect(created.stateThrough).toBeUndefined();
   });
 
-  it('returns the stored bytes unchanged, whatever the tool put in them', async () => {
-    const room = await createRoom(storage.db, { name: 'Seminar', createdBy: 'alice' });
-
-    // The test plays the tool here: the service itself never touches a Yjs type.
-    const written = new Y.Doc();
-    written.getText('anything').insert(0, 'hallo welt');
+  it('keeps the contract of the tool untouched', async () => {
+    const contract = { unit: 'statement', identifiedBy: 'id', nested: { whatever: [1, 2] } };
 
     const created = await createDocument(storage.db, {
-      roomId: room._id,
       name: 'Entwurf',
-      actorId: 'alice',
-      state: Y.encodeStateAsUpdate(written),
-      contract: { unit: 'statement', identifiedBy: 'id' },
+      createdBy: 'alice',
+      contract,
     });
 
-    const stored = await storage.db
-      .collection<typeof created>('documents')
-      .findOne({ _id: created._id });
-
-    const read = new Y.Doc();
-    Y.applyUpdate(read, new Uint8Array(stored!.state.buffer));
-
-    expect(read.getText('anything').toString()).toBe('hallo welt');
-    expect(stored?.contract).toEqual({ unit: 'statement', identifiedBy: 'id' });
+    const stored = await findDocument(storage.db, created._id);
+    expect(stored?.contract).toEqual(contract);
   });
 
-  it('refuses a second current row for the same document', async () => {
-    const room = await createRoom(storage.db, { name: 'Seminar', createdBy: 'alice' });
-    const created = await createDocument(storage.db, {
-      roomId: room._id,
-      name: 'Entwurf',
-      actorId: 'alice',
-      state: Y.encodeStateAsUpdate(new Y.Doc()),
-    });
+  it('answers with null for a document nobody created', async () => {
+    await expect(findDocument(storage.db, new ObjectId())).resolves.toBeNull();
+  });
+});
+
+/** Plays the tool: the service itself never touches a Yjs type. */
+function typed(text: string): Uint8Array {
+  const doc = new Y.Doc();
+  doc.getText('anything').insert(0, text);
+  return Y.encodeStateAsUpdate(doc);
+}
+
+describe('folding', () => {
+  it('writes the shortcut and returns the bytes unchanged', async () => {
+    const created = await createDocument(storage.db, { name: 'Entwurf', createdBy: 'alice' });
+    const through = new ObjectId();
 
     await expect(
-      storage.db.collection('documents').insertOne({
-        ...created,
-        _id: new ObjectId(),
-        version: 2,
+      foldState(storage.db, { documentId: created._id, state: typed('hallo welt'), through }),
+    ).resolves.toBe(true);
+
+    const stored = await findDocument(storage.db, created._id);
+    const read = new Y.Doc();
+    Y.applyUpdate(read, new Uint8Array(stored!.state!.buffer));
+
+    expect(read.getText('anything').toString()).toBe('hallo welt');
+    expect(stored?.stateThrough).toEqual(through);
+  });
+
+  it('refuses to push an older state over a newer one', async () => {
+    const created = await createDocument(storage.db, { name: 'Entwurf', createdBy: 'alice' });
+    const first = new ObjectId();
+
+    await foldState(storage.db, { documentId: created._id, state: typed('erst'), through: first });
+
+    // Somebody who still believes the document was never folded.
+    await expect(
+      foldState(storage.db, {
+        documentId: created._id,
+        state: typed('daneben'),
+        through: new ObjectId(),
       }),
-    ).rejects.toThrowError(/duplicate key/);
+    ).resolves.toBe(false);
+
+    await expect(
+      foldState(storage.db, {
+        documentId: created._id,
+        state: typed('danach'),
+        through: new ObjectId(),
+        expected: first,
+      }),
+    ).resolves.toBe(true);
   });
 });

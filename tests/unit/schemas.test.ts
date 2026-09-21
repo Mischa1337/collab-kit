@@ -6,7 +6,7 @@ describe('collectionDefinitions', () => {
   it('names every collection exactly once', () => {
     const names = collectionDefinitions.map((definition) => definition.name);
 
-    expect(names).toEqual(['actors', 'documents', 'groups', 'rooms', 'versions']);
+    expect(names).toEqual(['actors', 'documents', 'groups', 'rooms', 'updates']);
     expect(new Set(names).size).toBe(names.length);
   });
 

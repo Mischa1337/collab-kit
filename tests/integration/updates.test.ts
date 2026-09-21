@@ -1,0 +1,274 @@
+import type { AddressInfo } from 'node:net';
+
+import jwt from 'jsonwebtoken';
+import { ObjectId } from 'mongodb';
+import pino from 'pino';
+import * as Y from 'yjs';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+
+import { createTokenCheck } from '../../src/auth/token.ts';
+import { applyDefinitions } from '../../src/db/apply.ts';
+import { connect, type Storage } from '../../src/db/client.ts';
+import { createDocument, findDocument } from '../../src/db/documents.ts';
+import { collectionDefinitions } from '../../src/db/schemas.ts';
+import { appendUpdate, readUpdatesSince } from '../../src/db/updates.ts';
+import { createDocumentHub, type DocumentHub } from '../../src/realtime/documents.ts';
+import { attachGateway, type Gateway } from '../../src/realtime/gateway.ts';
+import { createServer } from '../../src/server.ts';
+import { connectClient, waitFor } from './yjs-client.ts';
+
+const uri = process.env['MONGODB_URI'];
+if (uri === undefined || uri === '') {
+  throw new Error('MONGODB_URI is missing, start the database with npm run db:up');
+}
+
+const secret = 'geheimnis-des-werkzeugs';
+const database = `collab_kit_updates_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+const silent = pino({ level: 'silent' });
+
+let storage: Storage;
+let hub: DocumentHub;
+let gateway: Gateway;
+let server: ReturnType<typeof createServer>;
+let port: number;
+
+async function freshDocument(): Promise<ObjectId> {
+  const document = await createDocument(storage.db, { name: 'Entwurf', createdBy: 'alice' });
+  return document._id;
+}
+
+const open = (documentId: ObjectId, actor: string) =>
+  connectClient(`ws://127.0.0.1:${port}/ws/${documentId.toHexString()}`, [
+    'bearer',
+    jwt.sign({ sub: actor, name: actor }, secret, { expiresIn: '15m' }),
+  ]);
+
+const countUpdates = (documentId: ObjectId) =>
+  storage.db.collection('updates').countDocuments({ documentId });
+
+/**
+ * Rebuilds a state from the updates alone, ignoring the folded shortcut. gc is off,
+ * because a document with collection on would throw away what an earlier state still
+ * contained while it replays.
+ */
+async function replay(documentId: ObjectId, until?: ObjectId): Promise<Y.Doc> {
+  const doc = new Y.Doc({ gc: false });
+  for (const row of await readUpdatesSince(storage.db, documentId)) {
+    if (until !== undefined && row._id.toHexString() > until.toHexString()) {
+      break;
+    }
+    Y.applyUpdate(doc, new Uint8Array(row.update.buffer));
+  }
+  return doc;
+}
+
+beforeAll(async () => {
+  storage = await connect({ uri, database });
+  await applyDefinitions(storage.db, collectionDefinitions);
+
+  server = createServer({ logger: silent });
+  hub = createDocumentHub({ db: storage.db, logger: silent });
+  gateway = attachGateway({
+    server,
+    db: storage.db,
+    hub,
+    checkToken: createTokenCheck({ secret }),
+    logger: silent,
+  });
+
+  await new Promise<void>((resolve) => server.listen(0, resolve));
+  port = (server.address() as AddressInfo).port;
+});
+
+afterAll(async () => {
+  await gateway.close();
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+  await storage.db.dropDatabase();
+  await storage.close();
+});
+
+describe('the stream of updates', () => {
+  it('reads everything from the beginning when no cut is given', async () => {
+    const documentId = await freshDocument();
+
+    const first = await appendUpdate(storage.db, {
+      documentId,
+      update: new Uint8Array([1]),
+      actorId: 'alice',
+    });
+    await appendUpdate(storage.db, {
+      documentId,
+      update: new Uint8Array([2]),
+      actorId: 'bob',
+    });
+
+    const all = await readUpdatesSince(storage.db, documentId);
+    expect(all.map((row) => row.actorId)).toEqual(['alice', 'bob']);
+
+    const after = await readUpdatesSince(storage.db, documentId, first._id);
+    expect(after.map((row) => row.actorId)).toEqual(['bob']);
+  });
+
+  it('keeps the updates of other documents out', async () => {
+    const mine = await freshDocument();
+    const other = await freshDocument();
+
+    await appendUpdate(storage.db, {
+      documentId: other,
+      update: new Uint8Array([1]),
+      actorId: 'alice',
+    });
+
+    await expect(readUpdatesSince(storage.db, mine)).resolves.toEqual([]);
+  });
+});
+
+describe('folding', () => {
+  it('writes the shortcut when the last one leaves', async () => {
+    const documentId = await freshDocument();
+    const alice = await open(documentId, 'alice');
+    await alice.synced;
+
+    alice.doc.getText('t').insert(0, 'bleibt');
+    expect(await waitFor(async () => (await countUpdates(documentId)) > 0)).toBe(true);
+
+    expect((await findDocument(storage.db, documentId))?.state).toBeUndefined();
+
+    await alice.close();
+    expect(await waitFor(() => gateway.countFor(documentId.toHexString()) === 0)).toBe(true);
+
+    const stored = await findDocument(storage.db, documentId);
+    expect(stored?.state).toBeDefined();
+    expect(stored?.stateThrough).toBeDefined();
+
+    const folded = new Y.Doc();
+    Y.applyUpdate(folded, new Uint8Array(stored!.state!.buffer));
+    expect(folded.getText('t').toString()).toBe('bleibt');
+  });
+
+  it('deletes nothing, so every earlier state stays reachable', async () => {
+    const documentId = await freshDocument();
+    const alice = await open(documentId, 'alice');
+    await alice.synced;
+
+    alice.doc.getText('t').insert(0, 'erst');
+    expect(await waitFor(async () => (await countUpdates(documentId)) === 1)).toBe(true);
+    const afterFirst = (await readUpdatesSince(storage.db, documentId))[0]!._id;
+
+    alice.doc.getText('t').insert(4, ' dann');
+    expect(await waitFor(async () => (await countUpdates(documentId)) === 2)).toBe(true);
+
+    await alice.close();
+    expect(await waitFor(() => gateway.countFor(documentId.toHexString()) === 0)).toBe(true);
+
+    // Folded, and yet both updates are still there and still tell the whole story.
+    expect((await findDocument(storage.db, documentId))?.state).toBeDefined();
+    expect(await countUpdates(documentId)).toBe(2);
+
+    expect((await replay(documentId)).getText('t').toString()).toBe('erst dann');
+    expect((await replay(documentId, afterFirst)).getText('t').toString()).toBe('erst');
+  });
+
+  it('loads the same content over the shortcut as before', async () => {
+    const documentId = await freshDocument();
+    const alice = await open(documentId, 'alice');
+    await alice.synced;
+    alice.doc.getText('t').insert(0, 'inhalt');
+    expect(await waitFor(async () => (await countUpdates(documentId)) > 0)).toBe(true);
+    await alice.close();
+
+    expect(await waitFor(() => gateway.countFor(documentId.toHexString()) === 0)).toBe(true);
+    expect((await findDocument(storage.db, documentId))?.stateThrough).toBeDefined();
+
+    const bob = await open(documentId, 'bob');
+    await bob.synced;
+    expect(await waitFor(() => bob.doc.getText('t').toString() === 'inhalt')).toBe(true);
+    await bob.close();
+  });
+
+  it('carries on where it stopped and folds again', async () => {
+    const documentId = await freshDocument();
+    const alice = await open(documentId, 'alice');
+    await alice.synced;
+    alice.doc.getText('t').insert(0, 'eins');
+    expect(await waitFor(async () => (await countUpdates(documentId)) === 1)).toBe(true);
+    await alice.close();
+    expect(await waitFor(() => gateway.countFor(documentId.toHexString()) === 0)).toBe(true);
+
+    const first = await findDocument(storage.db, documentId);
+
+    const bob = await open(documentId, 'bob');
+    await bob.synced;
+    bob.doc.getText('t').insert(4, ' zwei');
+    expect(await waitFor(async () => (await countUpdates(documentId)) === 2)).toBe(true);
+    await bob.close();
+    expect(await waitFor(() => gateway.countFor(documentId.toHexString()) === 0)).toBe(true);
+
+    const second = await findDocument(storage.db, documentId);
+    expect(second?.stateThrough).not.toEqual(first?.stateThrough);
+
+    const folded = new Y.Doc();
+    Y.applyUpdate(folded, new Uint8Array(second!.state!.buffer));
+    expect(folded.getText('t').toString()).toBe('eins zwei');
+  });
+
+  it('can be asked for on a document nobody has open and does not keep it open', async () => {
+    const documentId = await freshDocument();
+    await appendUpdate(storage.db, {
+      documentId,
+      update: Y.encodeStateAsUpdate(writtenBy('geschlossen')),
+      actorId: 'carol',
+    });
+
+    await expect(hub.fold(documentId)).resolves.toBe(true);
+
+    const stored = await findDocument(storage.db, documentId);
+    const folded = new Y.Doc();
+    Y.applyUpdate(folded, new Uint8Array(stored!.state!.buffer));
+
+    expect(folded.getText('t').toString()).toBe('geschlossen');
+    expect(gateway.countFor(documentId.toHexString())).toBe(0);
+  });
+
+  it('does nothing when there is nothing new to fold', async () => {
+    const documentId = await freshDocument();
+
+    // Never a change, so there is no cut to write.
+    await expect(hub.fold(documentId)).resolves.toBe(false);
+
+    await appendUpdate(storage.db, {
+      documentId,
+      update: Y.encodeStateAsUpdate(writtenBy('etwas')),
+      actorId: 'alice',
+    });
+
+    await expect(hub.fold(documentId)).resolves.toBe(true);
+    await expect(hub.fold(documentId)).resolves.toBe(false);
+  });
+
+  it('loses nothing when a change arrives in the same moment', async () => {
+    const documentId = await freshDocument();
+    const alice = await open(documentId, 'alice');
+    await alice.synced;
+
+    alice.doc.getText('t').insert(0, 'vorher');
+    const folding = hub.fold(documentId);
+    alice.doc.getText('t').insert(6, ' nachher');
+    await folding;
+
+    await alice.close();
+    expect(await waitFor(() => gateway.countFor(documentId.toHexString()) === 0)).toBe(true);
+
+    const bob = await open(documentId, 'bob');
+    await bob.synced;
+    expect(await waitFor(() => bob.doc.getText('t').toString() === 'vorher nachher')).toBe(true);
+    await bob.close();
+  });
+});
+
+/** Plays the tool: the service itself never builds a Yjs type. */
+function writtenBy(text: string): Y.Doc {
+  const doc = new Y.Doc();
+  doc.getText('t').insert(0, text);
+  return doc;
+}
