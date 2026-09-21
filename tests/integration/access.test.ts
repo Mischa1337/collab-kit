@@ -6,6 +6,8 @@ import { applyDefinitions } from '../../src/db/apply.ts';
 import { connect, type Storage } from '../../src/db/client.ts';
 import { collectionDefinitions } from '../../src/db/schemas.ts';
 import { createDocument, findDocument, foldState } from '../../src/db/documents.ts';
+import { addMember, createGroup, findGroup, groupsOf, removeMember } from '../../src/db/groups.ts';
+import { mayOpenDocument } from '../../src/auth/access.ts';
 import {
   addToRoom,
   createRoom,
@@ -237,5 +239,172 @@ describe('folding', () => {
         expected: first,
       }),
     ).resolves.toBe(true);
+  });
+});
+
+describe('groups', () => {
+  it('starts with the members it was given, each with a moment', async () => {
+    const created = await createGroup(storage.db, {
+      name: 'Gruppe 3',
+      createdBy: 'alice',
+      members: ['alice', 'bob'],
+    });
+
+    const stored = await findGroup(storage.db, created._id);
+    expect(stored?.members.map((member) => member.actorId)).toEqual(['alice', 'bob']);
+    expect(stored?.members[0]).toMatchObject({ addedBy: 'alice' });
+    expect(stored?.members[0]?.joinedAt).toBeInstanceOf(Date);
+    expect(stored?.settings).toEqual({});
+  });
+
+  it('keeps what the group means to the tool untouched', async () => {
+    const settings = { role: 'moderation', rotates: true, size: { min: 2, max: 5 } };
+    const created = await createGroup(storage.db, {
+      name: 'Moderation',
+      createdBy: 'alice',
+      settings,
+    });
+
+    expect((await findGroup(storage.db, created._id))?.settings).toEqual(settings);
+  });
+
+  it('takes an actor in only once', async () => {
+    const created = await createGroup(storage.db, { name: 'Gruppe 3', createdBy: 'alice' });
+
+    await expect(
+      addMember(storage.db, created._id, { actorId: 'bob', addedBy: 'alice' }),
+    ).resolves.toBe(true);
+    await expect(
+      addMember(storage.db, created._id, { actorId: 'bob', addedBy: 'carol' }),
+    ).resolves.toBe(false);
+
+    expect((await findGroup(storage.db, created._id))?.members).toHaveLength(1);
+  });
+
+  it('lets an actor go again', async () => {
+    const created = await createGroup(storage.db, {
+      name: 'Gruppe 3',
+      createdBy: 'alice',
+      members: ['alice', 'bob'],
+    });
+
+    await expect(removeMember(storage.db, created._id, 'bob')).resolves.toBe(true);
+    await expect(removeMember(storage.db, created._id, 'bob')).resolves.toBe(false);
+
+    expect((await findGroup(storage.db, created._id))?.members.map((m) => m.actorId)).toEqual([
+      'alice',
+    ]);
+  });
+
+  it('finds every group an actor is in', async () => {
+    const actorId = `dora-${new ObjectId().toHexString()}`;
+    await createGroup(storage.db, { name: 'Eine', createdBy: 'alice', members: [actorId] });
+    await createGroup(storage.db, { name: 'Zwei', createdBy: 'alice', members: [actorId] });
+    await createGroup(storage.db, { name: 'Ohne', createdBy: 'alice', members: ['bob'] });
+
+    const found = await groupsOf(storage.db, actorId);
+    expect(found.map((group) => group.name).toSorted()).toEqual(['Eine', 'Zwei']);
+  });
+});
+
+const actor = (actorId: string) => ({ actorId });
+
+describe('who may open a document', () => {
+  /** A room that bundles the document and a group, which is what opening needs. */
+  async function bundled(members: readonly string[]): Promise<ObjectId> {
+    const document = await createDocument(storage.db, { name: 'Entwurf', createdBy: 'alice' });
+    const room = await createRoom(storage.db, { name: 'Seminar', createdBy: 'alice' });
+    const group = await createGroup(storage.db, {
+      name: 'Teilnehmende',
+      createdBy: 'alice',
+      members,
+    });
+
+    await addToRoom(storage.db, room._id, {
+      kind: 'document',
+      id: document._id,
+      addedBy: 'alice',
+    });
+    await addToRoom(storage.db, room._id, { kind: 'group', id: group._id, addedBy: 'alice' });
+    return document._id;
+  }
+
+  it('lets a member of a group in the room in', async () => {
+    const documentId = await bundled(['alice']);
+
+    await expect(
+      mayOpenDocument({ db: storage.db, actor: actor('alice'), documentId }),
+    ).resolves.toBe(true);
+  });
+
+  it('keeps everybody else out', async () => {
+    const documentId = await bundled(['alice']);
+
+    await expect(
+      mayOpenDocument({ db: storage.db, actor: actor('mallory'), documentId }),
+    ).resolves.toBe(false);
+  });
+
+  it('keeps everybody out of a document that sits in no room', async () => {
+    const document = await createDocument(storage.db, { name: 'Allein', createdBy: 'alice' });
+
+    await expect(
+      mayOpenDocument({ db: storage.db, actor: actor('alice'), documentId: document._id }),
+    ).resolves.toBe(false);
+  });
+
+  it('keeps everybody out of a room that holds no group', async () => {
+    const document = await createDocument(storage.db, { name: 'Entwurf', createdBy: 'alice' });
+    const room = await createRoom(storage.db, { name: 'Leer', createdBy: 'alice' });
+    await addToRoom(storage.db, room._id, {
+      kind: 'document',
+      id: document._id,
+      addedBy: 'alice',
+    });
+
+    await expect(
+      mayOpenDocument({ db: storage.db, actor: actor('alice'), documentId: document._id }),
+    ).resolves.toBe(false);
+  });
+
+  it('lets a second room in, because a document may sit in several', async () => {
+    const documentId = await bundled(['alice']);
+
+    const other = await createRoom(storage.db, { name: 'Uebung', createdBy: 'bob' });
+    const theirs = await createGroup(storage.db, {
+      name: 'Andere',
+      createdBy: 'bob',
+      members: ['bob'],
+    });
+    await addToRoom(storage.db, other._id, { kind: 'document', id: documentId, addedBy: 'bob' });
+    await addToRoom(storage.db, other._id, { kind: 'group', id: theirs._id, addedBy: 'bob' });
+
+    // Both ways in hold, neither room knows about the other.
+    await expect(
+      mayOpenDocument({ db: storage.db, actor: actor('alice'), documentId }),
+    ).resolves.toBe(true);
+    await expect(
+      mayOpenDocument({ db: storage.db, actor: actor('bob'), documentId }),
+    ).resolves.toBe(true);
+  });
+
+  it('ignores a reference of a kind the service does not keep', async () => {
+    const document = await createDocument(storage.db, { name: 'Entwurf', createdBy: 'alice' });
+    const room = await createRoom(storage.db, { name: 'Fremd', createdBy: 'alice' });
+
+    await addToRoom(storage.db, room._id, {
+      kind: 'document',
+      id: document._id,
+      addedBy: 'alice',
+    });
+    await addToRoom(storage.db, room._id, {
+      kind: 'group',
+      id: 'a key the tool made up',
+      addedBy: 'alice',
+    });
+
+    await expect(
+      mayOpenDocument({ db: storage.db, actor: actor('alice'), documentId: document._id }),
+    ).resolves.toBe(false);
   });
 });

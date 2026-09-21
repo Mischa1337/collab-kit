@@ -9,6 +9,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createTokenCheck } from '../../src/auth/token.ts';
 import { applyDefinitions } from '../../src/db/apply.ts';
 import { connect, type Storage } from '../../src/db/client.ts';
+import { createGroup } from '../../src/db/groups.ts';
+import { addToRoom, createRoom } from '../../src/db/rooms.ts';
 import { createDocument, findDocument } from '../../src/db/documents.ts';
 import { collectionDefinitions } from '../../src/db/schemas.ts';
 import { appendUpdate, readUpdatesSince } from '../../src/db/updates.ts';
@@ -32,9 +34,22 @@ let gateway: Gateway;
 let server: ReturnType<typeof createServer>;
 let port: number;
 
+/** Room and group come along: opening means being in a group the room bundles. */
 async function freshDocument(): Promise<ObjectId> {
   const document = await createDocument(storage.db, { name: 'Entwurf', createdBy: 'alice' });
+  await bundle(document._id);
   return document._id;
+}
+
+async function bundle(documentId: import('mongodb').ObjectId): Promise<void> {
+  const room = await createRoom(storage.db, { name: 'Seminar', createdBy: 'alice' });
+  const group = await createGroup(storage.db, {
+    name: 'Teilnehmende',
+    createdBy: 'alice',
+    members: ['alice', 'bob', 'carol'],
+  });
+  await addToRoom(storage.db, room._id, { kind: 'document', id: documentId, addedBy: 'alice' });
+  await addToRoom(storage.db, room._id, { kind: 'group', id: group._id, addedBy: 'alice' });
 }
 
 const open = (documentId: ObjectId, actor: string) =>
@@ -45,6 +60,16 @@ const open = (documentId: ObjectId, actor: string) =>
 
 const countUpdates = (documentId: ObjectId) =>
   storage.db.collection('updates').countDocuments({ documentId });
+
+/**
+ * Folding happens after the last connection is already gone from the count, so the
+ * stored mark is what to wait for and not the count.
+ */
+const foldedBeyond = (documentId: ObjectId, previous?: ObjectId) =>
+  waitFor(async () => {
+    const mark = (await findDocument(storage.db, documentId))?.stateThrough;
+    return mark !== undefined && (previous === undefined || !mark.equals(previous));
+  });
 
 /**
  * Rebuilds a state from the updates alone, ignoring the folded shortcut. gc is off,
@@ -135,11 +160,10 @@ describe('folding', () => {
     expect((await findDocument(storage.db, documentId))?.state).toBeUndefined();
 
     await alice.close();
-    expect(await waitFor(() => gateway.countFor(documentId.toHexString()) === 0)).toBe(true);
+    expect(await foldedBeyond(documentId)).toBe(true);
 
     const stored = await findDocument(storage.db, documentId);
     expect(stored?.state).toBeDefined();
-    expect(stored?.stateThrough).toBeDefined();
 
     const folded = new Y.Doc();
     Y.applyUpdate(folded, new Uint8Array(stored!.state!.buffer));
@@ -159,7 +183,7 @@ describe('folding', () => {
     expect(await waitFor(async () => (await countUpdates(documentId)) === 2)).toBe(true);
 
     await alice.close();
-    expect(await waitFor(() => gateway.countFor(documentId.toHexString()) === 0)).toBe(true);
+    expect(await foldedBeyond(documentId)).toBe(true);
 
     // Folded, and yet both updates are still there and still tell the whole story.
     expect((await findDocument(storage.db, documentId))?.state).toBeDefined();
@@ -176,9 +200,7 @@ describe('folding', () => {
     alice.doc.getText('t').insert(0, 'inhalt');
     expect(await waitFor(async () => (await countUpdates(documentId)) > 0)).toBe(true);
     await alice.close();
-
-    expect(await waitFor(() => gateway.countFor(documentId.toHexString()) === 0)).toBe(true);
-    expect((await findDocument(storage.db, documentId))?.stateThrough).toBeDefined();
+    expect(await foldedBeyond(documentId)).toBe(true);
 
     const bob = await open(documentId, 'bob');
     await bob.synced;
@@ -193,7 +215,7 @@ describe('folding', () => {
     alice.doc.getText('t').insert(0, 'eins');
     expect(await waitFor(async () => (await countUpdates(documentId)) === 1)).toBe(true);
     await alice.close();
-    expect(await waitFor(() => gateway.countFor(documentId.toHexString()) === 0)).toBe(true);
+    expect(await foldedBeyond(documentId)).toBe(true);
 
     const first = await findDocument(storage.db, documentId);
 
@@ -202,7 +224,7 @@ describe('folding', () => {
     bob.doc.getText('t').insert(4, ' zwei');
     expect(await waitFor(async () => (await countUpdates(documentId)) === 2)).toBe(true);
     await bob.close();
-    expect(await waitFor(() => gateway.countFor(documentId.toHexString()) === 0)).toBe(true);
+    expect(await foldedBeyond(documentId, first?.stateThrough)).toBe(true);
 
     const second = await findDocument(storage.db, documentId);
     expect(second?.stateThrough).not.toEqual(first?.stateThrough);

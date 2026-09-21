@@ -8,6 +8,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createTokenCheck } from '../../src/auth/token.ts';
 import { applyDefinitions } from '../../src/db/apply.ts';
 import { connect, type Storage } from '../../src/db/client.ts';
+import { createGroup } from '../../src/db/groups.ts';
+import { addToRoom, createRoom } from '../../src/db/rooms.ts';
 import { createDocument } from '../../src/db/documents.ts';
 import { collectionDefinitions } from '../../src/db/schemas.ts';
 import { createDocumentHub } from '../../src/realtime/documents.ts';
@@ -31,9 +33,22 @@ let gateway: Gateway;
 let server: ReturnType<typeof createServer>;
 let port: number;
 
+/** Room and group come along: opening means being in a group the room bundles. */
 async function freshDocument(): Promise<string> {
   const document = await createDocument(storage.db, { name: 'Entwurf', createdBy: 'alice' });
+  await bundle(document._id);
   return document._id.toHexString();
+}
+
+async function bundle(documentId: import('mongodb').ObjectId): Promise<void> {
+  const room = await createRoom(storage.db, { name: 'Seminar', createdBy: 'alice' });
+  const group = await createGroup(storage.db, {
+    name: 'Teilnehmende',
+    createdBy: 'alice',
+    members: ['alice', 'bob', 'carol'],
+  });
+  await addToRoom(storage.db, room._id, { kind: 'document', id: documentId, addedBy: 'alice' });
+  await addToRoom(storage.db, room._id, { kind: 'group', id: group._id, addedBy: 'alice' });
 }
 
 const open = (documentId: string, actor: string) =>

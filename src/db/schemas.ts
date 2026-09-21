@@ -47,19 +47,31 @@ const groups: CollectionDefinition = {
   name: 'groups',
   schema: {
     bsonType: 'object',
-    required: ['name', 'members', 'createdAt'],
+    required: ['name', 'members', 'createdAt', 'createdBy'],
     properties: {
       name: { bsonType: 'string' },
+      settings: {
+        bsonType: 'object',
+        description: 'what the group stands for in the docking tool, deliberately unconstrained',
+      },
       members: {
         bsonType: 'array',
-        description: 'opaque actor keys, nothing else hangs on a group',
-        items: { bsonType: 'string' },
+        description: 'opaque actor keys, no object and no task ever hangs on a group',
+        items: {
+          bsonType: 'object',
+          required: ['actorId', 'joinedAt', 'addedBy'],
+          properties: {
+            actorId: { bsonType: 'string' },
+            joinedAt: { bsonType: 'date' },
+            addedBy: { bsonType: 'string' },
+          },
+        },
       },
       createdAt: { bsonType: 'date' },
       createdBy: { bsonType: 'string' },
     },
   },
-  indexes: [{ key: { members: 1 }, name: 'members' }],
+  indexes: [{ key: { 'members.actorId': 1 }, name: 'member_actor' }],
 };
 
 const actors: CollectionDefinition = {

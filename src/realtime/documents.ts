@@ -229,7 +229,11 @@ export function createDocumentHub(options: HubOptions): DocumentHub {
     return pending;
   }
 
-  async function release(key: string, entry: Entry): Promise<void> {
+  /**
+   * Gives the working copy up once the last connection has gone. force is for the
+   * shutdown, where the document goes whether somebody still holds it or not.
+   */
+  async function release(key: string, entry: Entry, force = false): Promise<void> {
     await entry.queue;
 
     // The last one out folds, because the state is in memory anyway. A failure here
@@ -241,6 +245,12 @@ export function createDocumentHub(options: HubOptions): DocumentHub {
         { error, documentId: entry.document.documentId.toHexString() },
         'could not fold on release, the changes stay and the next load reads them',
       );
+    }
+
+    // Somebody may have joined again while this was waiting. They were handed this
+    // very document, so destroying it now would leave them holding a dead copy.
+    if (!force && entry.document.connections.size > 0) {
+      return;
     }
 
     entry.document.awareness.destroy();
@@ -318,7 +328,7 @@ export function createDocumentHub(options: HubOptions): DocumentHub {
 
       for (const [key, pending] of open) {
         // eslint-disable-next-line no-await-in-loop
-        await release(key, await pending);
+        await release(key, await pending, true);
       }
     },
   };

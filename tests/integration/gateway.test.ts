@@ -9,6 +9,8 @@ import { createTokenCheck } from '../../src/auth/token.ts';
 import { applyDefinitions } from '../../src/db/apply.ts';
 import { connect, type Storage } from '../../src/db/client.ts';
 import { createDocument } from '../../src/db/documents.ts';
+import { createGroup } from '../../src/db/groups.ts';
+import { addToRoom, createRoom } from '../../src/db/rooms.ts';
 import { collectionDefinitions } from '../../src/db/schemas.ts';
 import { createDocumentHub } from '../../src/realtime/documents.ts';
 import { attachGateway, type Gateway } from '../../src/realtime/gateway.ts';
@@ -82,6 +84,20 @@ beforeAll(async () => {
   const document = await createDocument(storage.db, { name: 'Entwurf', createdBy: 'alice' });
   documentId = document._id.toHexString();
 
+  // Opening needs a room that bundles the document and a group alice is in.
+  const room = await createRoom(storage.db, { name: 'Seminar', createdBy: 'alice' });
+  const group = await createGroup(storage.db, {
+    name: 'Teilnehmende',
+    createdBy: 'alice',
+    members: ['alice'],
+  });
+  await addToRoom(storage.db, room._id, {
+    kind: 'document',
+    id: document._id,
+    addedBy: 'alice',
+  });
+  await addToRoom(storage.db, room._id, { kind: 'group', id: group._id, addedBy: 'alice' });
+
   server = createServer({ logger: pino({ level: 'silent' }) });
   gateway = attachGateway({
     server,
@@ -129,6 +145,15 @@ describe('the handshake', () => {
     await expect(tryOpen(`/ws/${documentId}`, ['bearer'])).resolves.toEqual({
       ok: false,
       status: 401,
+    });
+  });
+
+  it('refuses somebody who is in no group of the room with 403', async () => {
+    const stranger = jwt.sign({ sub: 'mallory', name: 'Mallory' }, secret, { expiresIn: '15m' });
+
+    await expect(tryOpen(`/ws/${documentId}`, ['bearer', stranger])).resolves.toEqual({
+      ok: false,
+      status: 403,
     });
   });
 
