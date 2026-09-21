@@ -1,6 +1,6 @@
 import type { Db } from 'mongodb';
 
-import type { Actor } from '../auth/token.ts';
+import type { Actor } from '../../auth/token.ts';
 
 /**
  * What the service keeps about an actor. No account, no password, no profile: the key

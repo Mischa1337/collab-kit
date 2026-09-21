@@ -1,6 +1,6 @@
 import { ObjectId, type Db, type Document, type Filter } from 'mongodb';
 
-import { anchoredAt, type Anchor, type AnchorQuery } from './anchor.ts';
+import { anchoredAt, type Anchor, type AnchorQuery } from '../../anchor.ts';
 import { changeWithEvent } from './events.ts';
 
 /**

@@ -7,7 +7,7 @@ import { WebSocketServer, type WebSocket } from 'ws';
 
 import { mayOpenDocument } from '../auth/access.ts';
 import type { Actor } from '../auth/token.ts';
-import type { Connection, DocumentHub, OpenDocument } from './documents.ts';
+import type { Connection, DocumentHub, OpenDocument } from './hub.ts';
 import { encodeAwarenessUpdate } from 'y-protocols/awareness';
 
 import { encodeAwareness, encodeSyncStep1, handleMessage } from './sync.ts';

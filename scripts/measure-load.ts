@@ -10,9 +10,9 @@ import * as Y from 'yjs';
 import { readConfig } from '../src/config.ts';
 import { applyDefinitions } from '../src/db/apply.ts';
 import { connect } from '../src/db/client.ts';
-import { createDocument } from '../src/db/documents.ts';
+import { createDocument } from '../src/db/collections/documents.ts';
 import { collectionDefinitions } from '../src/db/schemas.ts';
-import { readUpdatesSince, type UpdateRecord } from '../src/db/updates.ts';
+import { readUpdatesSince, type UpdateRecord } from '../src/db/collections/updates.ts';
 
 const SIZES = [1_000, 10_000, 50_000];
 

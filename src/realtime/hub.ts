@@ -3,12 +3,12 @@ import type { Logger } from 'pino';
 import * as awarenessProtocol from 'y-protocols/awareness';
 import * as Y from 'yjs';
 
-import { touchActor } from '../db/actors.ts';
-import type { Anchor } from '../db/anchor.ts';
+import { touchActor } from '../db/collections/actors.ts';
+import type { Anchor } from '../anchor.ts';
 import type { Actor } from '../auth/token.ts';
-import { findDocument, foldState } from '../db/documents.ts';
-import { recordEvent, type EventRecord } from '../db/events.ts';
-import { appendUpdate, newestUpdate, readUpdatesSince } from '../db/updates.ts';
+import { findDocument, foldState } from '../db/collections/documents.ts';
+import { recordEvent, type EventRecord } from '../db/collections/events.ts';
+import { appendUpdate, newestUpdate, readUpdatesSince } from '../db/collections/updates.ts';
 import { encodeAwareness, encodeSyncUpdate } from './sync.ts';
 
 /** What the hub needs from a connection, so it does not depend on the transport. */

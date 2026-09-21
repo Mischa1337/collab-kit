@@ -5,7 +5,7 @@ import { createTokenCheck } from './auth/token.ts';
 import { applyDefinitions } from './db/apply.ts';
 import { connect } from './db/client.ts';
 import { collectionDefinitions } from './db/schemas.ts';
-import { createDocumentHub } from './realtime/documents.ts';
+import { createDocumentHub } from './realtime/hub.ts';
 import { attachGateway } from './realtime/gateway.ts';
 import { createServer } from './server.ts';
 

@@ -1,7 +1,7 @@
 import { ObjectId } from 'mongodb';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
-import { WHOLE } from '../../src/db/anchor.ts';
+import { WHOLE } from '../../src/anchor.ts';
 import { applyDefinitions } from '../../src/db/apply.ts';
 import { connect, type Storage } from '../../src/db/client.ts';
 import {
@@ -10,8 +10,8 @@ import {
   readComments,
   ROOT,
   setCommentState,
-} from '../../src/db/comments.ts';
-import { readEvents } from '../../src/db/events.ts';
+} from '../../src/db/collections/comments.ts';
+import { readEvents } from '../../src/db/collections/events.ts';
 import { collectionDefinitions } from '../../src/db/schemas.ts';
 
 const uri = process.env['MONGODB_URI'];

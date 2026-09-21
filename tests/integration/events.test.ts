@@ -1,10 +1,10 @@
 import { ObjectId } from 'mongodb';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
-import { WHOLE } from '../../src/db/anchor.ts';
+import { WHOLE } from '../../src/anchor.ts';
 import { applyDefinitions } from '../../src/db/apply.ts';
 import { connect, type Storage } from '../../src/db/client.ts';
-import { latestEvent, readEvents, recordEvent } from '../../src/db/events.ts';
+import { latestEvent, readEvents, recordEvent } from '../../src/db/collections/events.ts';
 import { collectionDefinitions } from '../../src/db/schemas.ts';
 
 const uri = process.env['MONGODB_URI'];

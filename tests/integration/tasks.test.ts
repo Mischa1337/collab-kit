@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { applyDefinitions } from '../../src/db/apply.ts';
 import { connect, type Storage } from '../../src/db/client.ts';
-import { readEvents } from '../../src/db/events.ts';
+import { readEvents } from '../../src/db/collections/events.ts';
 import { collectionDefinitions } from '../../src/db/schemas.ts';
 import {
   assignTask,
@@ -13,7 +13,7 @@ import {
   setTaskState,
   TOP,
   type TaskRecord,
-} from '../../src/db/tasks.ts';
+} from '../../src/db/collections/tasks.ts';
 
 const uri = process.env['MONGODB_URI'];
 if (uri === undefined || uri === '') {

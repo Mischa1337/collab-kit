@@ -1,7 +1,7 @@
 import { ObjectId, type Db } from 'mongodb';
 
-import { isMemberOfAny } from '../db/groups.ts';
-import { roomsContaining } from '../db/rooms.ts';
+import { isMemberOfAny } from '../db/collections/groups.ts';
+import { roomsContaining } from '../db/collections/rooms.ts';
 import type { Actor } from './token.ts';
 
 export interface AccessRequest {

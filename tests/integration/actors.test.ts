@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { applyDefinitions } from '../../src/db/apply.ts';
 import { connect, type Storage } from '../../src/db/client.ts';
 import { collectionDefinitions } from '../../src/db/schemas.ts';
-import { touchActor } from '../../src/db/actors.ts';
+import { touchActor } from '../../src/db/collections/actors.ts';
 
 const uri = process.env['MONGODB_URI'];
 if (uri === undefined || uri === '') {

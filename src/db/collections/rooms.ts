@@ -1,6 +1,6 @@
 import { ObjectId, type Db, type Document } from 'mongodb';
 
-import type { Reference } from './anchor.ts';
+import type { Reference } from '../../anchor.ts';
 
 /**
  * A reference plus when it was put into the room and by whom. A room bundles whole

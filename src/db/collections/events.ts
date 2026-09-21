@@ -1,6 +1,6 @@
 import { ObjectId, type ClientSession, type Db, type Document, type Filter } from 'mongodb';
 
-import { anchoredAt, type Anchor, type AnchorQuery } from './anchor.ts';
+import { anchoredAt, type Anchor, type AnchorQuery } from '../../anchor.ts';
 
 /**
  * Something happened, by somebody, at a place, at a time. No content and no

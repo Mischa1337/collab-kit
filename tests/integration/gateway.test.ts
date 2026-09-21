@@ -8,11 +8,11 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createTokenCheck } from '../../src/auth/token.ts';
 import { applyDefinitions } from '../../src/db/apply.ts';
 import { connect, type Storage } from '../../src/db/client.ts';
-import { createDocument } from '../../src/db/documents.ts';
-import { createGroup } from '../../src/db/groups.ts';
-import { addToRoom, createRoom } from '../../src/db/rooms.ts';
+import { createDocument } from '../../src/db/collections/documents.ts';
+import { createGroup } from '../../src/db/collections/groups.ts';
+import { addToRoom, createRoom } from '../../src/db/collections/rooms.ts';
 import { collectionDefinitions } from '../../src/db/schemas.ts';
-import { createDocumentHub } from '../../src/realtime/documents.ts';
+import { createDocumentHub } from '../../src/realtime/hub.ts';
 import { attachGateway, type Gateway } from '../../src/realtime/gateway.ts';
 import { createServer } from '../../src/server.ts';
 

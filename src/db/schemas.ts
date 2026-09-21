@@ -1,6 +1,6 @@
 import type { Document } from 'mongodb';
 
-import { anchorSchema, referenceSchema } from './anchor.ts';
+import { anchorSchema, referenceSchema } from '../anchor.ts';
 import type { CollectionDefinition } from './apply.ts';
 
 // While the field layout is still moving, every collection only warns instead of
