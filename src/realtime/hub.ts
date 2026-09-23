@@ -3,13 +3,13 @@ import type { Logger } from 'pino';
 import * as awarenessProtocol from 'y-protocols/awareness';
 import type * as Y from 'yjs';
 
-import type { Actor } from '../actor.ts';
-import type { Anchor } from '../anchor.ts';
+import type { Actor } from '../model/actor.ts';
+import type { Anchor } from '../model/anchor.ts';
 import { touchActor } from '../db/collections/actors.ts';
 import { documentExists } from '../db/collections/documents.ts';
 import { recordEvent, type EventRecord } from '../db/collections/events.ts';
 import { newestUpdate } from '../db/collections/updates.ts';
-import { defined } from '../optional.ts';
+import { defined } from '../utils/optional.ts';
 import { enqueue, foldNow, loadWorkingCopy, storeUpdate, type WorkingCopy } from './persistence.ts';
 import { encodeAwareness, encodeSyncUpdate } from './sync.ts';
 

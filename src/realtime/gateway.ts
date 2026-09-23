@@ -6,10 +6,10 @@ import type { Logger } from 'pino';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { encodeAwarenessUpdate } from 'y-protocols/awareness';
 
-import type { Actor } from '../actor.ts';
+import type { Actor } from '../model/actor.ts';
 import { mayOpenDocument } from '../auth/access.ts';
 import { documentExists } from '../db/collections/documents.ts';
-import { asObjectId } from '../input.ts';
+import { asObjectId } from '../utils/input.ts';
 import type { Connection, DocumentHub, OpenDocument } from './hub.ts';
 import { encodeAwareness, encodeSyncStep1, handleMessage } from './sync.ts';
 

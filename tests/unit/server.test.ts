@@ -3,7 +3,7 @@ import pino from 'pino';
 import request from 'supertest';
 import { describe, expect, it } from 'vitest';
 
-import { createServer } from '../../src/server.ts';
+import { createServer } from '../../src/routes/server.ts';
 
 const silent = pino({ level: 'silent' });
 const server = createServer({ logger: silent });

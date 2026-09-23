@@ -5,8 +5,8 @@
 
 import { ObjectId, type Db } from 'mongodb';
 
-import type { Actor } from '../actor.ts';
-import type { Reference } from '../anchor.ts';
+import type { Actor } from '../model/actor.ts';
+import type { Reference } from '../model/anchor.ts';
 import type { DocumentRecord } from '../db/collections/documents.ts';
 import { findGroup, isMemberOfAny, type Group } from '../db/collections/groups.ts';
 import { findRoom, roomsContaining, type Containment } from '../db/collections/rooms.ts';

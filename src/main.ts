@@ -13,7 +13,7 @@ import { collectionDefinitions } from './db/schemas.ts';
 import { createDocumentHub } from './realtime/hub.ts';
 import { attachGateway } from './realtime/gateway.ts';
 import { createApi } from './routes/index.ts';
-import { createServer } from './server.ts';
+import { createServer } from './routes/server.ts';
 
 const config = readConfig();
 const log = pino({ level: config.logLevel });

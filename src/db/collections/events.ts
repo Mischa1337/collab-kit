@@ -1,7 +1,7 @@
 import { ObjectId, type ClientSession, type Db, type Document, type Filter } from 'mongodb';
 
-import { anchorSchema, anchoredAt, type Anchor, type AnchorQuery } from '../../anchor.ts';
-import { defined } from '../../optional.ts';
+import { anchorSchema, anchoredAt, type Anchor, type AnchorQuery } from '../../model/anchor.ts';
+import { defined } from '../../utils/optional.ts';
 import type { CollectionDefinition } from '../apply.ts';
 
 /**

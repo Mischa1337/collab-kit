@@ -1,11 +1,11 @@
 import { Router } from 'express';
 import type { Db } from 'mongodb';
 
-import { WHOLE, type Anchor, type AnchorQuery } from '../anchor.ts';
+import { WHOLE, type Anchor, type AnchorQuery } from '../model/anchor.ts';
 import { mayReach } from '../auth/access.ts';
 import { readEvents, readEventsSince, recordEvent } from '../db/collections/events.ts';
-import { asCount, asObject, asObjectId, asReferenceId, asText } from '../input.ts';
-import { defined } from '../optional.ts';
+import { asCount, asObject, asObjectId, asReferenceId, asText } from '../utils/input.ts';
+import { defined } from '../utils/optional.ts';
 import { actorOf, bodyOf, fail } from './http.ts';
 
 /**

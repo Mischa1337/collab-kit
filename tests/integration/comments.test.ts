@@ -1,7 +1,7 @@
 import { ObjectId } from 'mongodb';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
-import { WHOLE } from '../../src/anchor.ts';
+import { WHOLE } from '../../src/model/anchor.ts';
 import { applyDefinitions } from '../../src/db/apply.ts';
 import { connect, type Storage } from '../../src/db/client.ts';
 import {

@@ -3,7 +3,7 @@ import * as Y from 'yjs';
 
 import { findDocument, foldState } from '../db/collections/documents.ts';
 import { appendUpdate, readUpdatesSince } from '../db/collections/updates.ts';
-import { defined } from '../optional.ts';
+import { defined } from '../utils/optional.ts';
 
 /**
  * A document in memory and how far it is kept. The truth stays in the database: this

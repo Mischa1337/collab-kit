@@ -1,7 +1,7 @@
 import { ObjectId } from 'mongodb';
 import { describe, expect, it } from 'vitest';
 
-import { anchoredAt, WHOLE } from '../../src/anchor.ts';
+import { anchoredAt, WHOLE } from '../../src/model/anchor.ts';
 
 const id = new ObjectId();
 

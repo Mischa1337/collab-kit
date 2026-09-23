@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { defined, matchOptional } from '../../src/optional.ts';
+import { defined, matchOptional } from '../../src/utils/optional.ts';
 
 describe('defined', () => {
   it('leaves out what is undefined, key and all', () => {

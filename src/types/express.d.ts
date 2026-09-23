@@ -1,4 +1,4 @@
-import type { Actor } from '../actor.ts';
+import type { Actor } from '../model/actor.ts';
 
 declare module 'express-serve-static-core' {
   interface Request {

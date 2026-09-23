@@ -9,7 +9,7 @@ import { connect, type Storage } from '../../src/db/client.ts';
 import { collectionDefinitions } from '../../src/db/schemas.ts';
 import { createDocumentHub } from '../../src/realtime/hub.ts';
 import { createApi } from '../../src/routes/index.ts';
-import { createServer } from '../../src/server.ts';
+import { createServer } from '../../src/routes/server.ts';
 
 const uri = process.env['MONGODB_URI'];
 if (uri === undefined || uri === '') {

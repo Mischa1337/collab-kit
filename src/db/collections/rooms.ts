@@ -1,6 +1,6 @@
 import { ObjectId, type Db, type Document } from 'mongodb';
 
-import { referenceSchema, type Reference } from '../../anchor.ts';
+import { referenceSchema, type Reference } from '../../model/anchor.ts';
 import type { CollectionDefinition } from '../apply.ts';
 
 /**

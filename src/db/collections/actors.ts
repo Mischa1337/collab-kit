@@ -1,7 +1,7 @@
 import type { Db } from 'mongodb';
 
-import type { Actor } from '../../actor.ts';
-import { defined } from '../../optional.ts';
+import type { Actor } from '../../model/actor.ts';
+import { defined } from '../../utils/optional.ts';
 import type { CollectionDefinition } from '../apply.ts';
 
 /**

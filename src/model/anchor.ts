@@ -1,6 +1,6 @@
 import type { Document } from 'mongodb';
 
-import { matchOptional } from './optional.ts';
+import { matchOptional } from '../utils/optional.ts';
 
 /**
  * A pointer to a thing. The kind is a free string: the service resolves only the

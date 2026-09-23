@@ -10,8 +10,8 @@ import {
   removeMember,
   setGroupSettings,
 } from '../db/collections/groups.ts';
-import { asObject, asText } from '../input.ts';
-import { defined } from '../optional.ts';
+import { asObject, asText } from '../utils/input.ts';
+import { defined } from '../utils/optional.ts';
 import { actorOf, bodyOf, fail, guard, idOf, requireId } from './http.ts';
 
 /**

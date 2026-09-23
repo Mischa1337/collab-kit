@@ -14,7 +14,7 @@ import { createDocument } from '../../src/db/collections/documents.ts';
 import { collectionDefinitions } from '../../src/db/schemas.ts';
 import { createDocumentHub } from '../../src/realtime/hub.ts';
 import { attachGateway, type Gateway } from '../../src/realtime/gateway.ts';
-import { createServer } from '../../src/server.ts';
+import { createServer } from '../../src/routes/server.ts';
 import { connectClient, waitFor } from './yjs-client.ts';
 
 const uri = process.env['MONGODB_URI'];

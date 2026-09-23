@@ -1,7 +1,7 @@
 import { ObjectId, type Db, type Document, type Filter } from 'mongodb';
 
-import { anchorSchema, anchoredAt, type Anchor, type AnchorQuery } from '../../anchor.ts';
-import { defined, matchOptional } from '../../optional.ts';
+import { anchorSchema, anchoredAt, type Anchor, type AnchorQuery } from '../../model/anchor.ts';
+import { defined, matchOptional } from '../../utils/optional.ts';
 import type { CollectionDefinition } from '../apply.ts';
 import { changeWithEvent } from './events.ts';
 

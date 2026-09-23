@@ -4,8 +4,8 @@ import type { Db } from 'mongodb';
 import { mayOpenDocument, mayReadDocument } from '../auth/access.ts';
 import { createDocument, findDocument } from '../db/collections/documents.ts';
 import { readUpdatesSince } from '../db/collections/updates.ts';
-import { asObject, asObjectId, asText } from '../input.ts';
-import { defined } from '../optional.ts';
+import { asObject, asObjectId, asText } from '../utils/input.ts';
+import { defined } from '../utils/optional.ts';
 import type { DocumentHub } from '../realtime/hub.ts';
 import { actorOf, bodyOf, fail, guard, idOf, requireId } from './http.ts';
 

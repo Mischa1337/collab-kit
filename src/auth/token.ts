@@ -1,6 +1,6 @@
 import jwt from 'jsonwebtoken';
 
-import type { Actor } from '../actor.ts';
+import type { Actor } from '../model/actor.ts';
 
 export interface TokenOptions {
   readonly secret: string;

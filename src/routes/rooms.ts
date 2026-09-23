@@ -10,8 +10,8 @@ import {
   removeFromRoom,
   setRoomSettings,
 } from '../db/collections/rooms.ts';
-import { asCount, asObject, asObjectId, asReferenceId, asText } from '../input.ts';
-import { defined } from '../optional.ts';
+import { asCount, asObject, asObjectId, asReferenceId, asText } from '../utils/input.ts';
+import { defined } from '../utils/optional.ts';
 import { actorOf, bodyOf, fail, guard, idOf, requireId } from './http.ts';
 
 /**

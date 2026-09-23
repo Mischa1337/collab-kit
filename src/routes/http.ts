@@ -1,13 +1,13 @@
 /**
  * What every route file needs from Express: refusing in one shape, reading the actor,
- * the body and the id, and guarding a route. Reading plain values is in input.ts.
+ * the body and the id, and guarding a route. Reading plain values is in utils/input.ts.
  */
 
 import type { Request, RequestHandler, RequestParamHandler, Response } from 'express';
 import type { Document, ObjectId } from 'mongodb';
 
-import type { Actor } from '../actor.ts';
-import { asObject, asObjectId } from '../input.ts';
+import type { Actor } from '../model/actor.ts';
+import { asObject, asObjectId } from '../utils/input.ts';
 
 /** Every refusal answers in the same shape, so a client parses one thing. */
 export function fail(response: Response, status: number, error: string): void {

@@ -14,7 +14,7 @@ import { addToRoom, createRoom } from '../../src/db/collections/rooms.ts';
 import { collectionDefinitions } from '../../src/db/schemas.ts';
 import { createDocumentHub } from '../../src/realtime/hub.ts';
 import { attachGateway, type Gateway } from '../../src/realtime/gateway.ts';
-import { createServer } from '../../src/server.ts';
+import { createServer } from '../../src/routes/server.ts';
 
 const uri = process.env['MONGODB_URI'];
 if (uri === undefined || uri === '') {
