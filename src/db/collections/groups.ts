@@ -124,3 +124,16 @@ export async function isMemberOfAny(
 
   return found !== null;
 }
+
+/** Replaces what the group stands for in the docking tool. Replaces, see setRoomSettings. */
+export async function setGroupSettings(
+  db: Db,
+  groupId: ObjectId,
+  settings: Document,
+): Promise<boolean> {
+  const result = await db
+    .collection<Group>('groups')
+    .updateOne({ _id: groupId }, { $set: { settings } });
+
+  return result.matchedCount === 1;
+}

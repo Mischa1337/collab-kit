@@ -69,22 +69,40 @@ export async function recordEvent(
 
 export interface EventQuery {
   readonly anchor?: AnchorQuery;
+  /** Anchors on any of these things, which is how a room asks about what it bundles. */
+  readonly anchorIds?: readonly unknown[];
   readonly actorId?: string;
   readonly kind?: string;
+  /** Only what happened after this event, the cut for polling. */
+  readonly since?: ObjectId;
   readonly limit?: number;
 }
 
 function filterOf(query: EventQuery): Filter<EventRecord> {
   return {
     ...(query.anchor === undefined ? {} : anchoredAt(query.anchor)),
+    ...(query.anchorIds === undefined ? {} : { 'anchor.id': { $in: [...query.anchorIds] } }),
     ...(query.actorId === undefined ? {} : { actorId: query.actorId }),
     ...(query.kind === undefined ? {} : { kind: query.kind }),
+    ...(query.since === undefined ? {} : { _id: { $gt: query.since } }),
   } as Filter<EventRecord>;
 }
 
 /** Newest first, because a history is read backwards from now. */
 export async function readEvents(db: Db, query: EventQuery = {}): Promise<EventRecord[]> {
   const found = db.collection<EventRecord>('events').find(filterOf(query)).sort({ _id: -1 });
+
+  return query.limit === undefined ? found.toArray() : found.limit(query.limit).toArray();
+}
+
+/**
+ * The same read forwards, oldest first, which is what asking again with `since`
+ * needs: apply in order, keep the last _id, ask again with it. Same shape as
+ * readUpdatesSince, and the reason the service needs no channel of its own to tell a
+ * tool what happened.
+ */
+export async function readEventsSince(db: Db, query: EventQuery = {}): Promise<EventRecord[]> {
+  const found = db.collection<EventRecord>('events').find(filterOf(query)).sort({ _id: 1 });
 
   return query.limit === undefined ? found.toArray() : found.limit(query.limit).toArray();
 }

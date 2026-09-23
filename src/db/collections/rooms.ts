@@ -105,3 +105,20 @@ export async function roomsContaining(db: Db, what: Reference): Promise<Room[]> 
     .find({ contains: { $elemMatch: { kind: what.kind, id: what.id } } })
     .toArray();
 }
+
+/**
+ * Replaces the switch positions of the docking tool. Replaces and does not merge:
+ * the service does not read this object, so it cannot tell which of its keys the
+ * tool meant to drop.
+ */
+export async function setRoomSettings(
+  db: Db,
+  roomId: ObjectId,
+  settings: Document,
+): Promise<boolean> {
+  const result = await db
+    .collection<Room>('rooms')
+    .updateOne({ _id: roomId }, { $set: { settings } });
+
+  return result.matchedCount === 1;
+}

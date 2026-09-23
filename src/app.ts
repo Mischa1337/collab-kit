@@ -7,6 +7,7 @@ import { connect } from './db/client.ts';
 import { collectionDefinitions } from './db/schemas.ts';
 import { createDocumentHub } from './realtime/hub.ts';
 import { attachGateway } from './realtime/gateway.ts';
+import { createApi } from './routes/index.ts';
 import { createServer } from './server.ts';
 
 const config = readConfig();
@@ -16,15 +17,13 @@ const storage = await connect({ uri: config.mongoUri, database: config.mongoDb }
 await applyDefinitions(storage.db, collectionDefinitions);
 log.info({ database: config.mongoDb, collections: collectionDefinitions.length }, 'database ready');
 
-const server = createServer({ logger: log });
+const checkToken = createTokenCheck({ secret: config.jwtSecret });
 const hub = createDocumentHub({ db: storage.db, logger: log });
-const gateway = attachGateway({
-  server,
-  db: storage.db,
-  hub,
-  checkToken: createTokenCheck({ secret: config.jwtSecret }),
+const server = createServer({
   logger: log,
+  api: createApi({ db: storage.db, hub, checkToken, logger: log }),
 });
+const gateway = attachGateway({ server, db: storage.db, hub, checkToken, logger: log });
 
 server.listen(config.port, () => {
   log.info({ port: config.port }, 'listening');
