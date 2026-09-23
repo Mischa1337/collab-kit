@@ -1,8 +1,15 @@
+/**
+ * Every rule about who may see or change what, and nowhere else. Routes and the
+ * gateway ask and never decide, so changing a rule means changing this file only.
+ */
+
 import { ObjectId, type Db } from 'mongodb';
 
-import { isMemberOfAny } from '../db/collections/groups.ts';
+import type { Actor } from '../actor.ts';
+import type { Reference } from '../anchor.ts';
+import type { DocumentRecord } from '../db/collections/documents.ts';
+import { findGroup, isMemberOfAny, type Group } from '../db/collections/groups.ts';
 import { findRoom, roomsContaining, type Containment } from '../db/collections/rooms.ts';
-import type { Actor } from './token.ts';
 
 export interface AccessRequest {
   readonly db: Db;
@@ -34,6 +41,23 @@ export async function mayOpenDocument(request: AccessRequest): Promise<boolean> 
 }
 
 /**
+ * Whether the actor may read what is known about a document, without working on it.
+ * The same rule as for opening, plus the creator, so a document that sits in no room
+ * yet is not lost to whoever made it.
+ */
+export async function mayReadDocument(
+  db: Db,
+  actor: Actor,
+  document: Pick<DocumentRecord, '_id' | 'createdBy'>,
+): Promise<boolean> {
+  if (document.createdBy === actor.actorId) {
+    return true;
+  }
+
+  return mayOpenDocument({ db, actor, documentId: document._id });
+}
+
+/**
  * Whether the actor may see what a room bundles. The same rule as for a document, one
  * step shorter: membership in a group the room holds.
  *
@@ -54,6 +78,36 @@ export async function mayEnterRoom(db: Db, actor: Actor, roomId: ObjectId): Prom
 }
 
 /**
+ * Whether the actor may see a group: its members and whoever created it, nobody else.
+ * Who is in a group is exactly what that group opens.
+ */
+export function maySeeGroup(actor: Actor, group: Pick<Group, 'createdBy' | 'members'>): boolean {
+  return (
+    group.createdBy === actor.actorId ||
+    group.members.some((member) => member.actorId === actor.actorId)
+  );
+}
+
+/**
+ * Whether the actor may look at the thing a reference names, which is what reading or
+ * leaving a trace at an anchor asks. Only the kinds the service keeps itself are
+ * decided here; for everything a tool anchors at, there is nothing this service could
+ * ask.
+ */
+export async function mayReach(db: Db, actor: Actor, target: Reference): Promise<boolean> {
+  if (!(target.id instanceof ObjectId)) {
+    return true;
+  }
+  if (target.kind === 'document') {
+    return mayOpenDocument({ db, actor, documentId: target.id });
+  }
+  if (target.kind === 'room') {
+    return mayEnterRoom(db, actor, target.id);
+  }
+  return true;
+}
+
+/**
  * Whether the actor may change a room or a group.
  *
  * Provisional, and the one rule in here that is not derived from the model: whoever
@@ -66,14 +120,12 @@ export async function mayEnterRoom(db: Db, actor: Actor, roomId: ObjectId): Prom
 export async function mayChange(
   db: Db,
   actor: Actor,
-  collection: 'rooms' | 'groups',
+  kind: 'room' | 'group',
   id: ObjectId,
 ): Promise<boolean> {
-  const found = await db
-    .collection(collection)
-    .findOne({ _id: id }, { projection: { createdBy: 1 } });
+  const found = kind === 'room' ? await findRoom(db, id) : await findGroup(db, id);
 
-  return found !== null && found['createdBy'] === actor.actorId;
+  return found !== null && found.createdBy === actor.actorId;
 }
 
 /**

@@ -1,10 +1,6 @@
 import jwt from 'jsonwebtoken';
 
-/** Everything the service learns about a person: an opaque key and a name to show. */
-export interface Actor {
-  readonly actorId: string;
-  readonly label?: string;
-}
+import type { Actor } from '../actor.ts';
 
 export interface TokenOptions {
   readonly secret: string;

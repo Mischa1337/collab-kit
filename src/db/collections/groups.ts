@@ -1,5 +1,7 @@
 import { ObjectId, type Db, type Document } from 'mongodb';
 
+import type { CollectionDefinition } from '../apply.ts';
+
 /** Being in a group, with the moment it started and who arranged it. */
 export interface Membership {
   actorId: string;
@@ -24,6 +26,37 @@ export interface Group {
   createdAt: Date;
   createdBy: string;
 }
+
+export const groupsDefinition: CollectionDefinition = {
+  name: 'groups',
+  schema: {
+    bsonType: 'object',
+    required: ['name', 'members', 'createdAt', 'createdBy'],
+    properties: {
+      name: { bsonType: 'string' },
+      settings: {
+        bsonType: 'object',
+        description: 'what the group stands for in the docking tool, deliberately unconstrained',
+      },
+      members: {
+        bsonType: 'array',
+        description: 'opaque actor keys, no object and no task ever hangs on a group',
+        items: {
+          bsonType: 'object',
+          required: ['actorId', 'joinedAt', 'addedBy'],
+          properties: {
+            actorId: { bsonType: 'string' },
+            joinedAt: { bsonType: 'date' },
+            addedBy: { bsonType: 'string' },
+          },
+        },
+      },
+      createdAt: { bsonType: 'date' },
+      createdBy: { bsonType: 'string' },
+    },
+  },
+  indexes: [{ key: { 'members.actorId': 1 }, name: 'member_actor' }],
+};
 
 export interface NewGroup {
   readonly name: string;

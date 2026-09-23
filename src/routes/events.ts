@@ -1,20 +1,12 @@
 import { Router } from 'express';
-import { ObjectId, type Db } from 'mongodb';
+import type { Db } from 'mongodb';
 
 import { WHOLE, type Anchor, type AnchorQuery } from '../anchor.ts';
-import { mayEnterRoom, mayOpenDocument } from '../auth/access.ts';
+import { mayReach } from '../auth/access.ts';
 import { readEvents, readEventsSince, recordEvent } from '../db/collections/events.ts';
-import type { Actor } from '../auth/token.ts';
-import {
-  actorOf,
-  asCount,
-  asObject,
-  asObjectId,
-  asReferenceId,
-  asText,
-  bodyOf,
-  fail,
-} from './http.ts';
+import { asCount, asObject, asObjectId, asReferenceId, asText } from '../input.ts';
+import { defined } from '../optional.ts';
+import { actorOf, bodyOf, fail } from './http.ts';
 
 /**
  * Traces and marks. Read forwards with `since` for polling, backwards without it for
@@ -37,13 +29,7 @@ export function eventRoutes(db: Db): Router {
     const kind = asText(request.query['kind']);
     const actorId = asText(request.query['actorId']);
     const limit = asCount(request.query['limit']);
-
-    const query = {
-      anchor,
-      ...(kind === undefined ? {} : { kind }),
-      ...(actorId === undefined ? {} : { actorId }),
-      ...(limit === undefined ? {} : { limit }),
-    };
+    const query = { anchor, ...defined({ kind, actorId, limit }) };
 
     // With a cut it is a stream and reads forwards, without one it is a history and
     // reads backwards.
@@ -69,7 +55,7 @@ export function eventRoutes(db: Db): Router {
     if (anchor === undefined) {
       return fail(response, 400, 'anchor with kind and id is needed');
     }
-    if (!(await mayReach(db, actorOf(request), { kind: anchor.kind, id: anchor.id }))) {
+    if (!(await mayReach(db, actorOf(request), anchor))) {
       return fail(response, 404, 'unknown anchor');
     }
 
@@ -83,33 +69,12 @@ export function eventRoutes(db: Db): Router {
         kind,
         actorId: actorOf(request).actorId,
         anchor,
-        ...(at === undefined ? {} : { at }),
-        ...(label === undefined ? {} : { label }),
-        ...(reason === undefined ? {} : { reason }),
-        ...(detail === undefined ? {} : { detail }),
+        ...defined({ at, label, reason, detail }),
       }),
     );
   });
 
   return routes;
-}
-
-/**
- * Whether this actor may look at the thing an anchor names. Only the kinds the
- * service keeps itself are decided here; for everything a tool anchors at, there is
- * nothing this service could ask.
- */
-async function mayReach(db: Db, actor: Actor, anchor: AnchorQuery): Promise<boolean> {
-  if (!(anchor.id instanceof ObjectId)) {
-    return true;
-  }
-  if (anchor.kind === 'document') {
-    return mayOpenDocument({ db, actor, documentId: anchor.id });
-  }
-  if (anchor.kind === 'room') {
-    return mayEnterRoom(db, actor, anchor.id);
-  }
-  return true;
 }
 
 /** The anchor as it arrives in a body: kind and id required, unit optional. */
@@ -120,11 +85,7 @@ function anchorOf(raw: Record<string, unknown> | undefined): Anchor | undefined 
     return undefined;
   }
 
-  return {
-    kind,
-    id: asReferenceId(raw['id']),
-    ...(raw['unit'] === undefined ? {} : { unit: raw['unit'] }),
-  };
+  return { kind, id: asReferenceId(raw['id']), ...defined({ unit: raw['unit'] }) };
 }
 
 /**

@@ -8,9 +8,9 @@
     "node": "^24"
   },
   "scripts": {
-    "dev": "node --watch --env-file-if-exists=.env src/app.ts",
+    "dev": "node --watch --env-file-if-exists=.env src/main.ts",
     "build": "tsc -p tsconfig.build.json",
-    "start": "node --env-file-if-exists=.env dist/app.js",
+    "start": "node --env-file-if-exists=.env dist/main.js",
     "token": "node --env-file-if-exists=.env scripts/token.ts",
     "typecheck": "tsc --noEmit",
     "lint": "oxlint",

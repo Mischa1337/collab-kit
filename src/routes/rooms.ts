@@ -10,16 +10,9 @@ import {
   removeFromRoom,
   setRoomSettings,
 } from '../db/collections/rooms.ts';
-import {
-  actorOf,
-  asCount,
-  asObject,
-  asObjectId,
-  asReferenceId,
-  asText,
-  bodyOf,
-  fail,
-} from './http.ts';
+import { asCount, asObject, asObjectId, asReferenceId, asText } from '../input.ts';
+import { defined } from '../optional.ts';
+import { actorOf, bodyOf, fail, guard, idOf, requireId } from './http.ts';
 
 /**
  * The room bundles, so these routes only ever move references around. Nothing here
@@ -27,6 +20,17 @@ import {
  */
 export function roomRoutes(db: Db): Router {
   const routes = Router();
+
+  routes.param('id', requireId('room'));
+
+  // Deliberately the same answer as a room that does not exist: whether one is there
+  // is already more than somebody outside it should learn.
+  const entering = guard((actor, id) => mayEnterRoom(db, actor, id), 404, 'unknown room');
+  const changing = guard(
+    (actor, id) => mayChange(db, actor, 'room', id),
+    403,
+    'not allowed to change this room',
+  );
 
   routes.post('/rooms', async (request, response) => {
     const body = bodyOf(request);
@@ -40,60 +44,37 @@ export function roomRoutes(db: Db): Router {
     const room = await createRoom(db, {
       name,
       createdBy: actorOf(request).actorId,
-      ...(settings === undefined ? {} : { settings }),
+      ...defined({ settings }),
     });
 
     response.status(201).json(room);
   });
 
-  routes.get('/rooms/:id', async (request, response) => {
-    const id = asObjectId(request.params['id']);
-
-    if (id === undefined) {
-      return fail(response, 400, 'malformed room key');
-    }
-    if (!(await mayEnterRoom(db, actorOf(request), id))) {
-      // Deliberately the same answer as a room that does not exist: whether one is
-      // there is already more than somebody outside it should learn.
-      return fail(response, 404, 'unknown room');
-    }
-
-    response.json(await findRoom(db, id));
+  routes.get('/rooms/:id', entering, async (request, response) => {
+    response.json(await findRoom(db, idOf(request)));
   });
 
-  routes.patch('/rooms/:id', async (request, response) => {
-    const id = asObjectId(request.params['id']);
+  routes.patch('/rooms/:id', changing, async (request, response) => {
     const settings = asObject(bodyOf(request)['settings']);
 
-    if (id === undefined) {
-      return fail(response, 400, 'malformed room key');
-    }
     if (settings === undefined) {
       return fail(response, 400, 'settings must be an object');
     }
-    if (!(await mayChange(db, actorOf(request), 'rooms', id))) {
-      return fail(response, 403, 'not allowed to change this room');
-    }
 
+    const id = idOf(request);
     await setRoomSettings(db, id, settings);
     response.json(await findRoom(db, id));
   });
 
-  routes.post('/rooms/:id/contains', async (request, response) => {
-    const id = asObjectId(request.params['id']);
+  routes.post('/rooms/:id/contains', changing, async (request, response) => {
     const body = bodyOf(request);
     const kind = asText(body['kind']);
 
-    if (id === undefined) {
-      return fail(response, 400, 'malformed room key');
-    }
     if (kind === undefined || body['id'] === undefined) {
       return fail(response, 400, 'kind and id are needed');
     }
-    if (!(await mayChange(db, actorOf(request), 'rooms', id))) {
-      return fail(response, 403, 'not allowed to change this room');
-    }
 
+    const id = idOf(request);
     const added = await addToRoom(db, id, {
       kind,
       id: asReferenceId(body['id']),
@@ -105,21 +86,15 @@ export function roomRoutes(db: Db): Router {
     response.status(added ? 201 : 200).json(await findRoom(db, id));
   });
 
-  routes.delete('/rooms/:id/contains', async (request, response) => {
-    const id = asObjectId(request.params['id']);
+  routes.delete('/rooms/:id/contains', changing, async (request, response) => {
     const body = bodyOf(request);
     const kind = asText(body['kind']);
 
-    if (id === undefined) {
-      return fail(response, 400, 'malformed room key');
-    }
     if (kind === undefined || body['id'] === undefined) {
       return fail(response, 400, 'kind and id are needed');
     }
-    if (!(await mayChange(db, actorOf(request), 'rooms', id))) {
-      return fail(response, 403, 'not allowed to change this room');
-    }
 
+    const id = idOf(request);
     await removeFromRoom(db, id, { kind, id: asReferenceId(body['id']) });
     response.json(await findRoom(db, id));
   });
@@ -131,30 +106,15 @@ export function roomRoutes(db: Db): Router {
    * the document they belong to and not at the room. Asking for anchorKind=room alone
    * would find the chat and nothing of the work.
    */
-  routes.get('/rooms/:id/events', async (request, response) => {
-    const id = asObjectId(request.params['id']);
-
-    if (id === undefined) {
-      return fail(response, 400, 'malformed room key');
-    }
-    if (!(await mayEnterRoom(db, actorOf(request), id))) {
-      return fail(response, 404, 'unknown room');
-    }
-
+  routes.get('/rooms/:id/events', entering, async (request, response) => {
+    const id = idOf(request);
     const room = await findRoom(db, id);
     const anchorIds = [id, ...(room?.contains ?? []).map((entry) => entry.id)];
     const since = asObjectId(request.query['since']);
     const kind = asText(request.query['kind']);
     const limit = asCount(request.query['limit']);
 
-    response.json(
-      await readEventsSince(db, {
-        anchorIds,
-        ...(since === undefined ? {} : { since }),
-        ...(kind === undefined ? {} : { kind }),
-        ...(limit === undefined ? {} : { limit }),
-      }),
-    );
+    response.json(await readEventsSince(db, { anchorIds, ...defined({ since, kind, limit }) }));
   });
 
   return routes;

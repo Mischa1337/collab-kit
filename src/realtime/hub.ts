@@ -1,14 +1,16 @@
 import type { Db, ObjectId } from 'mongodb';
 import type { Logger } from 'pino';
 import * as awarenessProtocol from 'y-protocols/awareness';
-import * as Y from 'yjs';
+import type * as Y from 'yjs';
 
-import { touchActor } from '../db/collections/actors.ts';
+import type { Actor } from '../actor.ts';
 import type { Anchor } from '../anchor.ts';
-import type { Actor } from '../auth/token.ts';
-import { findDocument, foldState } from '../db/collections/documents.ts';
+import { touchActor } from '../db/collections/actors.ts';
+import { documentExists } from '../db/collections/documents.ts';
 import { recordEvent, type EventRecord } from '../db/collections/events.ts';
-import { appendUpdate, newestUpdate, readUpdatesSince } from '../db/collections/updates.ts';
+import { newestUpdate } from '../db/collections/updates.ts';
+import { defined } from '../optional.ts';
+import { enqueue, foldNow, loadWorkingCopy, storeUpdate, type WorkingCopy } from './persistence.ts';
 import { encodeAwareness, encodeSyncUpdate } from './sync.ts';
 
 /** What the hub needs from a connection, so it does not depend on the transport. */
@@ -50,15 +52,9 @@ export interface DocumentHub {
 
 interface Entry {
   readonly document: OpenDocument;
+  /** The stored side of the same document: its queue and how far it is kept. */
+  readonly copy: WorkingCopy;
   readonly clientIds: Map<Connection, Set<number>>;
-  /** Writes run one after another, so the stored order matches the order of arrival. */
-  queue: Promise<void>;
-  /** The newest update written for this document, the cut for the next folding. */
-  lastUpdateId?: ObjectId;
-  /** What stateThrough holds in the database, as far as this process knows. */
-  foldedThrough?: ObjectId;
-  /** Updates that have arrived since the last folding. */
-  sinceFold: number;
 }
 
 export interface HubOptions {
@@ -72,9 +68,9 @@ export interface HubOptions {
 }
 
 /**
- * Keeps one Y.Doc per document while somebody has it open. The truth stays in the
- * database: this is only the working copy, rebuilt from the folded state plus every
- * change after it whenever the first connection arrives.
+ * Keeps one Y.Doc per document while somebody has it open, passes every change on to
+ * the others and keeps the traces of who was there. How the working copy is loaded,
+ * stored and folded lives in persistence.ts.
  */
 export function createDocumentHub(options: HubOptions): DocumentHub {
   const foldEvery = options.foldEvery ?? 400;
@@ -83,41 +79,20 @@ export function createDocumentHub(options: HubOptions): DocumentHub {
   const connectionsByKey = new Map<string, Set<Connection>>();
 
   async function load(documentId: ObjectId, connections: Set<Connection>): Promise<Entry> {
-    const record = await findDocument(options.db, documentId);
-
-    if (record === null) {
-      throw new Error(`unknown document ${documentId.toHexString()}`);
-    }
-
-    const doc = new Y.Doc();
-    if (record.state !== undefined) {
-      Y.applyUpdate(doc, new Uint8Array(record.state.buffer));
-    }
-
-    // Everything the shortcut does not cover yet. A document that was never folded
-    // starts from nothing and reads its whole history, which is just as correct.
-    const pending = await readUpdatesSince(options.db, documentId, record.stateThrough);
-    for (const row of pending) {
-      Y.applyUpdate(doc, new Uint8Array(row.update.buffer));
-    }
-
-    const newest = pending.at(-1)?._id ?? record.stateThrough;
+    const copy = await loadWorkingCopy(options.db, documentId);
     const entry: Entry = {
       document: {
         documentId,
-        doc,
-        awareness: new awarenessProtocol.Awareness(doc),
+        doc: copy.doc,
+        awareness: new awarenessProtocol.Awareness(copy.doc),
         connections,
       },
+      copy,
       clientIds: new Map(),
-      queue: Promise.resolve(),
-      sinceFold: pending.length,
-      ...(newest === undefined ? {} : { lastUpdateId: newest }),
-      ...(record.stateThrough === undefined ? {} : { foldedThrough: record.stateThrough }),
     };
 
     // Attached only now: replaying the stored history must not store it a second time.
-    doc.on('update', (update: Uint8Array, origin: unknown) => {
+    copy.doc.on('update', (update: Uint8Array, origin: unknown) => {
       onChange(entry, update, origin);
     });
 
@@ -132,37 +107,6 @@ export function createDocumentHub(options: HubOptions): DocumentHub {
   }
 
   /**
-   * Takes the state from memory and writes it as the new shortcut. Runs inside the
-   * queue, so everything up to lastUpdateId has been stored and is contained in it.
-   *
-   * A change that arrives while this runs lands behind the cut and is applied on top
-   * at the next load. Applying it twice is harmless in Yjs.
-   */
-  async function foldNow(entry: Entry): Promise<boolean> {
-    const through = entry.lastUpdateId;
-
-    if (through === undefined) {
-      return false;
-    }
-    if (entry.foldedThrough !== undefined && through.equals(entry.foldedThrough)) {
-      return false;
-    }
-
-    const written = await foldState(options.db, {
-      documentId: entry.document.documentId,
-      state: Y.encodeStateAsUpdate(entry.document.doc),
-      through,
-      ...(entry.foldedThrough === undefined ? {} : { expected: entry.foldedThrough }),
-    });
-
-    if (written) {
-      entry.foldedThrough = through;
-      entry.sinceFold = 0;
-    }
-    return written;
-  }
-
-  /**
    * Keeping a trace may never break the work it is a trace of. A lost event costs a
    * line in a history, a thrown one would cost the connection.
    */
@@ -172,7 +116,7 @@ export function createDocumentHub(options: HubOptions): DocumentHub {
         kind,
         actorId: actor,
         anchor: anchorOf(documentId),
-        ...(at === undefined ? {} : { at }),
+        ...defined({ at }),
       });
     } catch (error) {
       options.logger.error(
@@ -186,39 +130,23 @@ export function createDocumentHub(options: HubOptions): DocumentHub {
   function onChange(entry: Entry, update: Uint8Array, origin: unknown): void {
     const from = asConnection(origin);
 
-    entry.queue = entry.queue
-      .then(async () => {
-        if (from === undefined) {
-          throw new Error('a change arrived without a connection to attribute it to');
-        }
+    void enqueue(entry.copy, async () => {
+      if (from === undefined) {
+        throw new Error('a change arrived without a connection to attribute it to');
+      }
 
-        const record = await appendUpdate(options.db, {
-          documentId: entry.document.documentId,
-          update,
-          actorId: from.actor.actorId,
-        });
+      await storeUpdate(options.db, entry.copy, update, from.actor.actorId);
+      broadcast(entry.document, encodeSyncUpdate(update), from);
 
-        entry.lastUpdateId = record._id;
-        entry.sinceFold += 1;
-      })
-      .then(async () => {
-        const message = encodeSyncUpdate(update);
-        for (const connection of entry.document.connections) {
-          if (connection !== from) {
-            connection.send(message);
-          }
-        }
-
-        if (entry.sinceFold >= foldEvery) {
-          await foldNow(entry);
-        }
-      })
-      .catch((error: unknown) => {
-        options.logger.error(
-          { error, documentId: entry.document.documentId.toHexString() },
-          'a change could not be stored and was therefore not passed on',
-        );
-      });
+      if (entry.copy.sinceFold >= foldEvery) {
+        await foldNow(options.db, entry.copy);
+      }
+    }).catch((error: unknown) => {
+      options.logger.error(
+        { error, documentId: entry.document.documentId.toHexString() },
+        'a change could not be stored and was therefore not passed on',
+      );
+    });
   }
 
   function onAwareness(
@@ -237,15 +165,11 @@ export function createDocumentHub(options: HubOptions): DocumentHub {
       entry.clientIds.set(from, known);
     }
 
-    const message = encodeAwareness(
-      awarenessProtocol.encodeAwarenessUpdate(entry.document.awareness, touched),
+    broadcast(
+      entry.document,
+      encodeAwareness(awarenessProtocol.encodeAwarenessUpdate(entry.document.awareness, touched)),
+      from,
     );
-
-    for (const connection of entry.document.connections) {
-      if (connection !== from) {
-        connection.send(message);
-      }
-    }
   }
 
   function entryFor(documentId: ObjectId): Promise<Entry> {
@@ -269,12 +193,12 @@ export function createDocumentHub(options: HubOptions): DocumentHub {
    * shutdown, where the document goes whether somebody still holds it or not.
    */
   async function release(key: string, entry: Entry, force = false): Promise<void> {
-    await entry.queue;
+    await entry.copy.queue;
 
     // The last one out folds, because the state is in memory anyway. A failure here
     // may not stop the cleanup: every change is stored, so nothing is at stake.
     try {
-      await foldNow(entry);
+      await foldNow(options.db, entry.copy);
     } catch (error) {
       options.logger.error(
         { error, documentId: entry.document.documentId.toHexString() },
@@ -339,7 +263,7 @@ export function createDocumentHub(options: HubOptions): DocumentHub {
       // The position is what makes D6.18 answerable later: everything after it is
       // what this person was not around for. It says delivered, not read; what a
       // person actually looked at only the tool can report.
-      await trace(documentId, 'left', connection.actor.actorId, entry.lastUpdateId);
+      await trace(documentId, 'left', connection.actor.actorId, entry.copy.lastUpdateId);
 
       if (entry.document.connections.size === 0) {
         await release(key, entry);
@@ -354,14 +278,7 @@ export function createDocumentHub(options: HubOptions): DocumentHub {
       try {
         // Queued like a change, so nothing slips between reading the state and
         // writing it.
-        let written = false;
-        const run = entry.queue.then(async () => {
-          written = await foldNow(entry);
-        });
-
-        entry.queue = run.catch(() => undefined);
-        await run;
-        return written;
+        return await enqueue(entry.copy, () => foldNow(options.db, entry.copy));
       } finally {
         if (!wasOpen && entry.document.connections.size === 0) {
           await release(key, entry);
@@ -376,7 +293,7 @@ export function createDocumentHub(options: HubOptions): DocumentHub {
       if (pending === undefined) {
         // Nothing in flight on a document nobody holds, and loading the whole Y.Doc
         // only to read the newest id would be wasteful.
-        if ((await findDocument(options.db, documentId)) === null) {
+        if (!(await documentExists(options.db, documentId))) {
           throw new Error(`unknown document ${documentId.toHexString()}`);
         }
         at = await newestUpdate(options.db, documentId);
@@ -384,20 +301,14 @@ export function createDocumentHub(options: HubOptions): DocumentHub {
         // Queued like a change, so a change still being written lands before the
         // mark and not behind it.
         const entry = await pending;
-        const run = entry.queue.then(() => {
-          at = entry.lastUpdateId;
-        });
-        entry.queue = run.catch(() => undefined);
-        await run;
+        at = await enqueue(entry.copy, () => entry.copy.lastUpdateId);
       }
 
       return recordEvent(options.db, {
         kind: 'checkpoint',
         actorId: input.actorId,
         anchor: anchorOf(documentId),
-        ...(at === undefined ? {} : { at }),
-        ...(input.label === undefined ? {} : { label: input.label }),
-        ...(input.reason === undefined ? {} : { reason: input.reason }),
+        ...defined({ at, label: input.label, reason: input.reason }),
       });
     },
 
@@ -413,6 +324,19 @@ export function createDocumentHub(options: HubOptions): DocumentHub {
       }
     },
   };
+}
+
+/** Sends a message to everybody on the document except whoever it came from. */
+function broadcast(
+  document: OpenDocument,
+  message: Uint8Array,
+  from: Connection | undefined,
+): void {
+  for (const connection of document.connections) {
+    if (connection !== from) {
+      connection.send(message);
+    }
+  }
 }
 
 function anchorOf(documentId: ObjectId): Anchor {

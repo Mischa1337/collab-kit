@@ -1,15 +1,16 @@
 import type { IncomingMessage, Server } from 'node:http';
 import type { Duplex } from 'node:stream';
 
-import { ObjectId, type Db } from 'mongodb';
+import type { Db, ObjectId } from 'mongodb';
 import type { Logger } from 'pino';
 import { WebSocketServer, type WebSocket } from 'ws';
-
-import { mayOpenDocument } from '../auth/access.ts';
-import type { Actor } from '../auth/token.ts';
-import type { Connection, DocumentHub, OpenDocument } from './hub.ts';
 import { encodeAwarenessUpdate } from 'y-protocols/awareness';
 
+import type { Actor } from '../actor.ts';
+import { mayOpenDocument } from '../auth/access.ts';
+import { documentExists } from '../db/collections/documents.ts';
+import { asObjectId } from '../input.ts';
+import type { Connection, DocumentHub, OpenDocument } from './hub.ts';
 import { encodeAwareness, encodeSyncStep1, handleMessage } from './sync.ts';
 
 /** The client announces two subprotocols: this marker and the token itself. */
@@ -192,11 +193,10 @@ async function admit(
     return { status: 404, text: 'Not Found', reason: 'unknown path' };
   }
 
-  const raw = path.slice(prefix.length).split('?')[0] ?? '';
-  if (!ObjectId.isValid(raw)) {
+  const documentId = asObjectId(path.slice(prefix.length).split('?')[0]);
+  if (documentId === undefined) {
     return { status: 400, text: 'Bad Request', reason: 'malformed document key' };
   }
-  const documentId = new ObjectId(raw);
 
   const token = readToken(request);
   if (token === undefined) {
@@ -210,11 +210,7 @@ async function admit(
     return { status: 401, text: 'Unauthorized', reason: 'token rejected' };
   }
 
-  const known = await options.db
-    .collection('documents')
-    .findOne({ _id: documentId }, { projection: { _id: 1 } });
-
-  if (known === null) {
+  if (!(await documentExists(options.db, documentId))) {
     return { status: 404, text: 'Not Found', reason: 'unknown document' };
   }
 

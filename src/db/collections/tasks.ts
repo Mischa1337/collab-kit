@@ -1,6 +1,8 @@
 import { ObjectId, type Db, type Document, type Filter } from 'mongodb';
 
-import { anchoredAt, type Anchor, type AnchorQuery } from '../../anchor.ts';
+import { anchorSchema, anchoredAt, type Anchor, type AnchorQuery } from '../../anchor.ts';
+import { defined, matchOptional } from '../../optional.ts';
+import type { CollectionDefinition } from '../apply.ts';
 import { changeWithEvent } from './events.ts';
 
 /** Who a task belongs to. A group can hold one, the change it leads to cannot. */
@@ -34,6 +36,38 @@ export interface TaskRecord {
   createdBy: string;
 }
 
+export const tasksDefinition: CollectionDefinition = {
+  name: 'tasks',
+  schema: {
+    bsonType: 'object',
+    required: ['kind', 'title', 'state', 'createdAt', 'createdBy'],
+    properties: {
+      kind: { bsonType: 'string', description: 'task, review, revision, approval, ...' },
+      title: { bsonType: 'string' },
+      state: {
+        bsonType: 'string',
+        description: 'free, the docking tool brings its own vocabulary',
+      },
+      anchor: anchorSchema,
+      parentId: { bsonType: 'objectId', description: 'makes it a subtask' },
+      subject: {
+        bsonType: 'object',
+        required: ['kind', 'id'],
+        properties: { kind: { enum: ['actor', 'group'] }, id: {} },
+      },
+      order: { bsonType: 'number', description: 'order among siblings, D9.3' },
+      detail: { bsonType: 'object', description: 'free, the service never reads it' },
+      createdAt: { bsonType: 'date' },
+      createdBy: { bsonType: 'string' },
+    },
+  },
+  indexes: [
+    { key: { 'subject.id': 1, state: 1 }, name: 'subject_state' },
+    { key: { 'anchor.id': 1 }, name: 'anchor_id' },
+    { key: { parentId: 1, order: 1 }, name: 'parent_order' },
+  ],
+};
+
 export interface NewTask {
   readonly kind: string;
   readonly title: string;
@@ -55,11 +89,13 @@ export async function createTask(db: Db, input: NewTask, now = new Date()): Prom
     state: input.state,
     createdAt: now,
     createdBy: input.createdBy,
-    ...(input.anchor === undefined ? {} : { anchor: input.anchor }),
-    ...(input.parentId === undefined ? {} : { parentId: input.parentId }),
-    ...(input.subject === undefined ? {} : { subject: input.subject }),
-    ...(input.order === undefined ? {} : { order: input.order }),
-    ...(input.detail === undefined ? {} : { detail: input.detail }),
+    ...defined({
+      anchor: input.anchor,
+      parentId: input.parentId,
+      subject: input.subject,
+      order: input.order,
+      detail: input.detail,
+    }),
   };
 
   await db.collection<TaskRecord>('tasks').insertOne(task);
@@ -90,7 +126,7 @@ async function changeTask(
         actorId: event.actorId,
         anchor: { kind: 'task', id: taskId },
         detail: event.detail,
-        ...(event.reason === undefined ? {} : { reason: event.reason }),
+        ...defined({ reason: event.reason }),
       },
     },
     now,
@@ -118,7 +154,7 @@ export async function setTaskState(
       kind: 'task-state',
       actorId: input.actorId,
       detail: { to: input.state },
-      ...(input.reason === undefined ? {} : { reason: input.reason }),
+      ...defined({ reason: input.reason }),
     },
     now,
   );
@@ -144,7 +180,7 @@ export async function assignTask(
       kind: 'task-subject',
       actorId: input.actorId,
       detail: { to: input.subject },
-      ...(input.reason === undefined ? {} : { reason: input.reason }),
+      ...defined({ reason: input.reason }),
     },
     now,
   );
@@ -169,18 +205,12 @@ export interface TaskQuery {
 export async function readTasks(db: Db, query: TaskQuery = {}): Promise<TaskRecord[]> {
   const filter: Document = {
     ...(query.anchor === undefined ? {} : anchoredAt(query.anchor)),
-    ...(query.kind === undefined ? {} : { kind: query.kind }),
-    ...(query.state === undefined ? {} : { state: query.state }),
+    ...defined({ kind: query.kind, state: query.state }),
     ...(query.subject === undefined
       ? {}
       : { 'subject.kind': query.subject.kind, 'subject.id': query.subject.id }),
+    ...matchOptional('parentId', query.parentId),
   };
-
-  if (query.parentId === TOP) {
-    filter['parentId'] = { $exists: false };
-  } else if (query.parentId !== undefined) {
-    filter['parentId'] = query.parentId;
-  }
 
   return db
     .collection<TaskRecord>('tasks')

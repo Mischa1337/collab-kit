@@ -154,6 +154,14 @@ describe('who may change what', () => {
     expect((await request(server).get(`/rooms/${roomId}`).set(as(carol))).status).toBe(404);
   });
 
+  it('shows a group to its members and hides it from everybody else', async () => {
+    const { groupId } = await setUp();
+    const carol = tokenFor('carol');
+
+    expect((await request(server).get(`/groups/${groupId}`).set(as(bob))).status).toBe(200);
+    expect((await request(server).get(`/groups/${groupId}`).set(as(carol))).status).toBe(404);
+  });
+
   it('hides a document that sits in no room from everyone but its creator', async () => {
     const loose = await request(server).post('/documents').set(as(alice)).send({ name: 'Allein' });
     const id = loose.body._id as string;

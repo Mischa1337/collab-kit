@@ -1,6 +1,8 @@
 import { ObjectId, type Db, type Document, type Filter } from 'mongodb';
 
-import { anchoredAt, type Anchor, type AnchorQuery } from '../../anchor.ts';
+import { anchorSchema, anchoredAt, type Anchor, type AnchorQuery } from '../../anchor.ts';
+import { defined, matchOptional } from '../../optional.ts';
+import type { CollectionDefinition } from '../apply.ts';
 import { changeWithEvent } from './events.ts';
 
 /**
@@ -26,6 +28,31 @@ export interface CommentRecord {
   createdAt: Date;
 }
 
+export const commentsDefinition: CollectionDefinition = {
+  name: 'comments',
+  schema: {
+    bsonType: 'object',
+    required: ['kind', 'anchor', 'actorId', 'body', 'createdAt'],
+    properties: {
+      kind: { bsonType: 'string', description: 'comment, feedback, message, reaction, ...' },
+      anchor: anchorSchema,
+      parentId: { bsonType: 'objectId', description: 'makes it an answer, D4.13' },
+      actorId: { bsonType: 'string' },
+      body: { bsonType: 'object', description: 'free, the service never reads it' },
+      state: {
+        bsonType: 'string',
+        description: 'free, D8.20: open, read, answered, applied, rejected',
+      },
+      createdAt: { bsonType: 'date' },
+    },
+  },
+  indexes: [
+    { key: { 'anchor.id': 1, _id: 1 }, name: 'anchor_id' },
+    { key: { parentId: 1, _id: 1 }, name: 'parent_thread' },
+    { key: { actorId: 1, _id: 1 }, name: 'actor_said' },
+  ],
+};
+
 export interface NewComment {
   readonly kind: string;
   readonly anchor: Anchor;
@@ -47,8 +74,7 @@ export async function createComment(
     actorId: input.actorId,
     body: input.body,
     createdAt: now,
-    ...(input.parentId === undefined ? {} : { parentId: input.parentId }),
-    ...(input.state === undefined ? {} : { state: input.state }),
+    ...defined({ parentId: input.parentId, state: input.state }),
   };
 
   await db.collection<CommentRecord>('comments').insertOne(comment);
@@ -87,7 +113,7 @@ export async function setCommentState(
         actorId: input.actorId,
         anchor: { kind: 'comment', id: commentId },
         detail: { to: input.state },
-        ...(input.reason === undefined ? {} : { reason: input.reason }),
+        ...defined({ reason: input.reason }),
       },
     },
     now,
@@ -113,16 +139,9 @@ export interface CommentQuery {
 export async function readComments(db: Db, query: CommentQuery = {}): Promise<CommentRecord[]> {
   const filter: Document = {
     ...(query.anchor === undefined ? {} : anchoredAt(query.anchor)),
-    ...(query.kind === undefined ? {} : { kind: query.kind }),
-    ...(query.state === undefined ? {} : { state: query.state }),
-    ...(query.actorId === undefined ? {} : { actorId: query.actorId }),
+    ...defined({ kind: query.kind, state: query.state, actorId: query.actorId }),
+    ...matchOptional('parentId', query.parentId),
   };
-
-  if (query.parentId === ROOT) {
-    filter['parentId'] = { $exists: false };
-  } else if (query.parentId !== undefined) {
-    filter['parentId'] = query.parentId;
-  }
 
   return db
     .collection<CommentRecord>('comments')

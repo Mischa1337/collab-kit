@@ -2,8 +2,8 @@ import express, { Router } from 'express';
 import type { Db } from 'mongodb';
 import type { Logger } from 'pino';
 
+import type { Actor } from '../actor.ts';
 import { requireActor } from '../auth/middleware.ts';
-import type { Actor } from '../auth/token.ts';
 import type { DocumentHub } from '../realtime/hub.ts';
 import { documentRoutes } from './documents.ts';
 import { eventRoutes } from './events.ts';

@@ -1,6 +1,8 @@
 import type { Db } from 'mongodb';
 
-import type { Actor } from '../../auth/token.ts';
+import type { Actor } from '../../actor.ts';
+import { defined } from '../../optional.ts';
+import type { CollectionDefinition } from '../apply.ts';
 
 /**
  * What the service keeps about an actor. No account, no password, no profile: the key
@@ -14,13 +16,29 @@ export interface ActorRecord {
   lastSeenAt: Date;
 }
 
+export const actorsDefinition: CollectionDefinition = {
+  name: 'actors',
+  schema: {
+    bsonType: 'object',
+    required: ['_id', 'firstSeenAt'],
+    properties: {
+      _id: {
+        bsonType: 'string',
+        description: 'the sub of the token, the service never issues a key of its own',
+      },
+      label: { bsonType: 'string' },
+      firstSeenAt: { bsonType: 'date' },
+      lastSeenAt: { bsonType: 'date' },
+    },
+  },
+};
+
 /**
  * Records that an actor was here. Creates the row on first contact and only moves
  * lastSeenAt afterwards, which is what D1.10 and D6.14 rest on.
  */
 export async function touchActor(db: Db, actor: Actor, now = new Date()): Promise<ActorRecord> {
-  const changes =
-    actor.label === undefined ? { lastSeenAt: now } : { lastSeenAt: now, label: actor.label };
+  const changes = { lastSeenAt: now, ...defined({ label: actor.label }) };
 
   const record = await db
     .collection<ActorRecord>('actors')

@@ -1,5 +1,7 @@
 import { Binary, ObjectId, type Db, type Document } from 'mongodb';
 
+import type { CollectionDefinition } from '../apply.ts';
+
 /**
  * One row per Y.Doc. The state is the folded shortcut for loading, never the source:
  * the truth is the stream of updates, and it is never deleted.
@@ -18,6 +20,32 @@ export interface DocumentRecord {
   /** When it was folded last. */
   updatedAt?: Date;
 }
+
+export const documentsDefinition: CollectionDefinition = {
+  name: 'documents',
+  schema: {
+    bsonType: 'object',
+    required: ['name', 'createdAt', 'createdBy'],
+    properties: {
+      name: { bsonType: 'string' },
+      contract: {
+        bsonType: 'object',
+        description: 'what the tool registered while docking, deliberately unconstrained',
+      },
+      state: {
+        bsonType: 'binData',
+        description: 'folded Yjs state, a shortcut for loading, absent until first folded',
+      },
+      stateThrough: {
+        bsonType: 'objectId',
+        description: 'the last update folded into state, absent together with it',
+      },
+      createdAt: { bsonType: 'date' },
+      createdBy: { bsonType: 'string' },
+      updatedAt: { bsonType: 'date', description: 'when it was folded last' },
+    },
+  },
+};
 
 export interface NewDocument {
   readonly name: string;
@@ -49,6 +77,15 @@ export async function createDocument(
 
 export async function findDocument(db: Db, id: ObjectId): Promise<DocumentRecord | null> {
   return db.collection<DocumentRecord>('documents').findOne({ _id: id });
+}
+
+/** Whether the document is there, without loading its folded state along the way. */
+export async function documentExists(db: Db, id: ObjectId): Promise<boolean> {
+  const found = await db
+    .collection<DocumentRecord>('documents')
+    .findOne({ _id: id }, { projection: { _id: 1 } });
+
+  return found !== null;
 }
 
 export interface Fold {

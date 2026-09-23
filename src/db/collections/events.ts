@@ -1,6 +1,8 @@
 import { ObjectId, type ClientSession, type Db, type Document, type Filter } from 'mongodb';
 
-import { anchoredAt, type Anchor, type AnchorQuery } from '../../anchor.ts';
+import { anchorSchema, anchoredAt, type Anchor, type AnchorQuery } from '../../anchor.ts';
+import { defined } from '../../optional.ts';
+import type { CollectionDefinition } from '../apply.ts';
 
 /**
  * Something happened, by somebody, at a place, at a time. No content and no
@@ -28,6 +30,31 @@ export interface EventRecord {
   createdAt: Date;
 }
 
+export const eventsDefinition: CollectionDefinition = {
+  name: 'events',
+  schema: {
+    bsonType: 'object',
+    required: ['kind', 'actorId', 'anchor', 'createdAt'],
+    properties: {
+      kind: {
+        bsonType: 'string',
+        description: 'read, presence, visit, checkpoint, whatever the tool reports',
+      },
+      actorId: { bsonType: 'string' },
+      anchor: anchorSchema,
+      at: { bsonType: 'objectId', description: 'a place in the update stream' },
+      label: { bsonType: 'string', description: 'only when a person named this moment' },
+      reason: { bsonType: 'string', description: 'the why, D6.6, can only come from a person' },
+      detail: { bsonType: 'object', description: 'free, the service never reads it' },
+      createdAt: { bsonType: 'date' },
+    },
+  },
+  indexes: [
+    { key: { 'anchor.id': 1, kind: 1, _id: -1 }, name: 'anchor_kind' },
+    { key: { actorId: 1, kind: 1, _id: -1 }, name: 'actor_kind' },
+  ],
+};
+
 export interface NewEvent {
   readonly kind: string;
   readonly actorId: string;
@@ -54,15 +81,10 @@ export async function recordEvent(
     actorId: input.actorId,
     anchor: input.anchor,
     createdAt: now,
-    ...(input.at === undefined ? {} : { at: input.at }),
-    ...(input.label === undefined ? {} : { label: input.label }),
-    ...(input.reason === undefined ? {} : { reason: input.reason }),
-    ...(input.detail === undefined ? {} : { detail: input.detail }),
+    ...defined({ at: input.at, label: input.label, reason: input.reason, detail: input.detail }),
   };
 
-  await db
-    .collection<EventRecord>('events')
-    .insertOne(record, session === undefined ? {} : { session });
+  await db.collection<EventRecord>('events').insertOne(record, defined({ session }));
 
   return record;
 }
@@ -82,8 +104,7 @@ function filterOf(query: EventQuery): Filter<EventRecord> {
   return {
     ...(query.anchor === undefined ? {} : anchoredAt(query.anchor)),
     ...(query.anchorIds === undefined ? {} : { 'anchor.id': { $in: [...query.anchorIds] } }),
-    ...(query.actorId === undefined ? {} : { actorId: query.actorId }),
-    ...(query.kind === undefined ? {} : { kind: query.kind }),
+    ...defined({ actorId: query.actorId, kind: query.kind }),
     ...(query.since === undefined ? {} : { _id: { $gt: query.since } }),
   } as Filter<EventRecord>;
 }

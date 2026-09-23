@@ -1,5 +1,7 @@
 import type { Document } from 'mongodb';
 
+import { matchOptional } from './optional.ts';
+
 /**
  * A pointer to a thing. The kind is a free string: the service resolves only the
  * kinds it keeps itself and carries the others through untouched.
@@ -62,13 +64,9 @@ export interface AnchorQuery {
  * once instead of three times.
  */
 export function anchoredAt(target: AnchorQuery): Document {
-  const filter: Document = { 'anchor.kind': target.kind, 'anchor.id': target.id };
-
-  if (target.unit === WHOLE) {
-    filter['anchor.unit'] = { $exists: false };
-  } else if (target.unit !== undefined) {
-    filter['anchor.unit'] = target.unit;
-  }
-
-  return filter;
+  return {
+    'anchor.kind': target.kind,
+    'anchor.id': target.id,
+    ...matchOptional('anchor.unit', target.unit),
+  };
 }

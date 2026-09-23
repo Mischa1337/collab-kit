@@ -1,6 +1,7 @@
 import { ObjectId, type Db, type Document } from 'mongodb';
 
-import type { Reference } from '../../anchor.ts';
+import { referenceSchema, type Reference } from '../../anchor.ts';
+import type { CollectionDefinition } from '../apply.ts';
 
 /**
  * A reference plus when it was put into the room and by whom. A room bundles whole
@@ -27,6 +28,37 @@ export interface Room {
   createdAt: Date;
   createdBy: string;
 }
+
+export const roomsDefinition: CollectionDefinition = {
+  name: 'rooms',
+  schema: {
+    bsonType: 'object',
+    required: ['name', 'createdAt', 'createdBy'],
+    properties: {
+      name: { bsonType: 'string' },
+      settings: {
+        bsonType: 'object',
+        description: 'switch positions chosen by the docking tool, deliberately unconstrained',
+      },
+      contains: {
+        bsonType: 'array',
+        description: 'what the room bundles, pointed at and never owned',
+        items: {
+          ...referenceSchema,
+          required: [...(referenceSchema['required'] as string[]), 'addedAt', 'addedBy'],
+          properties: {
+            ...(referenceSchema['properties'] as Document),
+            addedAt: { bsonType: 'date' },
+            addedBy: { bsonType: 'string' },
+          },
+        },
+      },
+      createdAt: { bsonType: 'date' },
+      createdBy: { bsonType: 'string' },
+    },
+  },
+  indexes: [{ key: { 'contains.id': 1 }, name: 'contains_id' }],
+};
 
 export interface NewRoom {
   readonly name: string;

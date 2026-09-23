@@ -1,6 +1,7 @@
 import type { RequestHandler } from 'express';
 
-import { TokenRejected, type Actor } from './token.ts';
+import type { Actor } from '../actor.ts';
+import { TokenRejected } from './token.ts';
 
 const BEARER = 'Bearer ';
 

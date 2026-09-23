@@ -5,7 +5,12 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { applyDefinitions } from '../../src/db/apply.ts';
 import { connect, type Storage } from '../../src/db/client.ts';
 import { collectionDefinitions } from '../../src/db/schemas.ts';
-import { createDocument, findDocument, foldState } from '../../src/db/collections/documents.ts';
+import {
+  createDocument,
+  documentExists,
+  findDocument,
+  foldState,
+} from '../../src/db/collections/documents.ts';
 
 const uri = process.env['MONGODB_URI'];
 if (uri === undefined || uri === '') {
@@ -57,6 +62,13 @@ describe('documents', () => {
 
   it('answers with null for a document nobody created', async () => {
     await expect(findDocument(storage.db, new ObjectId())).resolves.toBeNull();
+  });
+
+  it('tells whether a document is there', async () => {
+    const created = await createDocument(storage.db, { name: 'Entwurf', createdBy: 'alice' });
+
+    await expect(documentExists(storage.db, created._id)).resolves.toBe(true);
+    await expect(documentExists(storage.db, new ObjectId())).resolves.toBe(false);
   });
 });
 

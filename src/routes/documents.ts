@@ -1,11 +1,13 @@
 import { Router } from 'express';
 import type { Db } from 'mongodb';
 
-import { mayOpenDocument } from '../auth/access.ts';
+import { mayOpenDocument, mayReadDocument } from '../auth/access.ts';
 import { createDocument, findDocument } from '../db/collections/documents.ts';
 import { readUpdatesSince } from '../db/collections/updates.ts';
+import { asObject, asObjectId, asText } from '../input.ts';
+import { defined } from '../optional.ts';
 import type { DocumentHub } from '../realtime/hub.ts';
-import { actorOf, asObject, asObjectId, asText, bodyOf, fail } from './http.ts';
+import { actorOf, bodyOf, fail, guard, idOf, requireId } from './http.ts';
 
 /**
  * The working on a document runs over the WebSocket, which is why nothing here writes
@@ -14,6 +16,14 @@ import { actorOf, asObject, asObjectId, asText, bodyOf, fail } from './http.ts';
  */
 export function documentRoutes(db: Db, hub: DocumentHub): Router {
   const routes = Router();
+
+  routes.param('id', requireId('document'));
+
+  const opening = guard(
+    (actor, id) => mayOpenDocument({ db, actor, documentId: id }),
+    404,
+    'unknown document',
+  );
 
   routes.post('/documents', async (request, response) => {
     const body = bodyOf(request);
@@ -27,7 +37,7 @@ export function documentRoutes(db: Db, hub: DocumentHub): Router {
     const document = await createDocument(db, {
       name,
       createdBy: actorOf(request).actorId,
-      ...(contract === undefined ? {} : { contract }),
+      ...defined({ contract }),
     });
 
     // Born outside every room and therefore openable by nobody yet. Putting it into
@@ -36,20 +46,9 @@ export function documentRoutes(db: Db, hub: DocumentHub): Router {
   });
 
   routes.get('/documents/:id', async (request, response) => {
-    const id = asObjectId(request.params['id']);
+    const document = await findDocument(db, idOf(request));
 
-    if (id === undefined) {
-      return fail(response, 400, 'malformed document key');
-    }
-
-    const document = await findDocument(db, id);
-    const actor = actorOf(request);
-
-    if (
-      document === null ||
-      (document.createdBy !== actor.actorId &&
-        !(await mayOpenDocument({ db, actor, documentId: id })))
-    ) {
+    if (document === null || !(await mayReadDocument(db, actorOf(request), document))) {
       return fail(response, 404, 'unknown document');
     }
 
@@ -62,8 +61,7 @@ export function documentRoutes(db: Db, hub: DocumentHub): Router {
       contract: document.contract,
       createdAt: document.createdAt,
       createdBy: document.createdBy,
-      ...(document.stateThrough === undefined ? {} : { stateThrough: document.stateThrough }),
-      ...(document.updatedAt === undefined ? {} : { updatedAt: document.updatedAt }),
+      ...defined({ stateThrough: document.stateThrough, updatedAt: document.updatedAt }),
     });
   });
 
@@ -71,18 +69,9 @@ export function documentRoutes(db: Db, hub: DocumentHub): Router {
    * The chain of changes, oldest first, `since` as the cut. What the bytes mean is
    * the business of the tool; what the service adds is who and when.
    */
-  routes.get('/documents/:id/updates', async (request, response) => {
-    const id = asObjectId(request.params['id']);
-
-    if (id === undefined) {
-      return fail(response, 400, 'malformed document key');
-    }
-    if (!(await mayOpenDocument({ db, actor: actorOf(request), documentId: id }))) {
-      return fail(response, 404, 'unknown document');
-    }
-
+  routes.get('/documents/:id/updates', opening, async (request, response) => {
     const since = asObjectId(request.query['since']);
-    const updates = await readUpdatesSince(db, id, since);
+    const updates = await readUpdatesSince(db, idOf(request), since);
 
     response.json(
       updates.map((update) => ({
@@ -98,25 +87,15 @@ export function documentRoutes(db: Db, hub: DocumentHub): Router {
    * Holds this moment under a name. `reason` is the only place in the whole model
    * where the why of a change can live, which is why it is worth its own route.
    */
-  routes.post('/documents/:id/checkpoints', async (request, response) => {
-    const id = asObjectId(request.params['id']);
-
-    if (id === undefined) {
-      return fail(response, 400, 'malformed document key');
-    }
-    if (!(await mayOpenDocument({ db, actor: actorOf(request), documentId: id }))) {
-      return fail(response, 404, 'unknown document');
-    }
-
+  routes.post('/documents/:id/checkpoints', opening, async (request, response) => {
     const body = bodyOf(request);
     const label = asText(body['label']);
     const reason = asText(body['reason']);
 
     response.status(201).json(
-      await hub.checkpoint(id, {
+      await hub.checkpoint(idOf(request), {
         actorId: actorOf(request).actorId,
-        ...(label === undefined ? {} : { label }),
-        ...(reason === undefined ? {} : { reason }),
+        ...defined({ label, reason }),
       }),
     );
   });

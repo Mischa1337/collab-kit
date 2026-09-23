@@ -1,5 +1,7 @@
 import { Binary, ObjectId, type Db, type Filter } from 'mongodb';
 
+import type { CollectionDefinition } from '../apply.ts';
+
 /**
  * One change to a document, as the bytes Yjs produced. The service never looks into
  * them; what it adds is who changed something and when, which Yjs does not know.
@@ -14,6 +16,21 @@ export interface UpdateRecord {
   actorId: string;
   createdAt: Date;
 }
+
+export const updatesDefinition: CollectionDefinition = {
+  name: 'updates',
+  schema: {
+    bsonType: 'object',
+    required: ['documentId', 'update', 'actorId', 'createdAt'],
+    properties: {
+      documentId: { bsonType: 'objectId' },
+      update: { bsonType: 'binData', description: 'the Yjs bytes, opaque to the service' },
+      actorId: { bsonType: 'string', description: 'D6.19, author on every single change' },
+      createdAt: { bsonType: 'date' },
+    },
+  },
+  indexes: [{ key: { documentId: 1, _id: 1 }, name: 'document_stream' }],
+};
 
 export interface NewUpdate {
   readonly documentId: ObjectId;
