@@ -9,15 +9,8 @@ export interface Membership {
   addedBy: string;
 }
 
-/**
- * A group is a set of actors and nothing else. No object, no task and no utterance
- * hangs on it: a task may be addressed to a group, but then the task points at the
- * group and not the other way round.
- *
- * What a group stands for is not decided here. A group in a room is the role, and
- * which groups exist is the business of the docking tool.
- */
-export interface Group {
+/** A set of actors, nothing more; what it stands for, a role say, is the business of the tool. */
+export interface GroupRecord {
   _id: ObjectId;
   name: string;
   /** What the group means to the docking tool. The service never reads it. */
@@ -31,7 +24,7 @@ export const groupsDefinition: CollectionDefinition = {
   name: 'groups',
   schema: {
     bsonType: 'object',
-    required: ['name', 'members', 'createdAt', 'createdBy'],
+    required: ['name', 'settings', 'members', 'createdAt', 'createdBy'],
     properties: {
       name: { bsonType: 'string' },
       settings: {
@@ -66,8 +59,8 @@ export interface NewGroup {
   readonly members?: readonly string[];
 }
 
-export async function createGroup(db: Db, input: NewGroup, now = new Date()): Promise<Group> {
-  const group: Group = {
+export async function createGroup(db: Db, input: NewGroup, now = new Date()): Promise<GroupRecord> {
+  const group: GroupRecord = {
     _id: new ObjectId(),
     name: input.name,
     settings: input.settings ?? {},
@@ -80,12 +73,12 @@ export async function createGroup(db: Db, input: NewGroup, now = new Date()): Pr
     createdBy: input.createdBy,
   };
 
-  await db.collection<Group>('groups').insertOne(group);
+  await db.collection<GroupRecord>('groups').insertOne(group);
   return group;
 }
 
-export async function findGroup(db: Db, id: ObjectId): Promise<Group | null> {
-  return db.collection<Group>('groups').findOne({ _id: id });
+export async function findGroup(db: Db, id: ObjectId): Promise<GroupRecord | null> {
+  return db.collection<GroupRecord>('groups').findOne({ _id: id });
 }
 
 export interface NewMember {
@@ -93,10 +86,7 @@ export interface NewMember {
   readonly addedBy: string;
 }
 
-/**
- * Takes an actor in and answers whether that was new. Joining a group is a change of
- * role, which is why the moment is kept and not only the fact.
- */
+/** Takes an actor in, answers whether that was new; keeps when and by whom, as a role changes. */
 export async function addMember(
   db: Db,
   groupId: ObjectId,
@@ -110,7 +100,7 @@ export async function addMember(
   };
 
   const result = await db
-    .collection<Group>('groups')
+    .collection<GroupRecord>('groups')
     .updateOne(
       { _id: groupId, 'members.actorId': { $ne: input.actorId } },
       { $push: { members: member } },
@@ -121,24 +111,18 @@ export async function addMember(
 
 export async function removeMember(db: Db, groupId: ObjectId, actorId: string): Promise<boolean> {
   const result = await db
-    .collection<Group>('groups')
+    .collection<GroupRecord>('groups')
     .updateOne({ _id: groupId }, { $pull: { members: { actorId } } });
 
   return result.modifiedCount === 1;
 }
 
 /** Every group this actor is in. */
-export async function groupsOf(db: Db, actorId: string): Promise<Group[]> {
-  return db
-    .collection<Group>('groups')
-    .find({ members: { $elemMatch: { actorId } } })
-    .toArray();
+export async function groupsOf(db: Db, actorId: string): Promise<GroupRecord[]> {
+  return db.collection<GroupRecord>('groups').find({ 'members.actorId': actorId }).toArray();
 }
 
-/**
- * Whether the actor is in at least one of these groups. Asked as a single question,
- * because the caller wants a yes or no and not the groups themselves.
- */
+/** Whether the actor is in at least one of these groups, as a single yes-or-no query. */
 export async function isMemberOfAny(
   db: Db,
   groupIds: readonly ObjectId[],
@@ -149,9 +133,9 @@ export async function isMemberOfAny(
   }
 
   const found = await db
-    .collection<Group>('groups')
+    .collection<GroupRecord>('groups')
     .findOne(
-      { _id: { $in: [...groupIds] }, members: { $elemMatch: { actorId } } },
+      { _id: { $in: [...groupIds] }, 'members.actorId': actorId },
       { projection: { _id: 1 } },
     );
 
@@ -165,7 +149,7 @@ export async function setGroupSettings(
   settings: Document,
 ): Promise<boolean> {
   const result = await db
-    .collection<Group>('groups')
+    .collection<GroupRecord>('groups')
     .updateOne({ _id: groupId }, { $set: { settings } });
 
   return result.matchedCount === 1;

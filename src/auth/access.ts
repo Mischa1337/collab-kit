@@ -8,7 +8,7 @@ import { ObjectId, type Db } from 'mongodb';
 import type { Actor } from '../model/actor.ts';
 import type { Reference } from '../model/anchor.ts';
 import type { WorkpieceRecord } from '../db/collections/workpieces.ts';
-import { findGroup, isMemberOfAny, type Group } from '../db/collections/groups.ts';
+import { findGroup, isMemberOfAny, type GroupRecord } from '../db/collections/groups.ts';
 import { findRoom, roomsContaining, type Containment } from '../db/collections/rooms.ts';
 
 export interface AccessRequest {
@@ -81,7 +81,10 @@ export async function mayEnterRoom(db: Db, actor: Actor, roomId: ObjectId): Prom
  * Whether the actor may see a group: its members and whoever created it, nobody else.
  * Who is in a group is exactly what that group opens.
  */
-export function maySeeGroup(actor: Actor, group: Pick<Group, 'createdBy' | 'members'>): boolean {
+export function maySeeGroup(
+  actor: Actor,
+  group: Pick<GroupRecord, 'createdBy' | 'members'>,
+): boolean {
   return (
     group.createdBy === actor.actorId ||
     group.members.some((member) => member.actorId === actor.actorId)
