@@ -263,7 +263,12 @@ export function createDocumentHub(options: HubOptions): DocumentHub {
       // The position is what makes D6.18 answerable later: everything after it is
       // what this person was not around for. It says delivered, not read; what a
       // person actually looked at only the tool can report.
-      await trace(documentId, 'left', connection.actor.actorId, entry.copy.lastUpdateId);
+      await Promise.all([
+        trace(documentId, 'left', connection.actor.actorId, entry.copy.lastUpdateId),
+        touchActor(options.db, connection.actor).catch((error: unknown) => {
+          options.logger.error({ error }, 'could not record the actor');
+        }),
+      ]);
 
       if (entry.document.connections.size === 0) {
         await release(key, entry);
