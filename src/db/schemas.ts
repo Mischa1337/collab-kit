@@ -1,7 +1,7 @@
 import type { CollectionDefinition } from './apply.ts';
 import { actorsDefinition } from './collections/actors.ts';
 import { commentsDefinition } from './collections/comments.ts';
-import { documentsDefinition } from './collections/documents.ts';
+import { workpiecesDefinition } from './collections/workpieces.ts';
 import { eventsDefinition } from './collections/events.ts';
 import { groupsDefinition } from './collections/groups.ts';
 import { roomsDefinition } from './collections/rooms.ts';
@@ -17,7 +17,7 @@ function whileDeveloping(definition: CollectionDefinition): CollectionDefinition
 export const collectionDefinitions: readonly CollectionDefinition[] = [
   actorsDefinition,
   commentsDefinition,
-  documentsDefinition,
+  workpiecesDefinition,
   eventsDefinition,
   groupsDefinition,
   roomsDefinition,

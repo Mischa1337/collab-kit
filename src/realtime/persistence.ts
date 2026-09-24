@@ -1,20 +1,20 @@
 import type { Db, ObjectId } from 'mongodb';
 import * as Y from 'yjs';
 
-import { findDocument, foldState } from '../db/collections/documents.ts';
+import { findWorkpiece, foldState } from '../db/collections/workpieces.ts';
 import { appendUpdate, readUpdatesSince } from '../db/collections/updates.ts';
 import { defined } from '../utils/optional.ts';
 
 /**
- * A document in memory and how far it is kept. The truth stays in the database: this
+ * A workpiece in memory and how far it is kept. The truth stays in the database: this
  * is only the working copy, and everything written for it runs through one queue.
  */
 export interface WorkingCopy {
-  readonly documentId: ObjectId;
+  readonly workpieceId: ObjectId;
   readonly doc: Y.Doc;
   /** Writes run one after another, so the stored order matches the order of arrival. */
   queue: Promise<void>;
-  /** The newest update written for this document, the cut for the next folding. */
+  /** The newest update written for this workpiece, the cut for the next folding. */
   lastUpdateId?: ObjectId;
   /** What stateThrough holds in the database, as far as this process knows. */
   foldedThrough?: ObjectId;
@@ -26,11 +26,11 @@ export interface WorkingCopy {
  * Rebuilds the working copy from the folded state plus every change after it. Nothing
  * listens to the Y.Doc yet, so replaying the history does not store it a second time.
  */
-export async function loadWorkingCopy(db: Db, documentId: ObjectId): Promise<WorkingCopy> {
-  const record = await findDocument(db, documentId);
+export async function loadWorkingCopy(db: Db, workpieceId: ObjectId): Promise<WorkingCopy> {
+  const record = await findWorkpiece(db, workpieceId);
 
   if (record === null) {
-    throw new Error(`unknown document ${documentId.toHexString()}`);
+    throw new Error(`unknown workpiece ${workpieceId.toHexString()}`);
   }
 
   const doc = new Y.Doc();
@@ -38,15 +38,15 @@ export async function loadWorkingCopy(db: Db, documentId: ObjectId): Promise<Wor
     Y.applyUpdate(doc, new Uint8Array(record.state.buffer));
   }
 
-  // Everything the shortcut does not cover yet. A document that was never folded
+  // Everything the shortcut does not cover yet. A workpiece that was never folded
   // starts from nothing and reads its whole history, which is just as correct.
-  const pending = await readUpdatesSince(db, documentId, record.stateThrough);
+  const pending = await readUpdatesSince(db, workpieceId, record.stateThrough);
   for (const row of pending) {
     Y.applyUpdate(doc, new Uint8Array(row.update.buffer));
   }
 
   return {
-    documentId,
+    workpieceId,
     doc,
     queue: Promise.resolve(),
     sinceFold: pending.length,
@@ -80,7 +80,7 @@ export async function storeUpdate(
   update: Uint8Array,
   actorId: string,
 ): Promise<void> {
-  const record = await appendUpdate(db, { documentId: copy.documentId, update, actorId });
+  const record = await appendUpdate(db, { workpieceId: copy.workpieceId, update, actorId });
 
   copy.lastUpdateId = record._id;
   copy.sinceFold += 1;
@@ -105,7 +105,7 @@ export async function foldNow(db: Db, copy: WorkingCopy): Promise<boolean> {
   }
 
   const written = await foldState(db, {
-    documentId: copy.documentId,
+    workpieceId: copy.workpieceId,
     state: Y.encodeStateAsUpdate(copy.doc),
     through,
     ...defined({ expected: copy.foldedThrough }),

@@ -103,7 +103,7 @@ export function roomRoutes(db: Db): Router {
    * Everything that happened in this room, oldest first, with `since` as the cut.
    *
    * The room has to resolve what it bundles, because the traces of the hub anchor at
-   * the document they belong to and not at the room. Asking for anchorKind=room alone
+   * the workpiece they belong to and not at the room. Asking for anchorKind=room alone
    * would find the chat and nothing of the work.
    */
   routes.get('/rooms/:id/events', entering, async (request, response) => {

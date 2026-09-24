@@ -4,7 +4,7 @@ import { createTokenCheck } from './auth/token.ts';
 import { applyDefinitions } from './db/apply.ts';
 import { connect } from './db/client.ts';
 import { collectionDefinitions } from './db/schemas.ts';
-import { createDocumentHub } from './realtime/hub.ts';
+import { createWorkpieceHub } from './realtime/hub.ts';
 import { attachGateway } from './realtime/gateway.ts';
 import { createApi } from './routes/index.ts';
 import { createServer } from './routes/server.ts';
@@ -23,7 +23,7 @@ const checkToken = createTokenCheck({
   actorClaim: config.actorClaim,
   labelClaim: config.labelClaim,
 });
-const hub = createDocumentHub({ db: storage.db, logger: log });
+const hub = createWorkpieceHub({ db: storage.db, logger: log });
 const server = createServer({
   logger: log,
   api: createApi({ db: storage.db, hub, checkToken, logger: log }),

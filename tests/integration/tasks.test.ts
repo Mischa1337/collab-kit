@@ -60,14 +60,14 @@ describe('creating a task', () => {
     expect(created.parentId).toBeUndefined();
   });
 
-  it('cuts out a part of a document when it carries a unit', async () => {
-    const documentId = new ObjectId();
+  it('cuts out a part of a workpiece when it carries a unit', async () => {
+    const workpieceId = new ObjectId();
     const created = await plain({
-      anchor: { kind: 'document', id: documentId, unit: 'statement-3' },
+      anchor: { kind: 'workpiece', id: workpieceId, unit: 'statement-3' },
     });
 
     const stored = await findTask(storage.db, created._id);
-    expect(stored?.anchor).toEqual({ kind: 'document', id: documentId, unit: 'statement-3' });
+    expect(stored?.anchor).toEqual({ kind: 'workpiece', id: workpieceId, unit: 'statement-3' });
   });
 
   it('goes to a group just as well as to a person', async () => {
@@ -220,8 +220,8 @@ describe('reading tasks back', () => {
   });
 
   it('tells the kinds apart', async () => {
-    const documentId = new ObjectId();
-    const anchor = { kind: 'document', id: documentId };
+    const workpieceId = new ObjectId();
+    const anchor = { kind: 'workpiece', id: workpieceId };
 
     await plain({ anchor, kind: 'review', title: 'begutachten' });
     await plain({ anchor, kind: 'revision', title: 'überarbeiten' });
@@ -230,20 +230,20 @@ describe('reading tasks back', () => {
     expect(reviews.map((task) => task.title)).toEqual(['begutachten']);
   });
 
-  it('separates a whole document from one place inside it', async () => {
-    const documentId = new ObjectId();
+  it('separates a whole workpiece from one place inside it', async () => {
+    const workpieceId = new ObjectId();
 
-    await plain({ anchor: { kind: 'document', id: documentId }, title: 'ganz' });
+    await plain({ anchor: { kind: 'workpiece', id: workpieceId }, title: 'ganz' });
     await plain({
-      anchor: { kind: 'document', id: documentId, unit: 'statement-3' },
+      anchor: { kind: 'workpiece', id: workpieceId, unit: 'statement-3' },
       title: 'teil',
     });
 
-    const all = await readTasks(storage.db, { anchor: { kind: 'document', id: documentId } });
+    const all = await readTasks(storage.db, { anchor: { kind: 'workpiece', id: workpieceId } });
     expect(all.map((task) => task.title).toSorted()).toEqual(['ganz', 'teil']);
 
     const part = await readTasks(storage.db, {
-      anchor: { kind: 'document', id: documentId, unit: 'statement-3' },
+      anchor: { kind: 'workpiece', id: workpieceId, unit: 'statement-3' },
     });
     expect(part.map((task) => task.title)).toEqual(['teil']);
   });

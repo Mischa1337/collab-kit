@@ -16,14 +16,14 @@ const database = `collab_kit_events_${Date.now()}_${Math.random().toString(36).s
 
 let storage: Storage;
 
-/** A fresh document key per test, so the collection stays shared but the anchors do not. */
+/** A fresh workpiece key per test, so the collection stays shared but the anchors do not. */
 const on = (unit?: unknown) => ({
-  kind: 'document',
-  id: documentId,
+  kind: 'workpiece',
+  id: workpieceId,
   ...(unit === undefined ? {} : { unit }),
 });
 
-let documentId: ObjectId;
+let workpieceId: ObjectId;
 
 beforeAll(async () => {
   storage = await connect({ uri, database });
@@ -31,7 +31,7 @@ beforeAll(async () => {
 });
 
 beforeEach(() => {
-  documentId = new ObjectId();
+  workpieceId = new ObjectId();
 });
 
 afterAll(async () => {

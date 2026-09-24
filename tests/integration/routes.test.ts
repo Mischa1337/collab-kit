@@ -7,7 +7,7 @@ import { createTokenCheck } from '../../src/auth/token.ts';
 import { applyDefinitions } from '../../src/db/apply.ts';
 import { connect, type Storage } from '../../src/db/client.ts';
 import { collectionDefinitions } from '../../src/db/schemas.ts';
-import { createDocumentHub } from '../../src/realtime/hub.ts';
+import { createWorkpieceHub } from '../../src/realtime/hub.ts';
 import { createApi } from '../../src/routes/index.ts';
 import { createServer } from '../../src/routes/server.ts';
 
@@ -33,7 +33,7 @@ beforeAll(async () => {
   storage = await connect({ uri, database });
   await applyDefinitions(storage.db, collectionDefinitions);
 
-  const hub = createDocumentHub({ db: storage.db, logger });
+  const hub = createWorkpieceHub({ db: storage.db, logger });
   server = createServer({
     logger,
     api: createApi({ db: storage.db, hub, checkToken: createTokenCheck({ key: secret }), logger }),
@@ -45,15 +45,15 @@ afterAll(async () => {
   await storage.close();
 });
 
-/** The whole first run: room, group, document, and the socket address at the end. */
-async function setUp(): Promise<{ roomId: string; groupId: string; documentId: string }> {
+/** The whole first run: room, group, workpiece, and the socket address at the end. */
+async function setUp(): Promise<{ roomId: string; groupId: string; workpieceId: string }> {
   const room = await request(server).post('/rooms').set(as(alice)).send({ name: 'Seminar' });
   const group = await request(server)
     .post('/groups')
     .set(as(alice))
     .send({ name: 'Teilnehmende', members: ['alice', 'bob'] });
-  const document = await request(server)
-    .post('/documents')
+  const workpiece = await request(server)
+    .post('/workpieces')
     .set(as(alice))
     .send({ name: 'Entwurf', contract: { kind: 'sql-skript' } });
 
@@ -62,12 +62,12 @@ async function setUp(): Promise<{ roomId: string; groupId: string; documentId: s
     request(server).post(`/rooms/${roomId}/contains`).set(as(alice)).send(entry);
 
   await into({ kind: 'group', id: group.body._id as string });
-  await into({ kind: 'document', id: document.body._id as string });
+  await into({ kind: 'workpiece', id: workpiece.body._id as string });
 
   return {
     roomId,
     groupId: group.body._id as string,
-    documentId: document.body._id as string,
+    workpieceId: workpiece.body._id as string,
   };
 }
 
@@ -84,15 +84,15 @@ describe('the guard in front of everything', () => {
 });
 
 describe('setting a room up', () => {
-  it('walks the whole way and ends at an openable document', async () => {
-    const { roomId, documentId } = await setUp();
+  it('walks the whole way and ends at an openable workpiece', async () => {
+    const { roomId, workpieceId } = await setUp();
 
     const room = await request(server).get(`/rooms/${roomId}`).set(as(bob));
     expect(room.status).toBe(200);
     expect(room.body.contains).toHaveLength(2);
 
-    // bob is in a group the room bundles, so the document is his to open.
-    expect((await request(server).get(`/documents/${documentId}`).set(as(bob))).status).toBe(200);
+    // bob is in a group the room bundles, so the workpiece is his to open.
+    expect((await request(server).get(`/workpieces/${workpieceId}`).set(as(bob))).status).toBe(200);
   });
 
   it('takes the actor from the token and never from the body', async () => {
@@ -105,10 +105,10 @@ describe('setting a room up', () => {
   });
 
   it('keeps the contract of the tool untouched', async () => {
-    const { documentId } = await setUp();
-    const document = await request(server).get(`/documents/${documentId}`).set(as(alice));
+    const { workpieceId } = await setUp();
+    const workpiece = await request(server).get(`/workpieces/${workpieceId}`).set(as(alice));
 
-    expect(document.body.contract).toEqual({ kind: 'sql-skript' });
+    expect(workpiece.body.contract).toEqual({ kind: 'sql-skript' });
   });
 
   it('refuses a room without a name', async () => {
@@ -162,12 +162,12 @@ describe('who may change what', () => {
     expect((await request(server).get(`/groups/${groupId}`).set(as(carol))).status).toBe(404);
   });
 
-  it('hides a document that sits in no room from everyone but its creator', async () => {
-    const loose = await request(server).post('/documents').set(as(alice)).send({ name: 'Allein' });
+  it('hides a workpiece that sits in no room from everyone but its creator', async () => {
+    const loose = await request(server).post('/workpieces').set(as(alice)).send({ name: 'Allein' });
     const id = loose.body._id as string;
 
-    expect((await request(server).get(`/documents/${id}`).set(as(alice))).status).toBe(200);
-    expect((await request(server).get(`/documents/${id}`).set(as(bob))).status).toBe(404);
+    expect((await request(server).get(`/workpieces/${id}`).set(as(alice))).status).toBe(200);
+    expect((await request(server).get(`/workpieces/${id}`).set(as(bob))).status).toBe(404);
   });
 });
 
@@ -212,41 +212,41 @@ describe('the room as a channel', () => {
   });
 
   it('gathers what the room bundles, not only what anchors at the room', async () => {
-    const { roomId, documentId } = await setUp();
+    const { roomId, workpieceId } = await setUp();
 
     await request(server)
       .post('/events')
       .set(as(alice))
-      .send({ kind: 'note', anchor: { kind: 'document', id: documentId } });
+      .send({ kind: 'note', anchor: { kind: 'workpiece', id: workpieceId } });
 
     const events = await request(server).get(`/rooms/${roomId}/events`).set(as(bob));
 
     expect(events.body.map((event: { kind: string }) => event.kind)).toContain('note');
   });
 
-  it('refuses a trace on a document the actor may not open', async () => {
-    const loose = await request(server).post('/documents').set(as(alice)).send({ name: 'Allein' });
+  it('refuses a trace on a workpiece the actor may not open', async () => {
+    const loose = await request(server).post('/workpieces').set(as(alice)).send({ name: 'Allein' });
 
     const refused = await request(server)
       .post('/events')
       .set(as(bob))
-      .send({ kind: 'note', anchor: { kind: 'document', id: loose.body._id as string } });
+      .send({ kind: 'note', anchor: { kind: 'workpiece', id: loose.body._id as string } });
 
     expect(refused.status).toBe(404);
   });
 });
 
-describe('the history of a document', () => {
+describe('the history of a workpiece', () => {
   it('answers with an empty chain and a checkpoint that names the moment', async () => {
-    const { documentId } = await setUp();
+    const { workpieceId } = await setUp();
 
-    const updates = await request(server).get(`/documents/${documentId}/updates`).set(as(bob));
+    const updates = await request(server).get(`/workpieces/${workpieceId}/updates`).set(as(bob));
 
     expect(updates.status).toBe(200);
     expect(updates.body).toEqual([]);
 
     const marked = await request(server)
-      .post(`/documents/${documentId}/checkpoints`)
+      .post(`/workpieces/${workpieceId}/checkpoints`)
       .set(as(bob))
       .send({ label: 'Abgabe', reason: 'so wollen wir es lassen' });
 
@@ -259,11 +259,11 @@ describe('the history of a document', () => {
     });
   });
 
-  it('keeps the chain from somebody who may not open the document', async () => {
-    const loose = await request(server).post('/documents').set(as(alice)).send({ name: 'Allein' });
+  it('keeps the chain from somebody who may not open the workpiece', async () => {
+    const loose = await request(server).post('/workpieces').set(as(alice)).send({ name: 'Allein' });
 
     const refused = await request(server)
-      .get(`/documents/${loose.body._id as string}/updates`)
+      .get(`/workpieces/${loose.body._id as string}/updates`)
       .set(as(bob));
 
     expect(refused.status).toBe(404);

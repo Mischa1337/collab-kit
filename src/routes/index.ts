@@ -4,15 +4,15 @@ import type { Logger } from 'pino';
 
 import type { Actor } from '../model/actor.ts';
 import { requireActor } from '../auth/middleware.ts';
-import type { DocumentHub } from '../realtime/hub.ts';
-import { documentRoutes } from './documents.ts';
+import type { WorkpieceHub } from '../realtime/hub.ts';
+import { workpieceRoutes } from './workpieces.ts';
 import { eventRoutes } from './events.ts';
 import { groupRoutes } from './groups.ts';
 import { roomRoutes } from './rooms.ts';
 
 export interface ApiOptions {
   readonly db: Db;
-  readonly hub: DocumentHub;
+  readonly hub: WorkpieceHub;
   readonly checkToken: (token: string) => Actor;
   readonly logger: Logger;
 }
@@ -33,7 +33,7 @@ export function createApi(options: ApiOptions): Router {
 
   api.use(roomRoutes(options.db));
   api.use(groupRoutes(options.db));
-  api.use(documentRoutes(options.db, options.hub));
+  api.use(workpieceRoutes(options.db, options.hub));
   api.use(eventRoutes(options.db));
 
   return api;

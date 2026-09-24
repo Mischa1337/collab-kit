@@ -20,7 +20,7 @@ export const actorsDefinition: CollectionDefinition = {
     properties: {
       _id: {
         bsonType: 'string',
-        description: 'the sub of the token, the service never issues a key of its own',
+        description: 'the key from the token claim set by ACTOR_CLAIM, never issued by the service',
       },
       label: { bsonType: 'string' },
       lastSeenAt: { bsonType: 'date' },

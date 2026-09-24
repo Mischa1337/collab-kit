@@ -1,5 +1,5 @@
 /**
- * Measures what it costs to open a document, depending on how long its chain of
+ * Measures what it costs to open a workpiece, depending on how long its chain of
  * changes has grown. Answers whether folding is needed at all, and from when.
  *
  *   npm run measure
@@ -10,7 +10,7 @@ import * as Y from 'yjs';
 import { readConfig } from '../src/config.ts';
 import { applyDefinitions } from '../src/db/apply.ts';
 import { connect } from '../src/db/client.ts';
-import { createDocument } from '../src/db/collections/documents.ts';
+import { createWorkpiece } from '../src/db/collections/workpieces.ts';
 import { collectionDefinitions } from '../src/db/schemas.ts';
 import { readUpdatesSince, type UpdateRecord } from '../src/db/collections/updates.ts';
 
@@ -28,7 +28,7 @@ console.log('Änderungen | holen | einzeln anwenden | zusammenfassen + anwenden 
 console.log('-'.repeat(92));
 
 for (const size of SIZES) {
-  const document = await createDocument(storage.db, {
+  const workpiece = await createWorkpiece(storage.db, {
     name: `Messung ${size}`,
     createdBy: 'alice',
   });
@@ -49,7 +49,7 @@ for (const size of SIZES) {
 
   const rows: UpdateRecord[] = captured.map((update, index) => ({
     _id: new ObjectId(),
-    documentId: document._id,
+    workpieceId: workpiece._id,
     update: new Binary(update),
     actorId: index % 2 === 0 ? 'alice' : 'bob',
     createdAt: new Date(),
@@ -60,7 +60,7 @@ for (const size of SIZES) {
   }
 
   const fetchStart = process.hrtime.bigint();
-  const stored = await readUpdatesSince(storage.db, document._id);
+  const stored = await readUpdatesSince(storage.db, workpiece._id);
   const fetched = millis(fetchStart);
 
   const oneByOneStart = process.hrtime.bigint();

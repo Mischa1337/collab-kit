@@ -95,7 +95,7 @@ export interface Addition extends Reference {
  *
  * Nothing is checked for existence. A reference that points nowhere costs nothing,
  * and checking only the kinds the service happens to know would be a rule that holds
- * for documents and quietly does not hold for everything a tool brings along.
+ * for workpieces and quietly does not hold for everything a tool brings along.
  */
 export async function addToRoom(
   db: Db,
@@ -130,7 +130,7 @@ export async function removeFromRoom(db: Db, roomId: ObjectId, what: Reference):
   return result.modifiedCount === 1;
 }
 
-/** Every room this thing sits in, which is the way back from a document or a group. */
+/** Every room this thing sits in, which is the way back from a workpiece or a group. */
 export async function roomsContaining(db: Db, what: Reference): Promise<Room[]> {
   return db
     .collection<Room>('rooms')

@@ -9,7 +9,7 @@ describe('collectionDefinitions', () => {
     expect(names).toEqual([
       'actors',
       'comments',
-      'documents',
+      'workpieces',
       'events',
       'groups',
       'rooms',

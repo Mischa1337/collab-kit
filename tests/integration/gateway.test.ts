@@ -8,11 +8,11 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createTokenCheck } from '../../src/auth/token.ts';
 import { applyDefinitions } from '../../src/db/apply.ts';
 import { connect, type Storage } from '../../src/db/client.ts';
-import { createDocument } from '../../src/db/collections/documents.ts';
+import { createWorkpiece } from '../../src/db/collections/workpieces.ts';
 import { createGroup } from '../../src/db/collections/groups.ts';
 import { addToRoom, createRoom } from '../../src/db/collections/rooms.ts';
 import { collectionDefinitions } from '../../src/db/schemas.ts';
-import { createDocumentHub } from '../../src/realtime/hub.ts';
+import { createWorkpieceHub } from '../../src/realtime/hub.ts';
 import { attachGateway, type Gateway } from '../../src/realtime/gateway.ts';
 import { createServer } from '../../src/routes/server.ts';
 
@@ -29,7 +29,7 @@ let storage: Storage;
 let gateway: Gateway;
 let server: ReturnType<typeof createServer>;
 let port: number;
-let documentId: string;
+let workpieceId: string;
 
 type Attempt = { ok: true; socket: WebSocket } | { ok: false; status: number };
 
@@ -62,12 +62,12 @@ async function waitForCount(expected: number, timeoutMs = 2000): Promise<number>
   const deadline = Date.now() + timeoutMs;
 
   /* eslint-disable no-await-in-loop */
-  while (gateway.countFor(documentId) !== expected && Date.now() < deadline) {
+  while (gateway.countFor(workpieceId) !== expected && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   /* eslint-enable no-await-in-loop */
 
-  return gateway.countFor(documentId);
+  return gateway.countFor(workpieceId);
 }
 
 function close(socket: WebSocket): Promise<void> {
@@ -81,10 +81,10 @@ beforeAll(async () => {
   storage = await connect({ uri, database });
   await applyDefinitions(storage.db, collectionDefinitions);
 
-  const document = await createDocument(storage.db, { name: 'Entwurf', createdBy: 'alice' });
-  documentId = document._id.toHexString();
+  const workpiece = await createWorkpiece(storage.db, { name: 'Entwurf', createdBy: 'alice' });
+  workpieceId = workpiece._id.toHexString();
 
-  // Opening needs a room that bundles the document and a group alice is in.
+  // Opening needs a room that bundles the workpiece and a group alice is in.
   const room = await createRoom(storage.db, { name: 'Seminar', createdBy: 'alice' });
   const group = await createGroup(storage.db, {
     name: 'Teilnehmende',
@@ -92,8 +92,8 @@ beforeAll(async () => {
     members: ['alice'],
   });
   await addToRoom(storage.db, room._id, {
-    kind: 'document',
-    id: document._id,
+    kind: 'workpiece',
+    id: workpiece._id,
     addedBy: 'alice',
   });
   await addToRoom(storage.db, room._id, { kind: 'group', id: group._id, addedBy: 'alice' });
@@ -102,7 +102,7 @@ beforeAll(async () => {
   gateway = attachGateway({
     server,
     db: storage.db,
-    hub: createDocumentHub({ db: storage.db, logger: pino({ level: 'silent' }) }),
+    hub: createWorkpieceHub({ db: storage.db, logger: pino({ level: 'silent' }) }),
     checkToken: createTokenCheck({ key: secret }),
     logger: pino({ level: 'silent' }),
   });
@@ -120,12 +120,12 @@ afterAll(async () => {
 
 describe('the handshake', () => {
   it('lets a valid token through and counts the connection', async () => {
-    const attempt = await tryOpen(`/ws/${documentId}`);
+    const attempt = await tryOpen(`/ws/${workpieceId}`);
 
     expect(attempt.ok).toBe(true);
     if (!attempt.ok) return;
 
-    expect(gateway.countFor(documentId)).toBe(1);
+    expect(gateway.countFor(workpieceId)).toBe(1);
     expect(attempt.socket.protocol).toBe('bearer');
 
     await close(attempt.socket);
@@ -135,14 +135,14 @@ describe('the handshake', () => {
   it('refuses a token from another secret with 401', async () => {
     const foreign = jwt.sign({ sub: 'mallory' }, 'anderes-geheimnis', { expiresIn: '15m' });
 
-    await expect(tryOpen(`/ws/${documentId}`, ['bearer', foreign])).resolves.toEqual({
+    await expect(tryOpen(`/ws/${workpieceId}`, ['bearer', foreign])).resolves.toEqual({
       ok: false,
       status: 401,
     });
   });
 
   it('refuses a handshake that offers no token', async () => {
-    await expect(tryOpen(`/ws/${documentId}`, ['bearer'])).resolves.toEqual({
+    await expect(tryOpen(`/ws/${workpieceId}`, ['bearer'])).resolves.toEqual({
       ok: false,
       status: 401,
     });
@@ -151,13 +151,13 @@ describe('the handshake', () => {
   it('refuses somebody who is in no group of the room with 403', async () => {
     const stranger = jwt.sign({ sub: 'mallory', name: 'Mallory' }, secret, { expiresIn: '15m' });
 
-    await expect(tryOpen(`/ws/${documentId}`, ['bearer', stranger])).resolves.toEqual({
+    await expect(tryOpen(`/ws/${workpieceId}`, ['bearer', stranger])).resolves.toEqual({
       ok: false,
       status: 403,
     });
   });
 
-  it('answers an unknown document with 404', async () => {
+  it('answers an unknown workpiece with 404', async () => {
     await expect(tryOpen('/ws/6aacfebc84651b67d9e70456')).resolves.toEqual({
       ok: false,
       status: 404,
@@ -169,16 +169,16 @@ describe('the handshake', () => {
   });
 
   it('answers an unknown path with 404', async () => {
-    await expect(tryOpen(`/sonstwo/${documentId}`)).resolves.toEqual({ ok: false, status: 404 });
+    await expect(tryOpen(`/sonstwo/${workpieceId}`)).resolves.toEqual({ ok: false, status: 404 });
   });
 
-  it('holds two connections on the same document at once', async () => {
-    const first = await tryOpen(`/ws/${documentId}`);
-    const second = await tryOpen(`/ws/${documentId}`);
+  it('holds two connections on the same workpiece at once', async () => {
+    const first = await tryOpen(`/ws/${workpieceId}`);
+    const second = await tryOpen(`/ws/${workpieceId}`);
     expect(first.ok && second.ok).toBe(true);
     if (!first.ok || !second.ok) return;
 
-    expect(gateway.countFor(documentId)).toBe(2);
+    expect(gateway.countFor(workpieceId)).toBe(2);
 
     await close(first.socket);
     await expect(waitForCount(1)).resolves.toBe(1);

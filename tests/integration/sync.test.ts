@@ -10,9 +10,9 @@ import { applyDefinitions } from '../../src/db/apply.ts';
 import { connect, type Storage } from '../../src/db/client.ts';
 import { createGroup } from '../../src/db/collections/groups.ts';
 import { addToRoom, createRoom } from '../../src/db/collections/rooms.ts';
-import { createDocument } from '../../src/db/collections/documents.ts';
+import { createWorkpiece } from '../../src/db/collections/workpieces.ts';
 import { collectionDefinitions } from '../../src/db/schemas.ts';
-import { createDocumentHub } from '../../src/realtime/hub.ts';
+import { createWorkpieceHub } from '../../src/realtime/hub.ts';
 import { attachGateway, type Gateway } from '../../src/realtime/gateway.ts';
 import { createServer } from '../../src/routes/server.ts';
 import { connectClient, waitFor } from './yjs-client.ts';
@@ -34,25 +34,25 @@ let server: ReturnType<typeof createServer>;
 let port: number;
 
 /** Room and group come along: opening means being in a group the room bundles. */
-async function freshDocument(): Promise<string> {
-  const document = await createDocument(storage.db, { name: 'Entwurf', createdBy: 'alice' });
-  await bundle(document._id);
-  return document._id.toHexString();
+async function freshWorkpiece(): Promise<string> {
+  const workpiece = await createWorkpiece(storage.db, { name: 'Entwurf', createdBy: 'alice' });
+  await bundle(workpiece._id);
+  return workpiece._id.toHexString();
 }
 
-async function bundle(documentId: import('mongodb').ObjectId): Promise<void> {
+async function bundle(workpieceId: import('mongodb').ObjectId): Promise<void> {
   const room = await createRoom(storage.db, { name: 'Seminar', createdBy: 'alice' });
   const group = await createGroup(storage.db, {
     name: 'Teilnehmende',
     createdBy: 'alice',
     members: ['alice', 'bob', 'carol'],
   });
-  await addToRoom(storage.db, room._id, { kind: 'document', id: documentId, addedBy: 'alice' });
+  await addToRoom(storage.db, room._id, { kind: 'workpiece', id: workpieceId, addedBy: 'alice' });
   await addToRoom(storage.db, room._id, { kind: 'group', id: group._id, addedBy: 'alice' });
 }
 
-const open = (documentId: string, actor: string) =>
-  connectClient(`ws://127.0.0.1:${port}/ws/${documentId}`, ['bearer', tokenOf(actor)]);
+const open = (workpieceId: string, actor: string) =>
+  connectClient(`ws://127.0.0.1:${port}/ws/${workpieceId}`, ['bearer', tokenOf(actor)]);
 
 beforeAll(async () => {
   storage = await connect({ uri, database });
@@ -62,7 +62,7 @@ beforeAll(async () => {
   gateway = attachGateway({
     server,
     db: storage.db,
-    hub: createDocumentHub({ db: storage.db, logger: silent }),
+    hub: createWorkpieceHub({ db: storage.db, logger: silent }),
     checkToken: createTokenCheck({ key: secret }),
     logger: silent,
   });
@@ -78,11 +78,11 @@ afterAll(async () => {
   await storage.close();
 });
 
-describe('working on one document together', () => {
+describe('working on one workpiece together', () => {
   it('carries a change from one client to the other and keeps it', async () => {
-    const documentId = await freshDocument();
-    const alice = await open(documentId, 'alice');
-    const bob = await open(documentId, 'bob');
+    const workpieceId = await freshWorkpiece();
+    const alice = await open(workpieceId, 'alice');
+    const bob = await open(workpieceId, 'bob');
     await Promise.all([alice.synced, bob.synced]);
 
     alice.doc.getText('irgendwas').insert(0, 'hallo welt');
@@ -93,7 +93,7 @@ describe('working on one document together', () => {
 
     const stored = await storage.db
       .collection('updates')
-      .find({ documentId: new (await import('mongodb')).ObjectId(documentId) })
+      .find({ workpieceId: new (await import('mongodb')).ObjectId(workpieceId) })
       .toArray();
 
     expect(stored).toHaveLength(1);
@@ -104,12 +104,12 @@ describe('working on one document together', () => {
   });
 
   it('hands a returning client everything it missed', async () => {
-    const documentId = await freshDocument();
-    const alice = await open(documentId, 'alice');
+    const workpieceId = await freshWorkpiece();
+    const alice = await open(workpieceId, 'alice');
     await alice.synced;
     alice.doc.getText('t').insert(0, 'erst');
 
-    const bob = await open(documentId, 'bob');
+    const bob = await open(workpieceId, 'bob');
     await bob.synced;
 
     expect(await waitFor(() => bob.doc.getText('t').toString() === 'erst')).toBe(true);
@@ -117,7 +117,7 @@ describe('working on one document together', () => {
 
     alice.doc.getText('t').insert(4, ' dann');
 
-    const bobAgain = await open(documentId, 'bob');
+    const bobAgain = await open(workpieceId, 'bob');
     await bobAgain.synced;
 
     expect(await waitFor(() => bobAgain.doc.getText('t').toString() === 'erst dann')).toBe(true);
@@ -127,9 +127,9 @@ describe('working on one document together', () => {
   });
 
   it('carries whatever shape the tool chose, the service never looks inside', async () => {
-    const documentId = await freshDocument();
-    const alice = await open(documentId, 'alice');
-    const bob = await open(documentId, 'bob');
+    const workpieceId = await freshWorkpiece();
+    const alice = await open(workpieceId, 'alice');
+    const bob = await open(workpieceId, 'bob');
     await Promise.all([alice.synced, bob.synced]);
 
     const nodes = alice.doc.getMap('nodes');
@@ -151,9 +151,9 @@ describe('working on one document together', () => {
     await bob.close();
   });
 
-  it('rebuilds the document from the database once everyone has left', async () => {
-    const documentId = await freshDocument();
-    const first = await open(documentId, 'alice');
+  it('rebuilds the workpiece from the database once everyone has left', async () => {
+    const workpieceId = await freshWorkpiece();
+    const first = await open(workpieceId, 'alice');
     await first.synced;
     first.doc.getText('t').insert(0, 'bleibt');
 
@@ -162,9 +162,9 @@ describe('working on one document together', () => {
     ).toBe(true);
 
     await first.close();
-    expect(await waitFor(() => gateway.countFor(documentId) === 0)).toBe(true);
+    expect(await waitFor(() => gateway.countFor(workpieceId) === 0)).toBe(true);
 
-    const later = await open(documentId, 'carol');
+    const later = await open(workpieceId, 'carol');
     await later.synced;
 
     expect(await waitFor(() => later.doc.getText('t').toString() === 'bleibt')).toBe(true);
@@ -172,9 +172,9 @@ describe('working on one document together', () => {
   });
 
   it('brings two people writing at the same moment to the same result', async () => {
-    const documentId = await freshDocument();
-    const alice = await open(documentId, 'alice');
-    const bob = await open(documentId, 'bob');
+    const workpieceId = await freshWorkpiece();
+    const alice = await open(workpieceId, 'alice');
+    const bob = await open(workpieceId, 'bob');
     await Promise.all([alice.synced, bob.synced]);
 
     alice.doc.getText('t').insert(0, 'AAA');

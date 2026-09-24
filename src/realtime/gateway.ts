@@ -7,10 +7,10 @@ import { WebSocketServer, type WebSocket } from 'ws';
 import { encodeAwarenessUpdate } from 'y-protocols/awareness';
 
 import type { Actor } from '../model/actor.ts';
-import { mayOpenDocument } from '../auth/access.ts';
-import { documentExists } from '../db/collections/documents.ts';
+import { mayOpenWorkpiece } from '../auth/access.ts';
+import { workpieceExists } from '../db/collections/workpieces.ts';
 import { asObjectId } from '../utils/input.ts';
-import type { Connection, DocumentHub, OpenDocument } from './hub.ts';
+import type { Connection, WorkpieceHub, OpenWorkpiece } from './hub.ts';
 import { encodeAwareness, encodeSyncStep1, handleMessage } from './sync.ts';
 
 /** The client announces two subprotocols: this marker and the token itself. */
@@ -19,28 +19,28 @@ const BEARER = 'bearer';
 export interface GatewayOptions {
   readonly server: Server;
   readonly db: Db;
-  readonly hub: DocumentHub;
+  readonly hub: WorkpieceHub;
   readonly checkToken: (token: string) => Actor;
   readonly logger: Logger;
   /** Left out during development, which lets every origin in. */
   readonly allowedOrigins?: readonly string[];
-  /** Path prefix of the WebSocket address, the document key follows it. */
+  /** Path prefix of the WebSocket address, the workpiece key follows it. */
   readonly path?: string;
 }
 
 export interface Gateway {
-  /** How many connections currently hold this document open. */
-  countFor(documentId: string): number;
+  /** How many connections currently hold this workpiece open. */
+  countFor(workpieceId: string): number;
   close(): Promise<void>;
 }
 
 interface Opened {
-  readonly documentId: ObjectId;
+  readonly workpieceId: ObjectId;
   readonly actor: Actor;
 }
 
 /**
- * Takes WebSocket connections and keeps them per document. A refusal is answered
+ * Takes WebSocket connections and keeps them per workpiece. A refusal is answered
  * during the upgrade, so the client reads a plain HTTP status instead of a connection
  * that opens and dies without a word.
  */
@@ -74,7 +74,7 @@ export function attachGateway(options: GatewayOptions): Gateway {
   options.server.on('upgrade', onUpgrade);
 
   return {
-    countFor: (documentId) => options.hub.count(documentId),
+    countFor: (workpieceId) => options.hub.count(workpieceId),
     close: async () => {
       options.server.off('upgrade', onUpgrade);
       for (const ws of sockets) {
@@ -88,7 +88,7 @@ export function attachGateway(options: GatewayOptions): Gateway {
 }
 
 /**
- * Hands the fresh socket to the document it asked for and starts the exchange. The
+ * Hands the fresh socket to the workpiece it asked for and starts the exchange. The
  * service opens with "this is what I have", the client answers with what it is missing.
  */
 async function welcome(
@@ -97,7 +97,7 @@ async function welcome(
   options: GatewayOptions,
   sockets: Set<WebSocket>,
 ): Promise<void> {
-  const key = opened.documentId.toHexString();
+  const key = opened.workpieceId.toHexString();
   const connection: Connection = {
     actor: opened.actor,
     send: (message) => {
@@ -109,12 +109,12 @@ async function welcome(
 
   sockets.add(ws);
 
-  // Listeners go up before the document is loaded. A client may send its first message
+  // Listeners go up before the workpiece is loaded. A client may send its first message
   // the instant the handshake succeeds, and an event without a listener is simply lost.
-  const state: { open?: OpenDocument; left: boolean } = { left: false };
+  const state: { open?: OpenWorkpiece; left: boolean } = { left: false };
   const waiting: Uint8Array[] = [];
 
-  const apply = (open: OpenDocument, data: Uint8Array): void => {
+  const apply = (open: OpenWorkpiece, data: Uint8Array): void => {
     const reply = handleMessage(
       { doc: open.doc, awareness: open.awareness, origin: connection },
       data,
@@ -136,27 +136,27 @@ async function welcome(
   ws.on('close', () => {
     state.left = true;
     sockets.delete(ws);
-    void options.hub.leave(opened.documentId, connection);
-    options.logger.info({ documentId: key }, 'connection closed');
+    void options.hub.leave(opened.workpieceId, connection);
+    options.logger.info({ workpieceId: key }, 'connection closed');
   });
 
-  let open: OpenDocument;
+  let open: OpenWorkpiece;
   try {
-    open = await options.hub.join(opened.documentId, connection);
+    open = await options.hub.join(opened.workpieceId, connection);
   } catch (error) {
-    options.logger.error({ error, documentId: key }, 'could not open the document');
-    ws.close(1011, 'document could not be opened');
+    options.logger.error({ error, workpieceId: key }, 'could not open the workpiece');
+    ws.close(1011, 'workpiece could not be opened');
     sockets.delete(ws);
     return;
   }
 
   if (state.left) {
-    // Gone again while the document was still loading.
-    await options.hub.leave(opened.documentId, connection);
+    // Gone again while the workpiece was still loading.
+    await options.hub.leave(opened.workpieceId, connection);
     return;
   }
 
-  options.logger.info({ documentId: key, actorId: opened.actor.actorId }, 'connection open');
+  options.logger.info({ workpieceId: key, actorId: opened.actor.actorId }, 'connection open');
 
   connection.send(encodeSyncStep1(open.doc));
 
@@ -193,9 +193,9 @@ async function admit(
     return { status: 404, text: 'Not Found', reason: 'unknown path' };
   }
 
-  const documentId = asObjectId(path.slice(prefix.length).split('?')[0]);
-  if (documentId === undefined) {
-    return { status: 400, text: 'Bad Request', reason: 'malformed document key' };
+  const workpieceId = asObjectId(path.slice(prefix.length).split('?')[0]);
+  if (workpieceId === undefined) {
+    return { status: 400, text: 'Bad Request', reason: 'malformed workpiece key' };
   }
 
   const token = readToken(request);
@@ -210,15 +210,15 @@ async function admit(
     return { status: 401, text: 'Unauthorized', reason: 'token rejected' };
   }
 
-  if (!(await documentExists(options.db, documentId))) {
-    return { status: 404, text: 'Not Found', reason: 'unknown document' };
+  if (!(await workpieceExists(options.db, workpieceId))) {
+    return { status: 404, text: 'Not Found', reason: 'unknown workpiece' };
   }
 
-  if (!(await mayOpenDocument({ db: options.db, actor, documentId }))) {
+  if (!(await mayOpenWorkpiece({ db: options.db, actor, workpieceId }))) {
     return { status: 403, text: 'Forbidden', reason: 'not allowed to open' };
   }
 
-  return { documentId, actor };
+  return { workpieceId, actor };
 }
 
 function isAllowedOrigin(origin: string | undefined, allowed?: readonly string[]): boolean {

@@ -7,32 +7,32 @@ import { ObjectId, type Db } from 'mongodb';
 
 import type { Actor } from '../model/actor.ts';
 import type { Reference } from '../model/anchor.ts';
-import type { DocumentRecord } from '../db/collections/documents.ts';
+import type { WorkpieceRecord } from '../db/collections/workpieces.ts';
 import { findGroup, isMemberOfAny, type Group } from '../db/collections/groups.ts';
 import { findRoom, roomsContaining, type Containment } from '../db/collections/rooms.ts';
 
 export interface AccessRequest {
   readonly db: Db;
   readonly actor: Actor;
-  readonly documentId: ObjectId;
+  readonly workpieceId: ObjectId;
 }
 
 /**
- * The single place that decides who may open a document. It knows neither HTTP nor
+ * The single place that decides who may open a workpiece. It knows neither HTTP nor
  * WebSocket, so both ways in ask the same question.
  *
- * The rule: there is a room that bundles this document and a group this actor is in.
+ * The rule: there is a room that bundles this workpiece and a group this actor is in.
  * Nothing finer than that is decided here, because a group in a room is already the
  * role, and which roles exist is the business of the docking tool.
  *
- * Two consequences worth knowing. A document that sits in no room cannot be opened by
- * anybody, not even by whoever created it. And a room that holds a document but no
+ * Two consequences worth knowing. A workpiece that sits in no room cannot be opened by
+ * anybody, not even by whoever created it. And a room that holds a workpiece but no
  * group locks everyone out, which is correct and looks like a fault the first time.
  */
-export async function mayOpenDocument(request: AccessRequest): Promise<boolean> {
+export async function mayOpenWorkpiece(request: AccessRequest): Promise<boolean> {
   const rooms = await roomsContaining(request.db, {
-    kind: 'document',
-    id: request.documentId,
+    kind: 'workpiece',
+    id: request.workpieceId,
   });
 
   const groupIds = rooms.flatMap((room) => groupsIn(room.contains));
@@ -41,24 +41,24 @@ export async function mayOpenDocument(request: AccessRequest): Promise<boolean> 
 }
 
 /**
- * Whether the actor may read what is known about a document, without working on it.
- * The same rule as for opening, plus the creator, so a document that sits in no room
+ * Whether the actor may read what is known about a workpiece, without working on it.
+ * The same rule as for opening, plus the creator, so a workpiece that sits in no room
  * yet is not lost to whoever made it.
  */
-export async function mayReadDocument(
+export async function mayReadWorkpiece(
   db: Db,
   actor: Actor,
-  document: Pick<DocumentRecord, '_id' | 'createdBy'>,
+  workpiece: Pick<WorkpieceRecord, '_id' | 'createdBy'>,
 ): Promise<boolean> {
-  if (document.createdBy === actor.actorId) {
+  if (workpiece.createdBy === actor.actorId) {
     return true;
   }
 
-  return mayOpenDocument({ db, actor, documentId: document._id });
+  return mayOpenWorkpiece({ db, actor, workpieceId: workpiece._id });
 }
 
 /**
- * Whether the actor may see what a room bundles. The same rule as for a document, one
+ * Whether the actor may see what a room bundles. The same rule as for a workpiece, one
  * step shorter: membership in a group the room holds.
  *
  * The creator is let in as well. A fresh room holds no group yet, so without this
@@ -98,8 +98,8 @@ export async function mayReach(db: Db, actor: Actor, target: Reference): Promise
   if (!(target.id instanceof ObjectId)) {
     return true;
   }
-  if (target.kind === 'document') {
-    return mayOpenDocument({ db, actor, documentId: target.id });
+  if (target.kind === 'workpiece') {
+    return mayOpenWorkpiece({ db, actor, workpieceId: target.id });
   }
   if (target.kind === 'room') {
     return mayEnterRoom(db, actor, target.id);
@@ -112,7 +112,7 @@ export async function mayReach(db: Db, actor: Actor, target: Reference): Promise
  *
  * Provisional, and the one rule in here that is not derived from the model: whoever
  * created a thing may change it. Something has to hold, because the right to open a
- * document is derived from membership, so whoever may change a group hands out access
+ * workpiece is derived from membership, so whoever may change a group hands out access
  * to everything that group opens.
  *
  * When the real rule is decided, this is the only function to replace.

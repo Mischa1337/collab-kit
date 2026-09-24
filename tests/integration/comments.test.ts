@@ -22,11 +22,11 @@ if (uri === undefined || uri === '') {
 const database = `collab_kit_comments_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
 let storage: Storage;
-let documentId: ObjectId;
+let workpieceId: ObjectId;
 
 const on = (unit?: unknown) => ({
-  kind: 'document',
-  id: documentId,
+  kind: 'workpiece',
+  id: workpieceId,
   ...(unit === undefined ? {} : { unit }),
 });
 
@@ -45,7 +45,7 @@ beforeAll(async () => {
 });
 
 beforeEach(() => {
-  documentId = new ObjectId();
+  workpieceId = new ObjectId();
 });
 
 afterAll(async () => {
@@ -73,12 +73,12 @@ describe('saying something', () => {
     expect((await findComment(storage.db, created._id))?.body).toEqual(body);
   });
 
-  it('sticks to a place inside the document when it carries a unit', async () => {
+  it('sticks to a place inside the workpiece when it carries a unit', async () => {
     const created = await said({ anchor: on('statement-3') });
 
     expect((await findComment(storage.db, created._id))?.anchor).toEqual({
-      kind: 'document',
-      id: documentId,
+      kind: 'workpiece',
+      id: workpieceId,
       unit: 'statement-3',
     });
   });
@@ -148,7 +148,7 @@ describe('the state of a piece of feedback', () => {
 });
 
 describe('reading back', () => {
-  it('gives everything about the document, the local ones included', async () => {
+  it('gives everything about the workpiece, the local ones included', async () => {
     await said({ body: { text: 'global' } });
     await said({ anchor: on('statement-3'), body: { text: 'lokal' } });
 
@@ -199,14 +199,14 @@ describe('reading back', () => {
     );
   });
 
-  it('keeps the comments of other documents out', async () => {
+  it('keeps the comments of other workpieces out', async () => {
     await said();
-    const mine = documentId;
-    documentId = new ObjectId();
+    const mine = workpieceId;
+    workpieceId = new ObjectId();
 
     await expect(readComments(storage.db, { anchor: on() })).resolves.toEqual([]);
     await expect(
-      readComments(storage.db, { anchor: { kind: 'document', id: mine } }),
+      readComments(storage.db, { anchor: { kind: 'workpiece', id: mine } }),
     ).resolves.toHaveLength(1);
   });
 });
