@@ -1,10 +1,4 @@
-/**
- * Starts the service: reads the configuration, readies the database and wires every
- * part together. The only file that knows all the others.
- */
-
 import pino from 'pino';
-
 import { readConfig } from './config.ts';
 import { createTokenCheck } from './auth/token.ts';
 import { applyDefinitions } from './db/apply.ts';

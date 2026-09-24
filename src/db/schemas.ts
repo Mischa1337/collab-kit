@@ -8,18 +8,12 @@ import { roomsDefinition } from './collections/rooms.ts';
 import { tasksDefinition } from './collections/tasks.ts';
 import { updatesDefinition } from './collections/updates.ts';
 
-/**
- * While the field layout is still moving, every collection only warns instead of
- * refusing. Drop this once the shapes have settled, and MongoDB refuses again.
- */
+/** Warn instead of refuse while the field layout still moves; drop once the shapes settle. */
 function whileDeveloping(definition: CollectionDefinition): CollectionDefinition {
   return { ...definition, validationAction: 'warn' };
 }
 
-/**
- * Every collection of the service. Each one is described next to its type: the
- * interface is what TypeScript checks, the definition is what MongoDB enforces.
- */
+/** All collections; the interface is checked by TypeScript, the definition enforced by MongoDB. */
 export const collectionDefinitions: readonly CollectionDefinition[] = [
   actorsDefinition,
   commentsDefinition,

@@ -13,10 +13,7 @@ export interface ConnectOptions {
   readonly serverSelectionTimeoutMs?: number;
 }
 
-/**
- * Opens the single connection pool of the process and proves it works with a ping,
- * so a wrong address fails at startup and not on the first request.
- */
+/** Opens the single connection pool and pings it, so a wrong address fails at startup. */
 export async function connect(options: ConnectOptions): Promise<Storage> {
   const client = new MongoClient(options.uri, {
     serverSelectionTimeoutMS: options.serverSelectionTimeoutMs ?? 5_000,
