@@ -97,7 +97,7 @@ beforeAll(async () => {
     server,
     db: storage.db,
     hub,
-    checkToken: createTokenCheck({ secret }),
+    checkToken: createTokenCheck({ key: secret }),
     logger: silent,
   });
 

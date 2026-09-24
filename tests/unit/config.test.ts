@@ -18,8 +18,56 @@ describe('readConfig', () => {
       logLevel: 'info',
       mongoUri: valid.MONGODB_URI,
       mongoDb: valid.MONGODB_DB,
-      jwtSecret: valid.JWT_SECRET,
+      jwtAlgorithm: 'HS256',
+      jwtKey: valid.JWT_SECRET,
+      jwtClockTolerance: 5,
+      actorClaim: 'sub',
+      labelClaim: 'name',
     });
+  });
+
+  it('lets the operator lower the clock tolerance down to 0', () => {
+    expect(readConfig({ ...valid, JWT_CLOCK_TOLERANCE: '0' })).toMatchObject({
+      jwtClockTolerance: 0,
+    });
+  });
+
+  it('rejects a clock tolerance that is not whole seconds from 0', () => {
+    for (const raw of ['-1', '1.5', 'five']) {
+      expect(() => readConfig({ ...valid, JWT_CLOCK_TOLERANCE: raw })).toThrowError(
+        /JWT_CLOCK_TOLERANCE must be whole seconds from 0/,
+      );
+    }
+  });
+
+  it('takes the public key instead of the secret for an asymmetric algorithm', () => {
+    const config = readConfig({ ...valid, JWT_ALGORITHM: 'RS256', JWT_PUBLIC_KEY: 'pem' });
+
+    expect(config).toMatchObject({ jwtAlgorithm: 'RS256', jwtKey: 'pem' });
+  });
+
+  it('requires JWT_PUBLIC_KEY for an asymmetric algorithm', () => {
+    expect(() => readConfig({ ...valid, JWT_ALGORITHM: 'ES256' })).toThrowError(
+      /JWT_PUBLIC_KEY is missing/,
+    );
+  });
+
+  it('rejects an unknown algorithm, none included', () => {
+    expect(() => readConfig({ ...valid, JWT_ALGORITHM: 'none' })).toThrowError(
+      /JWT_ALGORITHM must be one of/,
+    );
+  });
+
+  it('takes the claims a tool uses instead of the standard ones', () => {
+    const config = readConfig({ ...valid, ACTOR_CLAIM: ' uid ', LABEL_CLAIM: 'displayName' });
+
+    expect(config).toMatchObject({ actorClaim: 'uid', labelClaim: 'displayName' });
+  });
+
+  it('treats blank claim variables as not set', () => {
+    const config = readConfig({ ...valid, ACTOR_CLAIM: '', LABEL_CLAIM: '   ' });
+
+    expect(config).toMatchObject({ actorClaim: 'sub', labelClaim: 'name' });
   });
 
   it('reports every missing variable at once instead of the first one', () => {

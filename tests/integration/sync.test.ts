@@ -63,7 +63,7 @@ beforeAll(async () => {
     server,
     db: storage.db,
     hub: createDocumentHub({ db: storage.db, logger: silent }),
-    checkToken: createTokenCheck({ secret }),
+    checkToken: createTokenCheck({ key: secret }),
     logger: silent,
   });
 

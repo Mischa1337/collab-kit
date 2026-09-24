@@ -36,7 +36,7 @@ beforeAll(async () => {
   const hub = createDocumentHub({ db: storage.db, logger });
   server = createServer({
     logger,
-    api: createApi({ db: storage.db, hub, checkToken: createTokenCheck({ secret }), logger }),
+    api: createApi({ db: storage.db, hub, checkToken: createTokenCheck({ key: secret }), logger }),
   });
 });
 

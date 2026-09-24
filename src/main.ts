@@ -22,7 +22,13 @@ const storage = await connect({ uri: config.mongoUri, database: config.mongoDb }
 await applyDefinitions(storage.db, collectionDefinitions);
 log.info({ database: config.mongoDb, collections: collectionDefinitions.length }, 'database ready');
 
-const checkToken = createTokenCheck({ secret: config.jwtSecret });
+const checkToken = createTokenCheck({
+  key: config.jwtKey,
+  algorithm: config.jwtAlgorithm,
+  clockToleranceSeconds: config.jwtClockTolerance,
+  actorClaim: config.actorClaim,
+  labelClaim: config.labelClaim,
+});
 const hub = createDocumentHub({ db: storage.db, logger: log });
 const server = createServer({
   logger: log,

@@ -5,11 +5,7 @@ import { TokenRejected } from './token.ts';
 
 const BEARER = 'Bearer ';
 
-/**
- * Reads the token from the Authorization header and hangs the actor on the request.
- * Every rejection answers alike, so nobody can tell a wrong signature from an
- * expired token by trying.
- */
+/** Hangs the actor from the Bearer token on the request; every rejection answers the same 401. */
 export function requireActor(
   check: (token: string) => Actor,
   onRejected?: (error: unknown) => void,
