@@ -2,20 +2,22 @@ import { Binary, ObjectId, type Db, type Document } from 'mongodb';
 
 import type { CollectionDefinition } from '../apply.ts';
 
-/** One row per Y.Doc; state is only a loading shortcut, the truth is the update stream. */
+/** The loading shortcut: the folded Yjs state and the last update it contains. */
+export interface FoldedState {
+  state: Binary;
+  upToUpdateId: ObjectId;
+}
+
+/** One row per Y.Doc; fold is only a loading shortcut, the truth is the update stream. */
 export interface WorkpieceRecord {
   _id: ObjectId;
   name: string;
   /** What the tool registered while docking. The service never reads into it. */
   contract: Document;
-  /** Folded Yjs state, absent until the workpiece has been folded for the first time. */
-  state?: Binary;
-  /** The last update folded into state. Absent together with it. */
-  stateThrough?: ObjectId;
+  /** Absent until the workpiece has been folded for the first time. */
+  fold?: FoldedState;
   createdAt: Date;
   createdBy: string;
-  /** When it was folded last. */
-  updatedAt?: Date;
 }
 
 export const workpiecesDefinition: CollectionDefinition = {
@@ -29,17 +31,17 @@ export const workpiecesDefinition: CollectionDefinition = {
         bsonType: 'object',
         description: 'what the tool registered while docking, deliberately unconstrained',
       },
-      state: {
-        bsonType: 'binData',
-        description: 'folded Yjs state, a shortcut for loading, absent until first folded',
-      },
-      stateThrough: {
-        bsonType: 'objectId',
-        description: 'the last update folded into state, absent together with it',
+      fold: {
+        bsonType: 'object',
+        description: 'the loading shortcut, absent until first folded',
+        required: ['state', 'upToUpdateId'],
+        properties: {
+          state: { bsonType: 'binData', description: 'folded Yjs state' },
+          upToUpdateId: { bsonType: 'objectId', description: 'the last update folded into state' },
+        },
       },
       createdAt: { bsonType: 'date' },
       createdBy: { bsonType: 'string' },
-      updatedAt: { bsonType: 'date', description: 'when it was folded last' },
     },
   },
 };
@@ -86,23 +88,21 @@ export interface Fold {
   /** The state as the caller folded it, produced by Yjs, opaque here. */
   readonly state: Uint8Array;
   /** The last update contained in that state. */
-  readonly through: ObjectId;
-  /** What stateThrough held when the folding began. Absent means never folded. */
+  readonly upToUpdateId: ObjectId;
+  /** What fold.upToUpdateId held when the folding began. Absent means never folded. */
   readonly expected?: ObjectId;
 }
 
 /** Swaps in a newer state only if nobody folded meanwhile; losing the race costs nothing. */
-export async function foldState(db: Db, input: Fold, now = new Date()): Promise<boolean> {
+export async function foldState(db: Db, input: Fold): Promise<boolean> {
   const result = await db.collection<WorkpieceRecord>('workpieces').updateOne(
     {
       _id: input.workpieceId,
-      stateThrough: input.expected ?? { $exists: false },
+      'fold.upToUpdateId': input.expected ?? { $exists: false },
     },
     {
       $set: {
-        state: new Binary(input.state),
-        stateThrough: input.through,
-        updatedAt: now,
+        fold: { state: new Binary(input.state), upToUpdateId: input.upToUpdateId },
       },
     },
   );

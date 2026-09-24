@@ -16,8 +16,8 @@ export interface WorkingCopy {
   queue: Promise<void>;
   /** The newest update written for this workpiece, the cut for the next folding. */
   lastUpdateId?: ObjectId;
-  /** What stateThrough holds in the database, as far as this process knows. */
-  foldedThrough?: ObjectId;
+  /** What fold.upToUpdateId holds in the database, as far as this process knows. */
+  foldedUpToUpdateId?: ObjectId;
   /** Updates that have arrived since the last folding. */
   sinceFold: number;
 }
@@ -34,13 +34,13 @@ export async function loadWorkingCopy(db: Db, workpieceId: ObjectId): Promise<Wo
   }
 
   const doc = new Y.Doc();
-  if (record.state !== undefined) {
-    Y.applyUpdate(doc, new Uint8Array(record.state.buffer));
+  if (record.fold !== undefined) {
+    Y.applyUpdate(doc, new Uint8Array(record.fold.state.buffer));
   }
 
   // Everything the shortcut does not cover yet. A workpiece that was never folded
   // starts from nothing and reads its whole history, which is just as correct.
-  const pending = await readUpdatesSince(db, workpieceId, record.stateThrough);
+  const pending = await readUpdatesSince(db, workpieceId, record.fold?.upToUpdateId);
   for (const row of pending) {
     Y.applyUpdate(doc, new Uint8Array(row.update.buffer));
   }
@@ -51,8 +51,8 @@ export async function loadWorkingCopy(db: Db, workpieceId: ObjectId): Promise<Wo
     queue: Promise.resolve(),
     sinceFold: pending.length,
     ...defined({
-      lastUpdateId: pending.at(-1)?._id ?? record.stateThrough,
-      foldedThrough: record.stateThrough,
+      lastUpdateId: pending.at(-1)?._id ?? record.fold?.upToUpdateId,
+      foldedUpToUpdateId: record.fold?.upToUpdateId,
     }),
   };
 }
@@ -95,24 +95,24 @@ export async function storeUpdate(
  * at the next load. Applying it twice is harmless in Yjs.
  */
 export async function foldNow(db: Db, copy: WorkingCopy): Promise<boolean> {
-  const through = copy.lastUpdateId;
+  const upToUpdateId = copy.lastUpdateId;
 
-  if (through === undefined) {
+  if (upToUpdateId === undefined) {
     return false;
   }
-  if (copy.foldedThrough !== undefined && through.equals(copy.foldedThrough)) {
+  if (copy.foldedUpToUpdateId !== undefined && upToUpdateId.equals(copy.foldedUpToUpdateId)) {
     return false;
   }
 
   const written = await foldState(db, {
     workpieceId: copy.workpieceId,
     state: Y.encodeStateAsUpdate(copy.doc),
-    through,
-    ...defined({ expected: copy.foldedThrough }),
+    upToUpdateId,
+    ...defined({ expected: copy.foldedUpToUpdateId }),
   });
 
   if (written) {
-    copy.foldedThrough = through;
+    copy.foldedUpToUpdateId = upToUpdateId;
     copy.sinceFold = 0;
   }
   return written;

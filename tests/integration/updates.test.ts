@@ -67,7 +67,7 @@ const countUpdates = (workpieceId: ObjectId) =>
  */
 const foldedBeyond = (workpieceId: ObjectId, previous?: ObjectId) =>
   waitFor(async () => {
-    const mark = (await findWorkpiece(storage.db, workpieceId))?.stateThrough;
+    const mark = (await findWorkpiece(storage.db, workpieceId))?.fold?.upToUpdateId;
     return mark !== undefined && (previous === undefined || !mark.equals(previous));
   });
 
@@ -157,16 +157,16 @@ describe('folding', () => {
     alice.doc.getText('t').insert(0, 'bleibt');
     expect(await waitFor(async () => (await countUpdates(workpieceId)) > 0)).toBe(true);
 
-    expect((await findWorkpiece(storage.db, workpieceId))?.state).toBeUndefined();
+    expect((await findWorkpiece(storage.db, workpieceId))?.fold).toBeUndefined();
 
     await alice.close();
     expect(await foldedBeyond(workpieceId)).toBe(true);
 
     const stored = await findWorkpiece(storage.db, workpieceId);
-    expect(stored?.state).toBeDefined();
+    expect(stored?.fold).toBeDefined();
 
     const folded = new Y.Doc();
-    Y.applyUpdate(folded, new Uint8Array(stored!.state!.buffer));
+    Y.applyUpdate(folded, new Uint8Array(stored!.fold!.state.buffer));
     expect(folded.getText('t').toString()).toBe('bleibt');
   });
 
@@ -186,7 +186,7 @@ describe('folding', () => {
     expect(await foldedBeyond(workpieceId)).toBe(true);
 
     // Folded, and yet both updates are still there and still tell the whole story.
-    expect((await findWorkpiece(storage.db, workpieceId))?.state).toBeDefined();
+    expect((await findWorkpiece(storage.db, workpieceId))?.fold).toBeDefined();
     expect(await countUpdates(workpieceId)).toBe(2);
 
     expect((await replay(workpieceId)).getText('t').toString()).toBe('erst dann');
@@ -224,13 +224,13 @@ describe('folding', () => {
     bob.doc.getText('t').insert(4, ' zwei');
     expect(await waitFor(async () => (await countUpdates(workpieceId)) === 2)).toBe(true);
     await bob.close();
-    expect(await foldedBeyond(workpieceId, first?.stateThrough)).toBe(true);
+    expect(await foldedBeyond(workpieceId, first?.fold?.upToUpdateId)).toBe(true);
 
     const second = await findWorkpiece(storage.db, workpieceId);
-    expect(second?.stateThrough).not.toEqual(first?.stateThrough);
+    expect(second?.fold?.upToUpdateId).not.toEqual(first?.fold?.upToUpdateId);
 
     const folded = new Y.Doc();
-    Y.applyUpdate(folded, new Uint8Array(second!.state!.buffer));
+    Y.applyUpdate(folded, new Uint8Array(second!.fold!.state.buffer));
     expect(folded.getText('t').toString()).toBe('eins zwei');
   });
 
@@ -246,7 +246,7 @@ describe('folding', () => {
 
     const stored = await findWorkpiece(storage.db, workpieceId);
     const folded = new Y.Doc();
-    Y.applyUpdate(folded, new Uint8Array(stored!.state!.buffer));
+    Y.applyUpdate(folded, new Uint8Array(stored!.fold!.state.buffer));
 
     expect(folded.getText('t').toString()).toBe('geschlossen');
     expect(gateway.countFor(workpieceId.toHexString())).toBe(0);

@@ -43,8 +43,7 @@ describe('workpieces', () => {
     const created = await createWorkpiece(storage.db, { name: 'Entwurf', createdBy: 'alice' });
 
     expect(created).toMatchObject({ name: 'Entwurf', createdBy: 'alice', contract: {} });
-    expect(created.state).toBeUndefined();
-    expect(created.stateThrough).toBeUndefined();
+    expect(created.fold).toBeUndefined();
   });
 
   it('keeps the contract of the tool untouched', async () => {
@@ -75,32 +74,36 @@ describe('workpieces', () => {
 describe('folding', () => {
   it('writes the shortcut and returns the bytes unchanged', async () => {
     const created = await createWorkpiece(storage.db, { name: 'Entwurf', createdBy: 'alice' });
-    const through = new ObjectId();
+    const upToUpdateId = new ObjectId();
 
     await expect(
-      foldState(storage.db, { workpieceId: created._id, state: typed('hallo welt'), through }),
+      foldState(storage.db, { workpieceId: created._id, state: typed('hallo welt'), upToUpdateId }),
     ).resolves.toBe(true);
 
     const stored = await findWorkpiece(storage.db, created._id);
     const read = new Y.Doc();
-    Y.applyUpdate(read, new Uint8Array(stored!.state!.buffer));
+    Y.applyUpdate(read, new Uint8Array(stored!.fold!.state.buffer));
 
     expect(read.getText('anything').toString()).toBe('hallo welt');
-    expect(stored?.stateThrough).toEqual(through);
+    expect(stored?.fold?.upToUpdateId).toEqual(upToUpdateId);
   });
 
   it('refuses to push an older state over a newer one', async () => {
     const created = await createWorkpiece(storage.db, { name: 'Entwurf', createdBy: 'alice' });
     const first = new ObjectId();
 
-    await foldState(storage.db, { workpieceId: created._id, state: typed('erst'), through: first });
+    await foldState(storage.db, {
+      workpieceId: created._id,
+      state: typed('erst'),
+      upToUpdateId: first,
+    });
 
     // Somebody who still believes the workpiece was never folded.
     await expect(
       foldState(storage.db, {
         workpieceId: created._id,
         state: typed('daneben'),
-        through: new ObjectId(),
+        upToUpdateId: new ObjectId(),
       }),
     ).resolves.toBe(false);
 
@@ -108,7 +111,7 @@ describe('folding', () => {
       foldState(storage.db, {
         workpieceId: created._id,
         state: typed('danach'),
-        through: new ObjectId(),
+        upToUpdateId: new ObjectId(),
         expected: first,
       }),
     ).resolves.toBe(true);

@@ -61,7 +61,7 @@ export function workpieceRoutes(db: Db, hub: WorkpieceHub): Router {
       contract: workpiece.contract,
       createdAt: workpiece.createdAt,
       createdBy: workpiece.createdBy,
-      ...defined({ stateThrough: workpiece.stateThrough, updatedAt: workpiece.updatedAt }),
+      ...defined({ foldedUpToUpdateId: workpiece.fold?.upToUpdateId }),
     });
   });
 

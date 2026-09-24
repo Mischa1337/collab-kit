@@ -16,7 +16,7 @@ export interface TaskSubject {
  * order, revision and approval are this one form with a different kind.
  *
  * `state` is the current value and therefore queryable; how it got there lives in
- * `events`. That is the same relation as `workpieces.state` to `updates`: the field is
+ * `events`. That is the same relation as `workpieces.fold` to `updates`: the field is
  * the shortcut, the stream is the truth.
  */
 export interface TaskRecord {
