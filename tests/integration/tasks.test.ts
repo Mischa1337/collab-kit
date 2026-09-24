@@ -98,7 +98,7 @@ describe('changing the state', () => {
 
     const after = await setTaskState(storage.db, task._id, {
       state: 'fertig',
-      actorId: 'bob',
+      changedBy: 'bob',
       reason: 'im Seminar abgenommen',
     });
 
@@ -108,7 +108,7 @@ describe('changing the state', () => {
     const [event] = await historyOf(task);
     expect(event).toMatchObject({
       kind: 'task-state',
-      actorId: 'bob',
+      createdBy: 'bob',
       reason: 'im Seminar abgenommen',
       detail: { to: 'fertig' },
     });
@@ -117,9 +117,9 @@ describe('changing the state', () => {
   it('keeps the whole way, not only the last step', async () => {
     const task = await plain();
 
-    await setTaskState(storage.db, task._id, { state: 'in Arbeit', actorId: 'alice' });
-    await setTaskState(storage.db, task._id, { state: 'zur Abnahme', actorId: 'alice' });
-    await setTaskState(storage.db, task._id, { state: 'fertig', actorId: 'carol' });
+    await setTaskState(storage.db, task._id, { state: 'in Arbeit', changedBy: 'alice' });
+    await setTaskState(storage.db, task._id, { state: 'zur Abnahme', changedBy: 'alice' });
+    await setTaskState(storage.db, task._id, { state: 'fertig', changedBy: 'carol' });
 
     const history = await historyOf(task);
     expect(history.map((event) => event.detail?.['to'])).toEqual([
@@ -145,7 +145,7 @@ describe('changing the state', () => {
 
     try {
       await expect(
-        setTaskState(storage.db, task._id, { state: 'fertig', actorId: 'bob' }),
+        setTaskState(storage.db, task._id, { state: 'fertig', changedBy: 'bob' }),
       ).rejects.toThrowError();
 
       // Neither half stands: without the trace the state may not have moved either.
@@ -161,7 +161,7 @@ describe('changing the state', () => {
     const missing = new ObjectId();
 
     await expect(
-      setTaskState(storage.db, missing, { state: 'fertig', actorId: 'alice' }),
+      setTaskState(storage.db, missing, { state: 'fertig', changedBy: 'alice' }),
     ).rejects.toThrowError(/unknown task/);
 
     const after = await readEvents(storage.db, { kind: 'task-state' });
@@ -176,13 +176,13 @@ describe('assigning', () => {
 
     const after = await assignTask(storage.db, task._id, {
       subject: { kind: 'group', id: groupId },
-      actorId: 'alice',
+      changedBy: 'alice',
     });
 
     expect(after.subject).toEqual({ kind: 'group', id: groupId });
 
     const [event] = await historyOf(task);
-    expect(event).toMatchObject({ kind: 'task-subject', actorId: 'alice' });
+    expect(event).toMatchObject({ kind: 'task-subject', createdBy: 'alice' });
     expect(event?.detail?.['to']).toEqual({ kind: 'group', id: groupId });
   });
 
@@ -191,15 +191,15 @@ describe('assigning', () => {
 
     await assignTask(storage.db, task._id, {
       subject: { kind: 'actor', id: 'bob' },
-      actorId: 'alice',
+      changedBy: 'alice',
     });
     await assignTask(storage.db, task._id, {
       subject: { kind: 'actor', id: 'carol' },
-      actorId: 'bob',
+      changedBy: 'bob',
     });
 
     const history = await historyOf(task);
-    expect(history.map((event) => event.actorId)).toEqual(['bob', 'alice']);
+    expect(history.map((event) => event.createdBy)).toEqual(['bob', 'alice']);
     expect((await findTask(storage.db, task._id))?.subject).toEqual({ kind: 'actor', id: 'carol' });
   });
 });

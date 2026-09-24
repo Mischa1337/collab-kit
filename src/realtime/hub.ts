@@ -8,7 +8,7 @@ import type { Anchor } from '../model/anchor.ts';
 import { touchActor } from '../db/collections/actors.ts';
 import { workpieceExists } from '../db/collections/workpieces.ts';
 import { recordEvent, type EventRecord } from '../db/collections/events.ts';
-import { newestUpdate } from '../db/collections/updates.ts';
+import { newestUpdateId } from '../db/collections/updates.ts';
 import { defined } from '../utils/optional.ts';
 import { enqueue, foldNow, loadWorkingCopy, storeUpdate, type WorkingCopy } from './persistence.ts';
 import { encodeAwareness, encodeSyncUpdate } from './sync.ts';
@@ -27,7 +27,7 @@ export interface OpenWorkpiece {
 }
 
 export interface Checkpoint {
-  readonly actorId: string;
+  readonly createdBy: string;
   readonly label?: string;
   readonly reason?: string;
 }
@@ -110,11 +110,11 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
    * Keeping a trace may never break the work it is a trace of. A lost event costs a
    * line in a history, a thrown one would cost the connection.
    */
-  async function trace(workpieceId: ObjectId, kind: string, actor: string, at?: ObjectId) {
+  async function trace(workpieceId: ObjectId, kind: string, createdBy: string, at?: ObjectId) {
     try {
       await recordEvent(options.db, {
         kind,
-        actorId: actor,
+        createdBy,
         anchor: anchorOf(workpieceId),
         ...defined({ at }),
       });
@@ -301,7 +301,7 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
         if (!(await workpieceExists(options.db, workpieceId))) {
           throw new Error(`unknown workpiece ${workpieceId.toHexString()}`);
         }
-        at = await newestUpdate(options.db, workpieceId);
+        at = await newestUpdateId(options.db, workpieceId);
       } else {
         // Queued like a change, so a change still being written lands before the
         // mark and not behind it.
@@ -311,7 +311,7 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
 
       return recordEvent(options.db, {
         kind: 'checkpoint',
-        actorId: input.actorId,
+        createdBy: input.createdBy,
         anchor: anchorOf(workpieceId),
         ...defined({ at, label: input.label, reason: input.reason }),
       });

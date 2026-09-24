@@ -42,7 +42,7 @@ export async function loadWorkingCopy(db: Db, workpieceId: ObjectId): Promise<Wo
   // starts from nothing and reads its whole history, which is just as correct.
   const pending = await readUpdatesSince(db, workpieceId, record.fold?.upToUpdateId);
   for (const row of pending) {
-    Y.applyUpdate(doc, new Uint8Array(row.update.buffer));
+    Y.applyUpdate(doc, new Uint8Array(row.bytes.buffer));
   }
 
   return {
@@ -78,9 +78,13 @@ export async function storeUpdate(
   db: Db,
   copy: WorkingCopy,
   update: Uint8Array,
-  actorId: string,
+  createdBy: string,
 ): Promise<void> {
-  const record = await appendUpdate(db, { workpieceId: copy.workpieceId, update, actorId });
+  const record = await appendUpdate(db, {
+    workpieceId: copy.workpieceId,
+    bytes: update,
+    createdBy,
+  });
 
   copy.lastUpdateId = record._id;
   copy.sinceFold += 1;

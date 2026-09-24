@@ -97,7 +97,7 @@ describe('working on one workpiece together', () => {
       .toArray();
 
     expect(stored).toHaveLength(1);
-    expect(stored[0]).toMatchObject({ actorId: 'alice' });
+    expect(stored[0]).toMatchObject({ createdBy: 'alice' });
 
     await alice.close();
     await bob.close();

@@ -17,7 +17,7 @@ import type { CollectionDefinition } from '../apply.ts';
 export interface EventRecord {
   _id: ObjectId;
   kind: string;
-  actorId: string;
+  createdBy: string;
   anchor: Anchor;
   /** A place in the update stream, for a reading mark or a checkpoint. */
   at?: ObjectId;
@@ -34,13 +34,13 @@ export const eventsDefinition: CollectionDefinition = {
   name: 'events',
   schema: {
     bsonType: 'object',
-    required: ['kind', 'actorId', 'anchor', 'createdAt'],
+    required: ['kind', 'createdBy', 'anchor', 'createdAt'],
     properties: {
       kind: {
         bsonType: 'string',
         description: 'read, presence, visit, checkpoint, whatever the tool reports',
       },
-      actorId: { bsonType: 'string' },
+      createdBy: { bsonType: 'string' },
       anchor: anchorSchema,
       at: { bsonType: 'objectId', description: 'a place in the update stream' },
       label: { bsonType: 'string', description: 'only when a person named this moment' },
@@ -51,13 +51,13 @@ export const eventsDefinition: CollectionDefinition = {
   },
   indexes: [
     { key: { 'anchor.id': 1, kind: 1, _id: -1 }, name: 'anchor_kind' },
-    { key: { actorId: 1, kind: 1, _id: -1 }, name: 'actor_kind' },
+    { key: { createdBy: 1, kind: 1, _id: -1 }, name: 'created_by_kind' },
   ],
 };
 
 export interface NewEvent {
   readonly kind: string;
-  readonly actorId: string;
+  readonly createdBy: string;
   readonly anchor: Anchor;
   readonly at?: ObjectId;
   readonly label?: string;
@@ -78,7 +78,7 @@ export async function recordEvent(
   const record: EventRecord = {
     _id: new ObjectId(),
     kind: input.kind,
-    actorId: input.actorId,
+    createdBy: input.createdBy,
     anchor: input.anchor,
     createdAt: now,
     ...defined({ at: input.at, label: input.label, reason: input.reason, detail: input.detail }),
@@ -93,7 +93,7 @@ export interface EventQuery {
   readonly anchor?: AnchorQuery;
   /** Anchors on any of these things, which is how a room asks about what it bundles. */
   readonly anchorIds?: readonly unknown[];
-  readonly actorId?: string;
+  readonly createdBy?: string;
   readonly kind?: string;
   /** Only what happened after this event, the cut for polling. */
   readonly since?: ObjectId;
@@ -104,7 +104,7 @@ function filterOf(query: EventQuery): Filter<EventRecord> {
   return {
     ...(query.anchor === undefined ? {} : anchoredAt(query.anchor)),
     ...(query.anchorIds === undefined ? {} : { 'anchor.id': { $in: [...query.anchorIds] } }),
-    ...defined({ actorId: query.actorId, kind: query.kind }),
+    ...defined({ createdBy: query.createdBy, kind: query.kind }),
     ...(query.since === undefined ? {} : { _id: { $gt: query.since } }),
   } as Filter<EventRecord>;
 }

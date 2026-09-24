@@ -5,7 +5,7 @@ import type { CollectionDefinition } from '../apply.ts';
 /** Being in a group, with the moment it started and who arranged it. */
 export interface Membership {
   actorId: string;
-  joinedAt: Date;
+  addedAt: Date;
   addedBy: string;
 }
 
@@ -43,10 +43,10 @@ export const groupsDefinition: CollectionDefinition = {
         description: 'opaque actor keys, no object and no task ever hangs on a group',
         items: {
           bsonType: 'object',
-          required: ['actorId', 'joinedAt', 'addedBy'],
+          required: ['actorId', 'addedAt', 'addedBy'],
           properties: {
             actorId: { bsonType: 'string' },
-            joinedAt: { bsonType: 'date' },
+            addedAt: { bsonType: 'date' },
             addedBy: { bsonType: 'string' },
           },
         },
@@ -73,7 +73,7 @@ export async function createGroup(db: Db, input: NewGroup, now = new Date()): Pr
     settings: input.settings ?? {},
     members: (input.members ?? []).map((actorId) => ({
       actorId,
-      joinedAt: now,
+      addedAt: now,
       addedBy: input.createdBy,
     })),
     createdAt: now,
@@ -105,7 +105,7 @@ export async function addMember(
 ): Promise<boolean> {
   const member: Membership = {
     actorId: input.actorId,
-    joinedAt: now,
+    addedAt: now,
     addedBy: input.addedBy,
   };
 

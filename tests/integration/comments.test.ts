@@ -34,7 +34,7 @@ const said = (over: Partial<Parameters<typeof createComment>[1]> = {}) =>
   createComment(storage.db, {
     kind: 'comment',
     anchor: on(),
-    actorId: 'alice',
+    createdBy: 'alice',
     body: { text: 'so wie es dasteht geht das nicht' },
     ...over,
   });
@@ -57,7 +57,7 @@ describe('saying something', () => {
   it('keeps what was said and where, and nothing more', async () => {
     const created = await said();
 
-    expect(created).toMatchObject({ kind: 'comment', actorId: 'alice' });
+    expect(created).toMatchObject({ kind: 'comment', createdBy: 'alice' });
     expect(created.parentId).toBeUndefined();
     expect(created.state).toBeUndefined();
   });
@@ -86,7 +86,7 @@ describe('saying something', () => {
   it('points at another comment just as well, which is what a thread is', async () => {
     const first = await said();
     const answer = await said({
-      actorId: 'bob',
+      createdBy: 'bob',
       parentId: first._id,
       anchor: { kind: 'comment', id: first._id },
       body: { text: 'sehe ich anders' },
@@ -107,7 +107,7 @@ describe('the state of a piece of feedback', () => {
 
     const after = await setCommentState(storage.db, comment._id, {
       state: 'umgesetzt',
-      actorId: 'bob',
+      changedBy: 'bob',
       reason: 'im Entwurf nachgezogen',
     });
 
@@ -119,7 +119,7 @@ describe('the state of a piece of feedback', () => {
     });
     expect(event).toMatchObject({
       kind: 'comment-state',
-      actorId: 'bob',
+      createdBy: 'bob',
       reason: 'im Entwurf nachgezogen',
       detail: { to: 'umgesetzt' },
     });
@@ -128,9 +128,9 @@ describe('the state of a piece of feedback', () => {
   it('keeps every step of the five, not only the last', async () => {
     const comment = await said({ state: 'offen' });
 
-    await setCommentState(storage.db, comment._id, { state: 'gelesen', actorId: 'carol' });
-    await setCommentState(storage.db, comment._id, { state: 'beantwortet', actorId: 'carol' });
-    await setCommentState(storage.db, comment._id, { state: 'umgesetzt', actorId: 'carol' });
+    await setCommentState(storage.db, comment._id, { state: 'gelesen', changedBy: 'carol' });
+    await setCommentState(storage.db, comment._id, { state: 'beantwortet', changedBy: 'carol' });
+    await setCommentState(storage.db, comment._id, { state: 'umgesetzt', changedBy: 'carol' });
 
     const history = await readEvents(storage.db, { anchor: { kind: 'comment', id: comment._id } });
     expect(history.map((event) => event.detail?.['to'])).toEqual([
@@ -142,7 +142,7 @@ describe('the state of a piece of feedback', () => {
 
   it('refuses a comment nobody wrote', async () => {
     await expect(
-      setCommentState(storage.db, new ObjectId(), { state: 'gelesen', actorId: 'alice' }),
+      setCommentState(storage.db, new ObjectId(), { state: 'gelesen', changedBy: 'alice' }),
     ).rejects.toThrowError(/unknown comment/);
   });
 });
@@ -185,7 +185,7 @@ describe('reading back', () => {
 
   it('narrows by kind, by state and by who said it', async () => {
     await said({ kind: 'feedback', state: 'offen' });
-    await said({ kind: 'feedback', state: 'umgesetzt', actorId: 'bob' });
+    await said({ kind: 'feedback', state: 'umgesetzt', createdBy: 'bob' });
     await said({ kind: 'message' });
 
     await expect(
@@ -194,9 +194,9 @@ describe('reading back', () => {
     await expect(readComments(storage.db, { anchor: on(), state: 'offen' })).resolves.toHaveLength(
       1,
     );
-    await expect(readComments(storage.db, { anchor: on(), actorId: 'bob' })).resolves.toHaveLength(
-      1,
-    );
+    await expect(
+      readComments(storage.db, { anchor: on(), createdBy: 'bob' }),
+    ).resolves.toHaveLength(1);
   });
 
   it('keeps the comments of other workpieces out', async () => {

@@ -76,9 +76,9 @@ export function workpieceRoutes(db: Db, hub: WorkpieceHub): Router {
     response.json(
       updates.map((update) => ({
         _id: update._id,
-        actorId: update.actorId,
+        createdBy: update.createdBy,
         createdAt: update.createdAt,
-        bytes: update.update.length(),
+        bytes: update.bytes.length(),
       })),
     );
   });
@@ -94,7 +94,7 @@ export function workpieceRoutes(db: Db, hub: WorkpieceHub): Router {
 
     response.status(201).json(
       await hub.checkpoint(idOf(request), {
-        actorId: actorOf(request).actorId,
+        createdBy: actorOf(request).actorId,
         ...defined({ label, reason }),
       }),
     );

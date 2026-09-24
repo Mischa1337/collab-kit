@@ -111,7 +111,7 @@ async function changeTask(
   db: Db,
   taskId: ObjectId,
   change: Partial<Pick<TaskRecord, 'state' | 'subject'>>,
-  event: { kind: string; actorId: string; reason?: string; detail: Document },
+  event: { kind: string; createdBy: string; reason?: string; detail: Document },
   now: Date,
 ): Promise<TaskRecord> {
   return changeWithEvent<TaskRecord>(
@@ -123,7 +123,7 @@ async function changeTask(
       change,
       event: {
         kind: event.kind,
-        actorId: event.actorId,
+        createdBy: event.createdBy,
         anchor: { kind: 'task', id: taskId },
         detail: event.detail,
         ...defined({ reason: event.reason }),
@@ -135,7 +135,7 @@ async function changeTask(
 
 export interface StateChange {
   readonly state: string;
-  readonly actorId: string;
+  readonly changedBy: string;
   /** Why it moved. The same why as at a checkpoint, D6.6. */
   readonly reason?: string;
 }
@@ -152,7 +152,7 @@ export async function setTaskState(
     { state: input.state },
     {
       kind: 'task-state',
-      actorId: input.actorId,
+      createdBy: input.changedBy,
       detail: { to: input.state },
       ...defined({ reason: input.reason }),
     },
@@ -162,7 +162,7 @@ export async function setTaskState(
 
 export interface Assignment {
   readonly subject: TaskSubject;
-  readonly actorId: string;
+  readonly changedBy: string;
   readonly reason?: string;
 }
 
@@ -178,7 +178,7 @@ export async function assignTask(
     { subject: input.subject },
     {
       kind: 'task-subject',
-      actorId: input.actorId,
+      createdBy: input.changedBy,
       detail: { to: input.subject },
       ...defined({ reason: input.reason }),
     },

@@ -42,7 +42,7 @@ describe('groups', () => {
     const stored = await findGroup(storage.db, created._id);
     expect(stored?.members.map((member) => member.actorId)).toEqual(['alice', 'bob']);
     expect(stored?.members[0]).toMatchObject({ addedBy: 'alice' });
-    expect(stored?.members[0]?.joinedAt).toBeInstanceOf(Date);
+    expect(stored?.members[0]?.addedAt).toBeInstanceOf(Date);
     expect(stored?.settings).toEqual({});
   });
 

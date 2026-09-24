@@ -82,7 +82,7 @@ async function replay(workpieceId: ObjectId, until?: ObjectId): Promise<Y.Doc> {
     if (until !== undefined && row._id.toHexString() > until.toHexString()) {
       break;
     }
-    Y.applyUpdate(doc, new Uint8Array(row.update.buffer));
+    Y.applyUpdate(doc, new Uint8Array(row.bytes.buffer));
   }
   return doc;
 }
@@ -118,20 +118,20 @@ describe('the stream of updates', () => {
 
     const first = await appendUpdate(storage.db, {
       workpieceId,
-      update: new Uint8Array([1]),
-      actorId: 'alice',
+      bytes: new Uint8Array([1]),
+      createdBy: 'alice',
     });
     await appendUpdate(storage.db, {
       workpieceId,
-      update: new Uint8Array([2]),
-      actorId: 'bob',
+      bytes: new Uint8Array([2]),
+      createdBy: 'bob',
     });
 
     const all = await readUpdatesSince(storage.db, workpieceId);
-    expect(all.map((row) => row.actorId)).toEqual(['alice', 'bob']);
+    expect(all.map((row) => row.createdBy)).toEqual(['alice', 'bob']);
 
     const after = await readUpdatesSince(storage.db, workpieceId, first._id);
-    expect(after.map((row) => row.actorId)).toEqual(['bob']);
+    expect(after.map((row) => row.createdBy)).toEqual(['bob']);
   });
 
   it('keeps the updates of other workpieces out', async () => {
@@ -140,8 +140,8 @@ describe('the stream of updates', () => {
 
     await appendUpdate(storage.db, {
       workpieceId: other,
-      update: new Uint8Array([1]),
-      actorId: 'alice',
+      bytes: new Uint8Array([1]),
+      createdBy: 'alice',
     });
 
     await expect(readUpdatesSince(storage.db, mine)).resolves.toEqual([]);
@@ -238,8 +238,8 @@ describe('folding', () => {
     const workpieceId = await freshWorkpiece();
     await appendUpdate(storage.db, {
       workpieceId,
-      update: Y.encodeStateAsUpdate(writtenBy('geschlossen')),
-      actorId: 'carol',
+      bytes: Y.encodeStateAsUpdate(writtenBy('geschlossen')),
+      createdBy: 'carol',
     });
 
     await expect(hub.fold(workpieceId)).resolves.toBe(true);
@@ -260,8 +260,8 @@ describe('folding', () => {
 
     await appendUpdate(storage.db, {
       workpieceId,
-      update: Y.encodeStateAsUpdate(writtenBy('etwas')),
-      actorId: 'alice',
+      bytes: Y.encodeStateAsUpdate(writtenBy('etwas')),
+      createdBy: 'alice',
     });
 
     await expect(hub.fold(workpieceId)).resolves.toBe(true);

@@ -195,7 +195,7 @@ describe('the room as a channel', () => {
       .send({ kind: 'visit', anchor: { kind: 'room', id: roomId } });
 
     expect(first.status).toBe(201);
-    expect(first.body.actorId).toBe('alice');
+    expect(first.body.createdBy).toBe('alice');
 
     await request(server)
       .post('/events')
@@ -208,7 +208,7 @@ describe('the room as a channel', () => {
       .set(as(bob));
 
     expect(since.body).toHaveLength(1);
-    expect(since.body[0].actorId).toBe('bob');
+    expect(since.body[0].createdBy).toBe('bob');
   });
 
   it('gathers what the room bundles, not only what anchors at the room', async () => {
@@ -253,7 +253,7 @@ describe('the history of a workpiece', () => {
     expect(marked.status).toBe(201);
     expect(marked.body).toMatchObject({
       kind: 'checkpoint',
-      actorId: 'bob',
+      createdBy: 'bob',
       label: 'Abgabe',
       reason: 'so wollen wir es lassen',
     });

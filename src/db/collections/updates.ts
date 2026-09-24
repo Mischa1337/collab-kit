@@ -2,18 +2,12 @@ import { Binary, ObjectId, type Db, type Filter } from 'mongodb';
 
 import type { CollectionDefinition } from '../apply.ts';
 
-/**
- * One change to a workpiece, as the bytes Yjs produced. The service never looks into
- * them; what it adds is who changed something and when, which Yjs does not know.
- *
- * Nothing here is ever deleted. Folding a workpiece only writes a shortcut next to
- * these rows, it does not replace them.
- */
+/** One change to a workpiece as Yjs bytes plus who and when; never deleted, not even by a fold. */
 export interface UpdateRecord {
   _id: ObjectId;
   workpieceId: ObjectId;
-  update: Binary;
-  actorId: string;
+  bytes: Binary;
+  createdBy: string;
   createdAt: Date;
 }
 
@@ -21,11 +15,11 @@ export const updatesDefinition: CollectionDefinition = {
   name: 'updates',
   schema: {
     bsonType: 'object',
-    required: ['workpieceId', 'update', 'actorId', 'createdAt'],
+    required: ['workpieceId', 'bytes', 'createdBy', 'createdAt'],
     properties: {
       workpieceId: { bsonType: 'objectId' },
-      update: { bsonType: 'binData', description: 'the Yjs bytes, opaque to the service' },
-      actorId: { bsonType: 'string', description: 'D6.19, author on every single change' },
+      bytes: { bsonType: 'binData', description: 'the Yjs update, opaque to the service' },
+      createdBy: { bsonType: 'string', description: 'D6.19, author on every single change' },
       createdAt: { bsonType: 'date' },
     },
   },
@@ -34,8 +28,8 @@ export const updatesDefinition: CollectionDefinition = {
 
 export interface NewUpdate {
   readonly workpieceId: ObjectId;
-  readonly update: Uint8Array;
-  readonly actorId: string;
+  readonly bytes: Uint8Array;
+  readonly createdBy: string;
 }
 
 export async function appendUpdate(
@@ -46,8 +40,8 @@ export async function appendUpdate(
   const record: UpdateRecord = {
     _id: new ObjectId(),
     workpieceId: input.workpieceId,
-    update: new Binary(input.update),
-    actorId: input.actorId,
+    bytes: new Binary(input.bytes),
+    createdBy: input.createdBy,
     createdAt: now,
   };
 
@@ -55,28 +49,20 @@ export async function appendUpdate(
   return record;
 }
 
-/**
- * Every change after the given one, oldest first. Leaving `after` out reads the whole
- * history from the beginning, which is what rebuilding an earlier state needs.
- *
- * The cut runs along _id and not along a timestamp, because ObjectIds are handed out
- * in order while two writes within the same second carry the same date. It holds as
- * long as a single process writes the updates of a workpiece, which the hub assumes
- * anyway by keeping the Y.Doc in memory.
- */
+/** Changes after the given one (all without it), oldest first; _id keeps order with one writer. */
 export async function readUpdatesSince(
   db: Db,
   workpieceId: ObjectId,
-  after?: ObjectId,
+  since?: ObjectId,
 ): Promise<UpdateRecord[]> {
   const filter: Filter<UpdateRecord> =
-    after === undefined ? { workpieceId } : { workpieceId, _id: { $gt: after } };
+    since === undefined ? { workpieceId } : { workpieceId, _id: { $gt: since } };
 
   return db.collection<UpdateRecord>('updates').find(filter).sort({ _id: 1 }).toArray();
 }
 
-/** The newest change of a workpiece, or undefined while it has none. */
-export async function newestUpdate(db: Db, workpieceId: ObjectId): Promise<ObjectId | undefined> {
+/** The id of the newest change of a workpiece, or undefined while it has none. */
+export async function newestUpdateId(db: Db, workpieceId: ObjectId): Promise<ObjectId | undefined> {
   const found = await db
     .collection<UpdateRecord>('updates')
     .findOne({ workpieceId }, { sort: { _id: -1 }, projection: { _id: 1 } });

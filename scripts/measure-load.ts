@@ -50,8 +50,8 @@ for (const size of SIZES) {
   const rows: UpdateRecord[] = captured.map((update, index) => ({
     _id: new ObjectId(),
     workpieceId: workpiece._id,
-    update: new Binary(update),
-    actorId: index % 2 === 0 ? 'alice' : 'bob',
+    bytes: new Binary(update),
+    createdBy: index % 2 === 0 ? 'alice' : 'bob',
     createdAt: new Date(),
   }));
 
@@ -66,16 +66,16 @@ for (const size of SIZES) {
   const oneByOneStart = process.hrtime.bigint();
   const oneByOne = new Y.Doc();
   for (const row of stored) {
-    Y.applyUpdate(oneByOne, new Uint8Array(row.update.buffer));
+    Y.applyUpdate(oneByOne, new Uint8Array(row.bytes.buffer));
   }
   const applied = millis(oneByOneStart);
 
   const mergedStart = process.hrtime.bigint();
   const merged = new Y.Doc();
-  Y.applyUpdate(merged, Y.mergeUpdates(stored.map((row) => new Uint8Array(row.update.buffer))));
+  Y.applyUpdate(merged, Y.mergeUpdates(stored.map((row) => new Uint8Array(row.bytes.buffer))));
   const mergedTime = millis(mergedStart);
 
-  const chainBytes = stored.reduce((sum, row) => sum + row.update.length(), 0);
+  const chainBytes = stored.reduce((sum, row) => sum + row.bytes.length(), 0);
   const foldedBytes = Y.encodeStateAsUpdate(oneByOne).length;
 
   console.log(

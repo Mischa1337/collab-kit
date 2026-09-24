@@ -20,7 +20,7 @@ export interface CommentRecord {
   anchor: Anchor;
   /** Makes it an answer to another comment, D4.13. */
   parentId?: ObjectId;
-  actorId: string;
+  createdBy: string;
   /** Free, the service never reads it. What a contribution is made of is not its business. */
   body: Document;
   /** Free, D8.20: open, read, answered, applied, rejected, whatever the tool names. */
@@ -32,12 +32,12 @@ export const commentsDefinition: CollectionDefinition = {
   name: 'comments',
   schema: {
     bsonType: 'object',
-    required: ['kind', 'anchor', 'actorId', 'body', 'createdAt'],
+    required: ['kind', 'anchor', 'createdBy', 'body', 'createdAt'],
     properties: {
       kind: { bsonType: 'string', description: 'comment, feedback, message, reaction, ...' },
       anchor: anchorSchema,
       parentId: { bsonType: 'objectId', description: 'makes it an answer, D4.13' },
-      actorId: { bsonType: 'string' },
+      createdBy: { bsonType: 'string' },
       body: { bsonType: 'object', description: 'free, the service never reads it' },
       state: {
         bsonType: 'string',
@@ -49,14 +49,14 @@ export const commentsDefinition: CollectionDefinition = {
   indexes: [
     { key: { 'anchor.id': 1, _id: 1 }, name: 'anchor_id' },
     { key: { parentId: 1, _id: 1 }, name: 'parent_thread' },
-    { key: { actorId: 1, _id: 1 }, name: 'actor_said' },
+    { key: { createdBy: 1, _id: 1 }, name: 'created_by' },
   ],
 };
 
 export interface NewComment {
   readonly kind: string;
   readonly anchor: Anchor;
-  readonly actorId: string;
+  readonly createdBy: string;
   readonly body: Document;
   readonly parentId?: ObjectId;
   readonly state?: string;
@@ -71,7 +71,7 @@ export async function createComment(
     _id: new ObjectId(),
     kind: input.kind,
     anchor: input.anchor,
-    actorId: input.actorId,
+    createdBy: input.createdBy,
     body: input.body,
     createdAt: now,
     ...defined({ parentId: input.parentId, state: input.state }),
@@ -87,7 +87,7 @@ export async function findComment(db: Db, id: ObjectId): Promise<CommentRecord |
 
 export interface CommentStateChange {
   readonly state: string;
-  readonly actorId: string;
+  readonly changedBy: string;
   readonly reason?: string;
 }
 
@@ -110,7 +110,7 @@ export async function setCommentState(
       change: { state: input.state },
       event: {
         kind: 'comment-state',
-        actorId: input.actorId,
+        createdBy: input.changedBy,
         anchor: { kind: 'comment', id: commentId },
         detail: { to: input.state },
         ...defined({ reason: input.reason }),
@@ -126,7 +126,7 @@ export const ROOT = null;
 export interface CommentQuery {
   readonly kind?: string;
   readonly state?: string;
-  readonly actorId?: string;
+  readonly createdBy?: string;
   readonly anchor?: AnchorQuery;
   /** Left out matches every comment, ROOT only those that answer nothing. */
   readonly parentId?: ObjectId | null;
@@ -139,7 +139,7 @@ export interface CommentQuery {
 export async function readComments(db: Db, query: CommentQuery = {}): Promise<CommentRecord[]> {
   const filter: Document = {
     ...(query.anchor === undefined ? {} : anchoredAt(query.anchor)),
-    ...defined({ kind: query.kind, state: query.state, actorId: query.actorId }),
+    ...defined({ kind: query.kind, state: query.state, createdBy: query.createdBy }),
     ...matchOptional('parentId', query.parentId),
   };
 

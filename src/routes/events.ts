@@ -27,9 +27,9 @@ export function eventRoutes(db: Db): Router {
 
     const since = asObjectId(request.query['since']);
     const kind = asText(request.query['kind']);
-    const actorId = asText(request.query['actorId']);
+    const createdBy = asText(request.query['createdBy']);
     const limit = asCount(request.query['limit']);
-    const query = { anchor, ...defined({ kind, actorId, limit }) };
+    const query = { anchor, ...defined({ kind, createdBy, limit }) };
 
     // With a cut it is a stream and reads forwards, without one it is a history and
     // reads backwards.
@@ -67,7 +67,7 @@ export function eventRoutes(db: Db): Router {
     response.status(201).json(
       await recordEvent(db, {
         kind,
-        actorId: actorOf(request).actorId,
+        createdBy: actorOf(request).actorId,
         anchor,
         ...defined({ at, label, reason, detail }),
       }),

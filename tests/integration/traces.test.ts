@@ -60,10 +60,10 @@ const open = (workpieceId: ObjectId, actor: string) =>
 
 const on = (workpieceId: ObjectId) => ({ kind: 'workpiece', id: workpieceId });
 
-const traced = (workpieceId: ObjectId, kind: string, actorId: string) =>
+const traced = (workpieceId: ObjectId, kind: string, createdBy: string) =>
   waitFor(
     async () =>
-      (await latestEvent(storage.db, { anchor: on(workpieceId), kind, actorId })) !== null,
+      (await latestEvent(storage.db, { anchor: on(workpieceId), kind, createdBy })) !== null,
   );
 
 beforeAll(async () => {
@@ -102,7 +102,7 @@ describe('presence', () => {
     await alice.close();
     expect(await traced(workpieceId, 'left', 'alice')).toBe(true);
 
-    const all = await readEvents(storage.db, { anchor: on(workpieceId), actorId: 'alice' });
+    const all = await readEvents(storage.db, { anchor: on(workpieceId), createdBy: 'alice' });
     expect(all.map((event) => event.kind)).toEqual(['left', 'joined']);
   });
 
@@ -158,7 +158,7 @@ describe('presence', () => {
     const left = await latestEvent(storage.db, {
       anchor: on(workpieceId),
       kind: 'left',
-      actorId: 'alice',
+      createdBy: 'alice',
     });
     const newest = (await readUpdatesSince(storage.db, workpieceId)).at(-1);
     expect(left?.at).toEqual(newest?._id);
@@ -189,12 +189,12 @@ describe('presence', () => {
     const mark = await latestEvent(storage.db, {
       anchor: on(workpieceId),
       kind: 'left',
-      actorId: 'alice',
+      createdBy: 'alice',
     });
     const missed = await readUpdatesSince(storage.db, workpieceId, mark?.at);
 
     expect(missed).toHaveLength(2);
-    expect(missed.every((row) => row.actorId === 'bob')).toBe(true);
+    expect(missed.every((row) => row.createdBy === 'bob')).toBe(true);
   });
 });
 
@@ -209,14 +209,14 @@ describe('checkpoint', () => {
     ).toBe(true);
 
     const marked = await hub.checkpoint(workpieceId, {
-      actorId: 'alice',
+      createdBy: 'alice',
       label: 'Abgabe 1',
       reason: 'vor dem Umbau des Kundenteils',
     });
 
     expect(marked).toMatchObject({
       kind: 'checkpoint',
-      actorId: 'alice',
+      createdBy: 'alice',
       label: 'Abgabe 1',
       reason: 'vor dem Umbau des Kundenteils',
     });
@@ -229,7 +229,7 @@ describe('checkpoint', () => {
 
   it('carries neither name nor why when nobody gave one', async () => {
     const workpieceId = await freshWorkpiece();
-    const marked = await hub.checkpoint(workpieceId, { actorId: 'carol' });
+    const marked = await hub.checkpoint(workpieceId, { createdBy: 'carol' });
 
     expect(marked.label).toBeUndefined();
     expect(marked.reason).toBeUndefined();
@@ -246,7 +246,10 @@ describe('checkpoint', () => {
     await alice.close();
     expect(await waitFor(() => gateway.countFor(workpieceId.toHexString()) === 0)).toBe(true);
 
-    const marked = await hub.checkpoint(workpieceId, { actorId: 'carol', label: 'nachtraeglich' });
+    const marked = await hub.checkpoint(workpieceId, {
+      createdBy: 'carol',
+      label: 'nachtraeglich',
+    });
 
     const newest = (await readUpdatesSince(storage.db, workpieceId)).at(-1);
     expect(marked.at).toEqual(newest?._id);
@@ -255,13 +258,13 @@ describe('checkpoint', () => {
 
   it('points at nothing on a workpiece that was never changed', async () => {
     const workpieceId = await freshWorkpiece();
-    const marked = await hub.checkpoint(workpieceId, { actorId: 'alice', label: 'leer' });
+    const marked = await hub.checkpoint(workpieceId, { createdBy: 'alice', label: 'leer' });
 
     expect(marked.at).toBeUndefined();
   });
 
   it('refuses a workpiece nobody created', async () => {
-    await expect(hub.checkpoint(new ObjectId(), { actorId: 'alice' })).rejects.toThrowError(
+    await expect(hub.checkpoint(new ObjectId(), { createdBy: 'alice' })).rejects.toThrowError(
       /unknown workpiece/,
     );
   });
@@ -272,7 +275,7 @@ describe('checkpoint', () => {
     await alice.synced;
 
     alice.doc.getText('t').insert(0, 'vorher');
-    const marking = hub.checkpoint(workpieceId, { actorId: 'alice', label: 'gleichzeitig' });
+    const marking = hub.checkpoint(workpieceId, { createdBy: 'alice', label: 'gleichzeitig' });
     alice.doc.getText('t').insert(6, ' nachher');
     const marked = await marking;
 
