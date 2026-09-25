@@ -17,7 +17,7 @@ cp .env.example .env
 | `JWT_ALGORITHM`       | `HS256` | Verfahren, mit dem das Werkzeug signiert: `HS256/384/512`, `RS256/384/512`, `PS256/384/512`, `ES256/384/512` |
 | `JWT_SECRET`          | keine   | Gemeinsames Geheimnis mit dem Werkzeug. Pflicht bei `HS…`                                                    |
 | `JWT_PUBLIC_KEY`      | keine   | Öffentlicher Schlüssel des Werkzeugs als PEM. Pflicht bei `RS…`, `PS…` und `ES…`                             |
-| `ACTOR_CLAIM`         | `sub`   | Claim mit der Kennung der Person. Erlaubt sind Text oder eine Zahl                                           |
+| `ACTOR_CLAIM`         | `sub`   | Claim mit der Kennung der Person, Text oder Zahl. Eindeutig und dauerhaft, keine E-Mail, kein Benutzername   |
 | `LABEL_CLAIM`         | `name`  | Claim mit dem Anzeigenamen. Darf im Token fehlen                                                             |
 | `JWT_CLOCK_TOLERANCE` | `5`     | Sekunden, die ein abgelaufenes Token noch gilt, um Uhrenabweichungen auszugleichen. `0` heißt streng         |
 
