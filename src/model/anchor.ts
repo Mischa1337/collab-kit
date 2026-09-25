@@ -13,23 +13,18 @@ export interface Anchor extends Reference {
   unit?: unknown;
 }
 
-/** Database schema of a Reference, for collections that embed one. */
-export const referenceSchema: Document = {
-  bsonType: 'object',
-  required: ['kind', 'id'],
-  properties: {
-    kind: { bsonType: 'string' },
-    id: {},
-  },
-};
+/** Database schema of the fields of a Reference, for schemas that embed one. */
+export const referenceProperties = {
+  kind: { bsonType: 'string' },
+  id: {},
+} satisfies Document;
 
 /** Database schema of an Anchor, for collections that embed one. */
 export const anchorSchema: Document = {
   bsonType: 'object',
   required: ['kind', 'id'],
   properties: {
-    kind: { bsonType: 'string' },
-    id: {},
+    ...referenceProperties,
     unit: { description: 'the unit inside, shaped as the contract of the tool declares' },
   },
 };

@@ -1,25 +1,16 @@
 import { ObjectId, type Db, type Document } from 'mongodb';
 
-import { referenceSchema, type Reference } from '../../model/anchor.ts';
+import { referenceProperties, type Reference } from '../../model/anchor.ts';
 import type { CollectionDefinition } from '../apply.ts';
 
-/**
- * A reference plus when it was put into the room and by whom. A room bundles whole
- * things, never a unit inside one, which is why this is a Reference and not an Anchor.
- */
+/** A reference plus when and by whom it was put in; whole things only, so no Anchor with a unit. */
 export interface Containment extends Reference {
   addedAt: Date;
   addedBy: string;
 }
 
-/**
- * A room bundles, it does not own. Everything in `contains` exists on its own and may
- * sit in several rooms at once, which is why removing a room removes nothing else.
- *
- * Who may do what is not decided here. A group in the room is the role, and which
- * roles exist is the business of the docking tool.
- */
-export interface Room {
+/** Bundles without owning: what it contains lives on its own and may sit in several rooms. */
+export interface RoomRecord {
   _id: ObjectId;
   name: string;
   /** Switch positions of the docking tool. The service never reads them. */
@@ -33,7 +24,7 @@ export const roomsDefinition: CollectionDefinition = {
   name: 'rooms',
   schema: {
     bsonType: 'object',
-    required: ['name', 'createdAt', 'createdBy'],
+    required: ['name', 'settings', 'contains', 'createdAt', 'createdBy'],
     properties: {
       name: { bsonType: 'string' },
       settings: {
@@ -44,10 +35,10 @@ export const roomsDefinition: CollectionDefinition = {
         bsonType: 'array',
         description: 'what the room bundles, pointed at and never owned',
         items: {
-          ...referenceSchema,
-          required: [...(referenceSchema['required'] as string[]), 'addedAt', 'addedBy'],
+          bsonType: 'object',
+          required: ['kind', 'id', 'addedAt', 'addedBy'],
           properties: {
-            ...(referenceSchema['properties'] as Document),
+            ...referenceProperties,
             addedAt: { bsonType: 'date' },
             addedBy: { bsonType: 'string' },
           },
@@ -66,8 +57,8 @@ export interface NewRoom {
   readonly settings?: Document;
 }
 
-export async function createRoom(db: Db, input: NewRoom, now = new Date()): Promise<Room> {
-  const room: Room = {
+export async function createRoom(db: Db, input: NewRoom, now = new Date()): Promise<RoomRecord> {
+  const room: RoomRecord = {
     _id: new ObjectId(),
     name: input.name,
     settings: input.settings ?? {},
@@ -76,27 +67,19 @@ export async function createRoom(db: Db, input: NewRoom, now = new Date()): Prom
     createdBy: input.createdBy,
   };
 
-  await db.collection<Room>('rooms').insertOne(room);
+  await db.collection<RoomRecord>('rooms').insertOne(room);
   return room;
 }
 
-export async function findRoom(db: Db, id: ObjectId): Promise<Room | null> {
-  return db.collection<Room>('rooms').findOne({ _id: id });
+export async function findRoom(db: Db, id: ObjectId): Promise<RoomRecord | null> {
+  return db.collection<RoomRecord>('rooms').findOne({ _id: id });
 }
 
 export interface Addition extends Reference {
   readonly addedBy: string;
 }
 
-/**
- * Puts a reference into the room and answers whether it was new. The condition sits
- * in the filter and not in a read beforehand, so two people adding the same thing at
- * the same moment still end up with one entry.
- *
- * Nothing is checked for existence. A reference that points nowhere costs nothing,
- * and checking only the kinds the service happens to know would be a rule that holds
- * for workpieces and quietly does not hold for everything a tool brings along.
- */
+/** Adds a reference if new, atomically; no existence check, as the kind may be the tool's own. */
 export async function addToRoom(
   db: Db,
   roomId: ObjectId,
@@ -110,7 +93,7 @@ export async function addToRoom(
     addedBy: input.addedBy,
   };
 
-  const result = await db.collection<Room>('rooms').updateOne(
+  const result = await db.collection<RoomRecord>('rooms').updateOne(
     {
       _id: roomId,
       contains: { $not: { $elemMatch: { kind: input.kind, id: input.id } } },
@@ -124,32 +107,28 @@ export async function addToRoom(
 /** Takes the reference out again. The thing it pointed at stays untouched. */
 export async function removeFromRoom(db: Db, roomId: ObjectId, what: Reference): Promise<boolean> {
   const result = await db
-    .collection<Room>('rooms')
+    .collection<RoomRecord>('rooms')
     .updateOne({ _id: roomId }, { $pull: { contains: { kind: what.kind, id: what.id } } });
 
   return result.modifiedCount === 1;
 }
 
 /** Every room this thing sits in, which is the way back from a workpiece or a group. */
-export async function roomsContaining(db: Db, what: Reference): Promise<Room[]> {
+export async function roomsContaining(db: Db, what: Reference): Promise<RoomRecord[]> {
   return db
-    .collection<Room>('rooms')
+    .collection<RoomRecord>('rooms')
     .find({ contains: { $elemMatch: { kind: what.kind, id: what.id } } })
     .toArray();
 }
 
-/**
- * Replaces the switch positions of the docking tool. Replaces and does not merge:
- * the service does not read this object, so it cannot tell which of its keys the
- * tool meant to drop.
- */
+/** Replaces the switch positions, never merges: unread here, so which keys to drop is unknown. */
 export async function setRoomSettings(
   db: Db,
   roomId: ObjectId,
   settings: Document,
 ): Promise<boolean> {
   const result = await db
-    .collection<Room>('rooms')
+    .collection<RoomRecord>('rooms')
     .updateOne({ _id: roomId }, { $set: { settings } });
 
   return result.matchedCount === 1;
