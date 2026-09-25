@@ -8,6 +8,7 @@ import { createTokenCheck } from '../../src/auth/token.ts';
 import { applyDefinitions } from '../../src/db/apply.ts';
 import { connect, type Storage } from '../../src/db/client.ts';
 import { createComment } from '../../src/db/collections/comments.ts';
+import { createTask, type NewTask } from '../../src/db/collections/tasks.ts';
 import { collectionDefinitions } from '../../src/db/schemas.ts';
 import { createWorkpieceHub } from '../../src/realtime/hub.ts';
 import { createApi } from '../../src/routes/index.ts';
@@ -312,5 +313,48 @@ describe('the history of a workpiece', () => {
       .set(as(bob));
 
     expect(refused.status).toBe(404);
+  });
+});
+
+describe('who may see a task', () => {
+  const task = (over: Partial<NewTask> = {}) =>
+    createTask(storage.db, {
+      kind: 'task',
+      title: 'Entwurf',
+      state: 'offen',
+      createdBy: 'dora',
+      ...over,
+    });
+  const traces = (taskId: ObjectId, token: string) =>
+    request(server)
+      .get('/events')
+      .query({ anchorKind: 'task', anchorId: taskId.toHexString() })
+      .set(as(token));
+
+  it('follows its anchor, and a subtask follows its parent', async () => {
+    const { workpieceId } = await setUp();
+    const carol = tokenFor('carol');
+    const top = await task({ anchor: { kind: 'workpiece', id: new ObjectId(workpieceId) } });
+    const child = await task({ kind: 'review', parentId: top._id });
+
+    expect((await traces(top._id, bob)).status).toBe(200);
+    expect((await traces(child._id, bob)).status).toBe(200);
+    expect((await traces(child._id, carol)).status).toBe(404);
+  });
+
+  it('shows a task without anchor to its creator and to whom it belongs', async () => {
+    const reading = await task({ subject: { kind: 'actor', id: 'carol' } });
+
+    expect((await traces(reading._id, tokenFor('dora'))).status).toBe(200);
+    expect((await traces(reading._id, tokenFor('carol'))).status).toBe(200);
+    expect((await traces(reading._id, bob)).status).toBe(404);
+  });
+
+  it('shows a task given to a group to its members', async () => {
+    const { groupId } = await setUp();
+    const shared = await task({ subject: { kind: 'group', id: new ObjectId(groupId) } });
+
+    expect((await traces(shared._id, bob)).status).toBe(200);
+    expect((await traces(shared._id, tokenFor('carol'))).status).toBe(404);
   });
 });

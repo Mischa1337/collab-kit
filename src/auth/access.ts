@@ -11,6 +11,7 @@ import type { WorkpieceRecord } from '../db/collections/workpieces.ts';
 import { findComment } from '../db/collections/comments.ts';
 import { findGroup, isMemberOfAny, type GroupRecord } from '../db/collections/groups.ts';
 import { findRoom, roomsContaining } from '../db/collections/rooms.ts';
+import { findTask, type TaskRecord } from '../db/collections/tasks.ts';
 
 export interface AccessRequest {
   readonly db: Db;
@@ -114,7 +115,32 @@ export async function mayReach(db: Db, actor: Actor, target: Reference): Promise
     const comment = await findComment(db, target.id);
     return comment !== null && mayReach(db, actor, comment.anchor);
   }
+  if (target.kind === 'task') {
+    const task = await findTask(db, target.id);
+    return task !== null && maySeeTask(db, actor, task);
+  }
   return true;
+}
+
+/** A task is seen by its creator, its subject, and whoever may reach its anchor or its parent. */
+async function maySeeTask(db: Db, actor: Actor, task: TaskRecord): Promise<boolean> {
+  const { subject } = task;
+
+  if (task.createdBy === actor.actorId) {
+    return true;
+  }
+  if (subject?.kind === 'actor' && subject.id === actor.actorId) {
+    return true;
+  }
+  if (subject?.kind === 'group' && subject.id instanceof ObjectId) {
+    if (await isMemberOfAny(db, [subject.id], actor.actorId)) {
+      return true;
+    }
+  }
+  if (task.anchor !== undefined && (await mayReach(db, actor, task.anchor))) {
+    return true;
+  }
+  return task.parentId !== undefined && mayReach(db, actor, { kind: 'task', id: task.parentId });
 }
 
 /**

@@ -11,14 +11,7 @@ export interface TaskSubject {
   id: unknown;
 }
 
-/**
- * Something that should be done, by somebody, with a state. Task, subtask, review
- * order, revision and approval are this one form with a different kind.
- *
- * `state` is the current value and therefore queryable; how it got there lives in
- * `events`. That is the same relation as `workpieces.fold` to `updates`: the field is
- * the shortcut, the stream is the truth.
- */
+/** Something to be done, with a state; its history lives in events, state is only the shortcut. */
 export interface TaskRecord {
   _id: ObjectId;
   kind: string;
@@ -192,16 +185,13 @@ export const TOP = null;
 export interface TaskQuery {
   readonly kind?: string;
   readonly state?: string;
-  readonly subject?: { readonly kind: string; readonly id: unknown };
+  readonly subject?: TaskSubject;
   readonly anchor?: AnchorQuery;
   /** Left out matches every task, TOP only those without a parent. */
   readonly parentId?: ObjectId | null;
 }
 
-/**
- * Sorted by order and then by _id, so a sequence comes back in its sequence and
- * everything without one stays in the order it was created.
- */
+/** Sorted by order, then by _id: a sequence in its order, the rest as it was created. */
 export async function readTasks(db: Db, query: TaskQuery = {}): Promise<TaskRecord[]> {
   const filter: Document = {
     ...(query.anchor === undefined ? {} : anchoredAt(query.anchor)),
