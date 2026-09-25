@@ -140,6 +140,16 @@ describe('the state of a piece of feedback', () => {
     ]);
   });
 
+  it('leaves no trace when the state stays the same', async () => {
+    const comment = await said({ state: 'offen' });
+
+    await setCommentState(storage.db, comment._id, { state: 'umgesetzt', changedBy: 'bob' });
+    await setCommentState(storage.db, comment._id, { state: 'umgesetzt', changedBy: 'bob' });
+
+    const history = await readEvents(storage.db, { anchor: { kind: 'comment', id: comment._id } });
+    expect(history).toHaveLength(1);
+  });
+
   it('refuses a comment nobody wrote', async () => {
     await expect(
       setCommentState(storage.db, new ObjectId(), { state: 'gelesen', changedBy: 'alice' }),

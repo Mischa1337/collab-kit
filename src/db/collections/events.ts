@@ -126,7 +126,7 @@ export interface TracedChange {
   readonly event: NewEvent;
 }
 
-/** Changes one row and records its event in one transaction; returns the row without rereading. */
+/** Changes one row, records its event only if it did change, returns the row as it now stands. */
 export async function changeWithEvent<T extends Document>(
   db: Db,
   input: TracedChange,
@@ -140,8 +140,15 @@ export async function changeWithEvent<T extends Document>(
       throw new Error(`unknown ${input.what} ${input.id.toHexString()}`);
     }
 
-    await collection.updateOne({ _id: input.id }, { $set: input.change }, { session });
-    await recordEvent(db, input.event, now, session);
+    const result = await collection.updateOne(
+      { _id: input.id },
+      { $set: input.change },
+      { session },
+    );
+
+    if (result.modifiedCount === 1) {
+      await recordEvent(db, input.event, now, session);
+    }
 
     return { ...before, ...input.change } as unknown as T;
   });

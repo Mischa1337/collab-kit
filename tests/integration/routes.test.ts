@@ -1,4 +1,5 @@
 import jwt from 'jsonwebtoken';
+import { ObjectId } from 'mongodb';
 import pino from 'pino';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -6,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createTokenCheck } from '../../src/auth/token.ts';
 import { applyDefinitions } from '../../src/db/apply.ts';
 import { connect, type Storage } from '../../src/db/client.ts';
+import { createComment } from '../../src/db/collections/comments.ts';
 import { collectionDefinitions } from '../../src/db/schemas.ts';
 import { createWorkpieceHub } from '../../src/realtime/hub.ts';
 import { createApi } from '../../src/routes/index.ts';
@@ -244,6 +246,27 @@ describe('the room as a channel', () => {
     expect(seen.body).toHaveLength(2);
 
     expect((await request(server).get('/events').query(query).set(as(carol))).status).toBe(404);
+  });
+
+  it('shows the traces at a comment only to whoever may open what it is about', async () => {
+    const { workpieceId } = await setUp();
+    const comment = await createComment(storage.db, {
+      kind: 'feedback',
+      anchor: { kind: 'workpiece', id: new ObjectId(workpieceId) },
+      createdBy: 'alice',
+      body: {},
+    });
+    const query = { anchorKind: 'comment', anchorId: comment._id.toHexString() };
+
+    expect((await request(server).get('/events').query(query).set(as(bob))).status).toBe(200);
+    expect(
+      (
+        await request(server)
+          .get('/events')
+          .query(query)
+          .set(as(tokenFor('carol')))
+      ).status,
+    ).toBe(404);
   });
 
   it('refuses a trace on a workpiece the actor may not open', async () => {

@@ -8,6 +8,7 @@ import { ObjectId, type Db } from 'mongodb';
 import type { Actor } from '../model/actor.ts';
 import type { Reference } from '../model/anchor.ts';
 import type { WorkpieceRecord } from '../db/collections/workpieces.ts';
+import { findComment } from '../db/collections/comments.ts';
 import { findGroup, isMemberOfAny, type GroupRecord } from '../db/collections/groups.ts';
 import { findRoom, roomsContaining } from '../db/collections/rooms.ts';
 
@@ -107,6 +108,11 @@ export async function mayReach(db: Db, actor: Actor, target: Reference): Promise
   if (target.kind === 'group') {
     const group = await findGroup(db, target.id);
     return group !== null && maySeeGroup(actor, group);
+  }
+  if (target.kind === 'comment') {
+    // A comment is as visible as what it is about, down the chain to a workpiece or room.
+    const comment = await findComment(db, target.id);
+    return comment !== null && mayReach(db, actor, comment.anchor);
   }
   return true;
 }

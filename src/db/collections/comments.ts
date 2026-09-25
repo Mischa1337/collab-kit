@@ -5,15 +5,7 @@ import { defined, matchOptional } from '../../utils/optional.ts';
 import type { CollectionDefinition } from '../apply.ts';
 import { changeWithEvent } from './events.ts';
 
-/**
- * Something a person said, at a place, possibly in answer to something else. Comment,
- * feedback, chat message, annotation and reaction are this one form with a different
- * kind and a different anchor.
- *
- * Unlike a task this always has an anchor: saying something about nothing is not a
- * thing. Without a unit it is about the whole, with one about a single place, and
- * that difference is all there is to local versus global feedback, D8.19.
- */
+/** Something a person said about a place; feedback, chat and reactions differ only in kind. */
 export interface CommentRecord {
   _id: ObjectId;
   kind: string;
@@ -91,10 +83,7 @@ export interface CommentStateChange {
   readonly reason?: string;
 }
 
-/**
- * Moves the state and keeps who moved it, in one transaction. Who marked a piece of
- * feedback as applied is the part of D8.16 that a field alone would throw away.
- */
+/** Moves the state and records who moved it, D8.16, in one transaction. */
 export async function setCommentState(
   db: Db,
   commentId: ObjectId,
@@ -132,10 +121,7 @@ export interface CommentQuery {
   readonly parentId?: ObjectId | null;
 }
 
-/**
- * Oldest first, unlike the events: a conversation is read forwards, a history
- * backwards.
- */
+/** Oldest first, unlike the events: a conversation is read forwards. */
 export async function readComments(db: Db, query: CommentQuery = {}): Promise<CommentRecord[]> {
   const filter: Document = {
     ...(query.anchor === undefined ? {} : anchoredAt(query.anchor)),
