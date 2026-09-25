@@ -11,6 +11,7 @@ import {
   removeFromRoom,
   roomsContaining,
 } from '../../src/db/collections/rooms.ts';
+import { readEvents } from '../../src/db/collections/events.ts';
 
 const uri = process.env['MONGODB_URI'];
 if (uri === undefined || uri === '') {
@@ -20,6 +21,9 @@ if (uri === undefined || uri === '') {
 const database = `collab_kit_rooms_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
 let storage: Storage;
+
+const traces = (roomId: ObjectId, kind: string) =>
+  readEvents(storage.db, { anchor: { kind: 'room', id: roomId }, kind });
 
 beforeAll(async () => {
   storage = await connect({ uri, database });
@@ -39,7 +43,7 @@ describe('rooms', () => {
       name: 'Seminar',
       createdBy: 'alice',
       settings: {},
-      contains: [],
+      references: [],
     });
   });
 
@@ -62,7 +66,7 @@ describe('rooms', () => {
 });
 
 describe('what a room bundles', () => {
-  it('takes a reference in and notes when and by whom', async () => {
+  it('takes a reference in and leaves a trace of when and by whom', async () => {
     const room = await createRoom(storage.db, { name: 'Seminar', createdBy: 'alice' });
     const workpieceId = new ObjectId();
 
@@ -71,13 +75,15 @@ describe('what a room bundles', () => {
     ).resolves.toBe(true);
 
     const stored = await findRoom(storage.db, room._id);
-    expect(stored?.contains).toHaveLength(1);
-    expect(stored?.contains[0]).toMatchObject({
-      kind: 'workpiece',
-      id: workpieceId,
-      addedBy: 'alice',
+    expect(stored?.references).toEqual([{ kind: 'workpiece', id: workpieceId }]);
+
+    const added = await traces(room._id, 'reference-added');
+    expect(added).toHaveLength(1);
+    expect(added[0]).toMatchObject({
+      createdBy: 'alice',
+      detail: { kind: 'workpiece', id: workpieceId },
     });
-    expect(stored?.contains[0]?.addedAt).toBeInstanceOf(Date);
+    expect(added[0]?.createdAt).toBeInstanceOf(Date);
   });
 
   it('adds the same thing only once', async () => {
@@ -89,7 +95,8 @@ describe('what a room bundles', () => {
       addToRoom(storage.db, room._id, { kind: 'group', id, addedBy: 'bob' }),
     ).resolves.toBe(false);
 
-    expect((await findRoom(storage.db, room._id))?.contains).toHaveLength(1);
+    expect((await findRoom(storage.db, room._id))?.references).toHaveLength(1);
+    await expect(traces(room._id, 'reference-added')).resolves.toHaveLength(1);
   });
 
   it('tells the kinds apart, even under the same id', async () => {
@@ -99,7 +106,7 @@ describe('what a room bundles', () => {
     await addToRoom(storage.db, room._id, { kind: 'workpiece', id, addedBy: 'alice' });
     await addToRoom(storage.db, room._id, { kind: 'group', id, addedBy: 'alice' });
 
-    expect((await findRoom(storage.db, room._id))?.contains).toHaveLength(2);
+    expect((await findRoom(storage.db, room._id))?.references).toHaveLength(2);
   });
 
   it('carries a kind the service has never heard of', async () => {
@@ -111,7 +118,7 @@ describe('what a room bundles', () => {
       addedBy: 'alice',
     });
 
-    expect((await findRoom(storage.db, room._id))?.contains[0]).toMatchObject({
+    expect((await findRoom(storage.db, room._id))?.references[0]).toMatchObject({
       kind: 'whatever-the-tool-brings',
       id: 'a key of its own',
     });
@@ -125,15 +132,19 @@ describe('what a room bundles', () => {
     await addToRoom(storage.db, room._id, { kind: 'workpiece', id: going, addedBy: 'alice' });
     await addToRoom(storage.db, room._id, { kind: 'workpiece', id: staying, addedBy: 'alice' });
 
-    await expect(
-      removeFromRoom(storage.db, room._id, { kind: 'workpiece', id: going }),
-    ).resolves.toBe(true);
-    await expect(
-      removeFromRoom(storage.db, room._id, { kind: 'workpiece', id: going }),
-    ).resolves.toBe(false);
+    const removal = { kind: 'workpiece', id: going, removedBy: 'alice' };
+    await expect(removeFromRoom(storage.db, room._id, removal)).resolves.toBe(true);
+    await expect(removeFromRoom(storage.db, room._id, removal)).resolves.toBe(false);
 
     const stored = await findRoom(storage.db, room._id);
-    expect(stored?.contains.map((entry) => entry.id)).toEqual([staying]);
+    expect(stored?.references.map((reference) => reference.id)).toEqual([staying]);
+
+    const removed = await traces(room._id, 'reference-removed');
+    expect(removed).toHaveLength(1);
+    expect(removed[0]).toMatchObject({
+      createdBy: 'alice',
+      detail: { kind: 'workpiece', id: going },
+    });
   });
 
   it('finds every room the same thing sits in', async () => {

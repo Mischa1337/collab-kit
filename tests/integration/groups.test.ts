@@ -11,6 +11,7 @@ import {
   groupsOf,
   removeMember,
 } from '../../src/db/collections/groups.ts';
+import { readEvents } from '../../src/db/collections/events.ts';
 
 const uri = process.env['MONGODB_URI'];
 if (uri === undefined || uri === '') {
@@ -20,6 +21,9 @@ if (uri === undefined || uri === '') {
 const database = `collab_kit_groups_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
 let storage: Storage;
+
+const traces = (groupId: ObjectId, kind: string) =>
+  readEvents(storage.db, { anchor: { kind: 'group', id: groupId }, kind });
 
 beforeAll(async () => {
   storage = await connect({ uri, database });
@@ -32,7 +36,7 @@ afterAll(async () => {
 });
 
 describe('groups', () => {
-  it('starts with the members it was given, each with a moment', async () => {
+  it('starts with the members it was given, each with a trace', async () => {
     const created = await createGroup(storage.db, {
       name: 'Gruppe 3',
       createdBy: 'alice',
@@ -40,10 +44,23 @@ describe('groups', () => {
     });
 
     const stored = await findGroup(storage.db, created._id);
-    expect(stored?.members.map((member) => member.actorId)).toEqual(['alice', 'bob']);
-    expect(stored?.members[0]).toMatchObject({ addedBy: 'alice' });
-    expect(stored?.members[0]?.addedAt).toBeInstanceOf(Date);
+    expect(stored?.members).toEqual(['alice', 'bob']);
     expect(stored?.settings).toEqual({});
+
+    const added = await traces(created._id, 'member-added');
+    expect(added.map((event) => event.detail?.['actorId']).toSorted()).toEqual(['alice', 'bob']);
+    expect(added.every((event) => event.createdBy === 'alice')).toBe(true);
+  });
+
+  it('counts a starting member named twice only once', async () => {
+    const created = await createGroup(storage.db, {
+      name: 'Gruppe 3',
+      createdBy: 'alice',
+      members: ['bob', 'bob'],
+    });
+
+    expect((await findGroup(storage.db, created._id))?.members).toEqual(['bob']);
+    await expect(traces(created._id, 'member-added')).resolves.toHaveLength(1);
   });
 
   it('keeps what the group means to the tool untouched', async () => {
@@ -67,7 +84,11 @@ describe('groups', () => {
       addMember(storage.db, created._id, { actorId: 'bob', addedBy: 'carol' }),
     ).resolves.toBe(false);
 
-    expect((await findGroup(storage.db, created._id))?.members).toHaveLength(1);
+    expect((await findGroup(storage.db, created._id))?.members).toEqual(['bob']);
+
+    const added = await traces(created._id, 'member-added');
+    expect(added).toHaveLength(1);
+    expect(added[0]).toMatchObject({ createdBy: 'alice', detail: { actorId: 'bob' } });
   });
 
   it('lets an actor go again', async () => {
@@ -77,12 +98,15 @@ describe('groups', () => {
       members: ['alice', 'bob'],
     });
 
-    await expect(removeMember(storage.db, created._id, 'bob')).resolves.toBe(true);
-    await expect(removeMember(storage.db, created._id, 'bob')).resolves.toBe(false);
+    const going = { actorId: 'bob', removedBy: 'alice' };
+    await expect(removeMember(storage.db, created._id, going)).resolves.toBe(true);
+    await expect(removeMember(storage.db, created._id, going)).resolves.toBe(false);
 
-    expect((await findGroup(storage.db, created._id))?.members.map((m) => m.actorId)).toEqual([
-      'alice',
-    ]);
+    expect((await findGroup(storage.db, created._id))?.members).toEqual(['alice']);
+
+    const removed = await traces(created._id, 'member-removed');
+    expect(removed).toHaveLength(1);
+    expect(removed[0]).toMatchObject({ createdBy: 'alice', detail: { actorId: 'bob' } });
   });
 
   it('finds every group an actor is in', async () => {

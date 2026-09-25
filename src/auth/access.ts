@@ -9,7 +9,7 @@ import type { Actor } from '../model/actor.ts';
 import type { Reference } from '../model/anchor.ts';
 import type { WorkpieceRecord } from '../db/collections/workpieces.ts';
 import { findGroup, isMemberOfAny, type GroupRecord } from '../db/collections/groups.ts';
-import { findRoom, roomsContaining, type Containment } from '../db/collections/rooms.ts';
+import { findRoom, roomsContaining } from '../db/collections/rooms.ts';
 
 export interface AccessRequest {
   readonly db: Db;
@@ -35,7 +35,7 @@ export async function mayOpenWorkpiece(request: AccessRequest): Promise<boolean>
     id: request.workpieceId,
   });
 
-  const groupIds = rooms.flatMap((room) => groupsIn(room.contains));
+  const groupIds = rooms.flatMap((room) => groupsIn(room.references));
 
   return isMemberOfAny(request.db, groupIds, request.actor.actorId);
 }
@@ -74,7 +74,7 @@ export async function mayEnterRoom(db: Db, actor: Actor, roomId: ObjectId): Prom
     return true;
   }
 
-  return isMemberOfAny(db, groupsIn(room.contains), actor.actorId);
+  return isMemberOfAny(db, groupsIn(room.references), actor.actorId);
 }
 
 /**
@@ -85,10 +85,7 @@ export function maySeeGroup(
   actor: Actor,
   group: Pick<GroupRecord, 'createdBy' | 'members'>,
 ): boolean {
-  return (
-    group.createdBy === actor.actorId ||
-    group.members.some((member) => member.actorId === actor.actorId)
-  );
+  return group.createdBy === actor.actorId || group.members.includes(actor.actorId);
 }
 
 /**
@@ -106,6 +103,10 @@ export async function mayReach(db: Db, actor: Actor, target: Reference): Promise
   }
   if (target.kind === 'room') {
     return mayEnterRoom(db, actor, target.id);
+  }
+  if (target.kind === 'group') {
+    const group = await findGroup(db, target.id);
+    return group !== null && maySeeGroup(actor, group);
   }
   return true;
 }
@@ -135,8 +136,8 @@ export async function mayChange(
  * Only what the service keeps itself is resolved. A room may bundle kinds this
  * service has never heard of, and those cannot grant anything here.
  */
-function groupsIn(contains: readonly Containment[]): ObjectId[] {
-  return contains
+function groupsIn(references: readonly Reference[]): ObjectId[] {
+  return references
     .filter((entry) => entry.kind === 'group')
     .map((entry) => entry.id)
     .filter((id) => id instanceof ObjectId);

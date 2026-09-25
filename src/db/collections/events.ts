@@ -60,7 +60,15 @@ export async function recordEvent(
   now = new Date(),
   session?: ClientSession,
 ): Promise<EventRecord> {
-  const record: EventRecord = {
+  const record = recordOf(input, now);
+
+  await db.collection<EventRecord>('events').insertOne(record, defined({ session }));
+
+  return record;
+}
+
+function recordOf(input: NewEvent, now: Date): EventRecord {
+  return {
     _id: new ObjectId(),
     kind: input.kind,
     createdBy: input.createdBy,
@@ -68,10 +76,6 @@ export async function recordEvent(
     createdAt: now,
     ...defined({ at: input.at, label: input.label, reason: input.reason, detail: input.detail }),
   };
-
-  await db.collection<EventRecord>('events').insertOne(record, defined({ session }));
-
-  return record;
 }
 
 export interface EventQuery {
@@ -143,6 +147,33 @@ export async function changeWithEvent<T extends Document>(
       await recordEvent(db, input.event, now, session);
 
       return { ...before, ...input.change } as unknown as T;
+    });
+  } finally {
+    await session.endSession();
+  }
+}
+
+/** Runs the write and, only if it changed something, records the events, all in one transaction. */
+export async function writeWithEvents(
+  db: Db,
+  write: (session: ClientSession) => Promise<boolean>,
+  events: readonly NewEvent[],
+  now = new Date(),
+): Promise<boolean> {
+  const session = db.client.startSession();
+
+  try {
+    return await session.withTransaction(async () => {
+      if (!(await write(session))) {
+        return false;
+      }
+
+      if (events.length > 0) {
+        const records = events.map((event) => recordOf(event, now));
+        await db.collection<EventRecord>('events').insertMany(records, { session });
+      }
+
+      return true;
     });
   } finally {
     await session.endSession();

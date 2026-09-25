@@ -1,13 +1,7 @@
 import { ObjectId, type Db, type Document } from 'mongodb';
 
 import type { CollectionDefinition } from '../apply.ts';
-
-/** Being in a group, with the moment it started and who arranged it. */
-export interface Membership {
-  actorId: string;
-  addedAt: Date;
-  addedBy: string;
-}
+import { writeWithEvents, type NewEvent } from './events.ts';
 
 /** A set of actors, nothing more; what it stands for, a role say, is the business of the tool. */
 export interface GroupRecord {
@@ -15,7 +9,8 @@ export interface GroupRecord {
   name: string;
   /** What the group means to the docking tool. The service never reads it. */
   settings: Document;
-  members: Membership[];
+  /** Actor keys; who put them in or took them out, and when, is kept in events. */
+  members: string[];
   createdAt: Date;
   createdBy: string;
 }
@@ -34,21 +29,13 @@ export const groupsDefinition: CollectionDefinition = {
       members: {
         bsonType: 'array',
         description: 'opaque actor keys, no object and no task ever hangs on a group',
-        items: {
-          bsonType: 'object',
-          required: ['actorId', 'addedAt', 'addedBy'],
-          properties: {
-            actorId: { bsonType: 'string' },
-            addedAt: { bsonType: 'date' },
-            addedBy: { bsonType: 'string' },
-          },
-        },
+        items: { bsonType: 'string' },
       },
       createdAt: { bsonType: 'date' },
       createdBy: { bsonType: 'string' },
     },
   },
-  indexes: [{ key: { 'members.actorId': 1 }, name: 'member_actor' }],
+  indexes: [{ key: { members: 1 }, name: 'members' }],
 };
 
 export interface NewGroup {
@@ -64,16 +51,23 @@ export async function createGroup(db: Db, input: NewGroup, now = new Date()): Pr
     _id: new ObjectId(),
     name: input.name,
     settings: input.settings ?? {},
-    members: (input.members ?? []).map((actorId) => ({
-      actorId,
-      addedAt: now,
-      addedBy: input.createdBy,
-    })),
+    members: [...new Set(input.members ?? [])],
     createdAt: now,
     createdBy: input.createdBy,
   };
 
-  await db.collection<GroupRecord>('groups').insertOne(group);
+  await writeWithEvents(
+    db,
+    async (session) => {
+      await db.collection<GroupRecord>('groups').insertOne(group, { session });
+      return true;
+    },
+    group.members.map((actorId) =>
+      memberEvent('member-added', group._id, actorId, input.createdBy),
+    ),
+    now,
+  );
+
   return group;
 }
 
@@ -86,40 +80,56 @@ export interface NewMember {
   readonly addedBy: string;
 }
 
-/** Takes an actor in, answers whether that was new; keeps when and by whom, as a role changes. */
+/** Takes an actor in and records it; answers whether that was new. */
 export async function addMember(
   db: Db,
   groupId: ObjectId,
   input: NewMember,
   now = new Date(),
 ): Promise<boolean> {
-  const member: Membership = {
-    actorId: input.actorId,
-    addedAt: now,
-    addedBy: input.addedBy,
-  };
+  return writeWithEvents(
+    db,
+    async (session) => {
+      const result = await db
+        .collection<GroupRecord>('groups')
+        .updateOne({ _id: groupId }, { $addToSet: { members: input.actorId } }, { session });
 
-  const result = await db
-    .collection<GroupRecord>('groups')
-    .updateOne(
-      { _id: groupId, 'members.actorId': { $ne: input.actorId } },
-      { $push: { members: member } },
-    );
-
-  return result.modifiedCount === 1;
+      return result.modifiedCount === 1;
+    },
+    [memberEvent('member-added', groupId, input.actorId, input.addedBy)],
+    now,
+  );
 }
 
-export async function removeMember(db: Db, groupId: ObjectId, actorId: string): Promise<boolean> {
-  const result = await db
-    .collection<GroupRecord>('groups')
-    .updateOne({ _id: groupId }, { $pull: { members: { actorId } } });
+export interface MemberRemoval {
+  readonly actorId: string;
+  readonly removedBy: string;
+}
 
-  return result.modifiedCount === 1;
+/** Lets an actor go and records it; answers whether they were in. */
+export async function removeMember(
+  db: Db,
+  groupId: ObjectId,
+  input: MemberRemoval,
+  now = new Date(),
+): Promise<boolean> {
+  return writeWithEvents(
+    db,
+    async (session) => {
+      const result = await db
+        .collection<GroupRecord>('groups')
+        .updateOne({ _id: groupId }, { $pull: { members: input.actorId } }, { session });
+
+      return result.modifiedCount === 1;
+    },
+    [memberEvent('member-removed', groupId, input.actorId, input.removedBy)],
+    now,
+  );
 }
 
 /** Every group this actor is in. */
 export async function groupsOf(db: Db, actorId: string): Promise<GroupRecord[]> {
-  return db.collection<GroupRecord>('groups').find({ 'members.actorId': actorId }).toArray();
+  return db.collection<GroupRecord>('groups').find({ members: actorId }).toArray();
 }
 
 /** Whether the actor is in at least one of these groups, as a single yes-or-no query. */
@@ -134,10 +144,7 @@ export async function isMemberOfAny(
 
   const found = await db
     .collection<GroupRecord>('groups')
-    .findOne(
-      { _id: { $in: [...groupIds] }, 'members.actorId': actorId },
-      { projection: { _id: 1 } },
-    );
+    .findOne({ _id: { $in: [...groupIds] }, members: actorId }, { projection: { _id: 1 } });
 
   return found !== null;
 }
@@ -153,4 +160,9 @@ export async function setGroupSettings(
     .updateOne({ _id: groupId }, { $set: { settings } });
 
   return result.matchedCount === 1;
+}
+
+/** The trace of a membership change, anchored at the group. */
+function memberEvent(kind: string, groupId: ObjectId, actorId: string, by: string): NewEvent {
+  return { kind, createdBy: by, anchor: { kind: 'group', id: groupId }, detail: { actorId } };
 }

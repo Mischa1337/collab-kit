@@ -59,7 +59,7 @@ async function setUp(): Promise<{ roomId: string; groupId: string; workpieceId: 
 
   const roomId = room.body._id as string;
   const into = (entry: { kind: string; id: string }) =>
-    request(server).post(`/rooms/${roomId}/contains`).set(as(alice)).send(entry);
+    request(server).post(`/rooms/${roomId}/references`).set(as(alice)).send(entry);
 
   await into({ kind: 'group', id: group.body._id as string });
   await into({ kind: 'workpiece', id: workpiece.body._id as string });
@@ -89,7 +89,7 @@ describe('setting a room up', () => {
 
     const room = await request(server).get(`/rooms/${roomId}`).set(as(bob));
     expect(room.status).toBe(200);
-    expect(room.body.contains).toHaveLength(2);
+    expect(room.body.references).toHaveLength(2);
 
     // bob is in a group the room bundles, so the workpiece is his to open.
     expect((await request(server).get(`/workpieces/${workpieceId}`).set(as(bob))).status).toBe(200);
@@ -128,7 +128,7 @@ describe('who may change what', () => {
     const { roomId } = await setUp();
 
     const pushed = await request(server)
-      .post(`/rooms/${roomId}/contains`)
+      .post(`/rooms/${roomId}/references`)
       .set(as(bob))
       .send({ kind: 'group', id: '000000000000000000000000' });
 
@@ -222,6 +222,28 @@ describe('the room as a channel', () => {
     const events = await request(server).get(`/rooms/${roomId}/events`).set(as(bob));
 
     expect(events.body.map((event: { kind: string }) => event.kind)).toContain('note');
+  });
+
+  it('shows how the room was put together, but not who joined its groups', async () => {
+    const { roomId } = await setUp();
+
+    const events = await request(server).get(`/rooms/${roomId}/events`).set(as(bob));
+    const kinds = events.body.map((event: { kind: string }) => event.kind);
+
+    expect(kinds).toContain('reference-added');
+    expect(kinds).not.toContain('member-added');
+  });
+
+  it('shows who joined a group to its members and to nobody else', async () => {
+    const { groupId } = await setUp();
+    const carol = tokenFor('carol');
+    const query = { anchorKind: 'group', anchorId: groupId, kind: 'member-added' };
+
+    const seen = await request(server).get('/events').query(query).set(as(bob));
+    expect(seen.status).toBe(200);
+    expect(seen.body).toHaveLength(2);
+
+    expect((await request(server).get('/events').query(query).set(as(carol))).status).toBe(404);
   });
 
   it('refuses a trace on a workpiece the actor may not open', async () => {

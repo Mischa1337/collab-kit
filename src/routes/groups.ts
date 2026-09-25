@@ -95,7 +95,7 @@ export function groupRoutes(db: Db): Router {
     }
 
     const id = idOf(request);
-    await removeMember(db, id, actorId);
+    await removeMember(db, id, { actorId, removedBy: actorOf(request).actorId });
     response.json(await findGroup(db, id));
   });
 

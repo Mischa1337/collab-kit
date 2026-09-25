@@ -66,7 +66,7 @@ export function roomRoutes(db: Db): Router {
     response.json(await findRoom(db, id));
   });
 
-  routes.post('/rooms/:id/contains', changing, async (request, response) => {
+  routes.post('/rooms/:id/references', changing, async (request, response) => {
     const body = bodyOf(request);
     const kind = asText(body['kind']);
 
@@ -86,7 +86,7 @@ export function roomRoutes(db: Db): Router {
     response.status(added ? 201 : 200).json(await findRoom(db, id));
   });
 
-  routes.delete('/rooms/:id/contains', changing, async (request, response) => {
+  routes.delete('/rooms/:id/references', changing, async (request, response) => {
     const body = bodyOf(request);
     const kind = asText(body['kind']);
 
@@ -95,7 +95,11 @@ export function roomRoutes(db: Db): Router {
     }
 
     const id = idOf(request);
-    await removeFromRoom(db, id, { kind, id: asReferenceId(body['id']) });
+    await removeFromRoom(db, id, {
+      kind,
+      id: asReferenceId(body['id']),
+      removedBy: actorOf(request).actorId,
+    });
     response.json(await findRoom(db, id));
   });
 
@@ -109,7 +113,9 @@ export function roomRoutes(db: Db): Router {
   routes.get('/rooms/:id/events', entering, async (request, response) => {
     const id = idOf(request);
     const room = await findRoom(db, id);
-    const anchorIds = [id, ...(room?.contains ?? []).map((entry) => entry.id)];
+    // Groups stay out: who joins or leaves one is only for its members to see, see maySeeGroup.
+    const bundled = (room?.references ?? []).filter((reference) => reference.kind !== 'group');
+    const anchorIds = [id, ...bundled.map((reference) => reference.id)];
     const since = asObjectId(request.query['since']);
     const kind = asText(request.query['kind']);
     const limit = asCount(request.query['limit']);
