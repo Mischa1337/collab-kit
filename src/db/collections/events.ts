@@ -4,16 +4,7 @@ import { anchorSchema, anchoredAt, type Anchor, type AnchorQuery } from '../../m
 import { defined } from '../../utils/optional.ts';
 import type { CollectionDefinition } from '../apply.ts';
 
-/**
- * Something happened, by somebody, at a place, at a time. No content and no
- * responsibility: a comment is what a person says, an event only that something was.
- *
- * The kind is a free string. read, presence and visit are written by the service,
- * checkpoint by a person, and a tool may report whatever else it finds worth keeping.
- *
- * Append only. A reading mark is not a field that gets overwritten but the newest
- * event of kind read, which is why the reading history falls out for free.
- */
+/** That something happened, by whom, where and when; append only, never changed afterwards. */
 export interface EventRecord {
   _id: ObjectId;
   kind: string;
@@ -38,7 +29,7 @@ export const eventsDefinition: CollectionDefinition = {
     properties: {
       kind: {
         bsonType: 'string',
-        description: 'read, presence, visit, checkpoint, whatever the tool reports',
+        description: 'free, e.g. joined, left, checkpoint, task-state or whatever the tool reports',
       },
       createdBy: { bsonType: 'string' },
       anchor: anchorSchema,
@@ -49,10 +40,7 @@ export const eventsDefinition: CollectionDefinition = {
       createdAt: { bsonType: 'date' },
     },
   },
-  indexes: [
-    { key: { 'anchor.id': 1, kind: 1, _id: -1 }, name: 'anchor_kind' },
-    { key: { createdBy: 1, kind: 1, _id: -1 }, name: 'created_by_kind' },
-  ],
+  indexes: [{ key: { 'anchor.id': 1, kind: 1, _id: -1 }, name: 'anchor_id_kind' }],
 };
 
 export interface NewEvent {
@@ -65,10 +53,7 @@ export interface NewEvent {
   readonly detail?: Document;
 }
 
-/**
- * The session is for callers that change something and keep the trace of it in the
- * same breath, so the two cannot come apart.
- */
+/** With a session, the event lands in the same transaction as the change it traces. */
 export async function recordEvent(
   db: Db,
   input: NewEvent,
@@ -116,22 +101,14 @@ export async function readEvents(db: Db, query: EventQuery = {}): Promise<EventR
   return query.limit === undefined ? found.toArray() : found.limit(query.limit).toArray();
 }
 
-/**
- * The same read forwards, oldest first, which is what asking again with `since`
- * needs: apply in order, keep the last _id, ask again with it. Same shape as
- * readUpdatesSince, and the reason the service needs no channel of its own to tell a
- * tool what happened.
- */
+/** Oldest first, for polling: keep the last _id and ask again with it as `since`. */
 export async function readEventsSince(db: Db, query: EventQuery = {}): Promise<EventRecord[]> {
   const found = db.collection<EventRecord>('events').find(filterOf(query)).sort({ _id: 1 });
 
   return query.limit === undefined ? found.toArray() : found.limit(query.limit).toArray();
 }
 
-/**
- * The newest one alone. This is what a reading mark and a presence status are: not a
- * stored state but the last event of its kind.
- */
+/** Only the newest; a reading mark is no stored field but the last event of kind read. */
 export async function latestEvent(db: Db, query: EventQuery): Promise<EventRecord | null> {
   return db.collection<EventRecord>('events').findOne(filterOf(query), { sort: { _id: -1 } });
 }
@@ -145,13 +122,7 @@ export interface TracedChange {
   readonly event: NewEvent;
 }
 
-/**
- * Changes one row and keeps the trace of it in the same transaction. Both belong
- * together: the field alone would lose who declared it, and the trace alone would
- * claim a change that never happened.
- *
- * Returns the row as it now stands, without reading it back.
- */
+/** Changes one row and records its event in one transaction; returns the row without rereading. */
 export async function changeWithEvent<T extends Document>(
   db: Db,
   input: TracedChange,
