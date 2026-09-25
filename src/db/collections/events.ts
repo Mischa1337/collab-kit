@@ -132,25 +132,19 @@ export async function changeWithEvent<T extends Document>(
   input: TracedChange,
   now = new Date(),
 ): Promise<T> {
-  const session = db.client.startSession();
+  return inTransaction(db, async (session) => {
+    const collection = db.collection(input.collection);
+    const before = await collection.findOne({ _id: input.id }, { session });
 
-  try {
-    return await session.withTransaction(async () => {
-      const collection = db.collection(input.collection);
-      const before = await collection.findOne({ _id: input.id }, { session });
+    if (before === null) {
+      throw new Error(`unknown ${input.what} ${input.id.toHexString()}`);
+    }
 
-      if (before === null) {
-        throw new Error(`unknown ${input.what} ${input.id.toHexString()}`);
-      }
+    await collection.updateOne({ _id: input.id }, { $set: input.change }, { session });
+    await recordEvent(db, input.event, now, session);
 
-      await collection.updateOne({ _id: input.id }, { $set: input.change }, { session });
-      await recordEvent(db, input.event, now, session);
-
-      return { ...before, ...input.change } as unknown as T;
-    });
-  } finally {
-    await session.endSession();
-  }
+    return { ...before, ...input.change } as unknown as T;
+  });
 }
 
 /** Runs the write and, only if it changed something, records the events, all in one transaction. */
@@ -160,21 +154,26 @@ export async function writeWithEvents(
   events: readonly NewEvent[],
   now = new Date(),
 ): Promise<boolean> {
+  return inTransaction(db, async (session) => {
+    if (!(await write(session))) {
+      return false;
+    }
+
+    if (events.length > 0) {
+      const records = events.map((event) => recordOf(event, now));
+      await db.collection<EventRecord>('events').insertMany(records, { session });
+    }
+
+    return true;
+  });
+}
+
+/** Runs the work in one transaction and closes the session afterwards, even after an error. */
+async function inTransaction<T>(db: Db, work: (session: ClientSession) => Promise<T>): Promise<T> {
   const session = db.client.startSession();
 
   try {
-    return await session.withTransaction(async () => {
-      if (!(await write(session))) {
-        return false;
-      }
-
-      if (events.length > 0) {
-        const records = events.map((event) => recordOf(event, now));
-        await db.collection<EventRecord>('events').insertMany(records, { session });
-      }
-
-      return true;
-    });
+    return await session.withTransaction(() => work(session));
   } finally {
     await session.endSession();
   }
