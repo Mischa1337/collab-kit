@@ -1,7 +1,4 @@
-/**
- * Runtime configuration, read once at startup. A missing or malformed variable fails
- * immediately instead of surfacing on the first request.
- */
+/** Runtime configuration, read once at startup so a bad variable fails right away. */
 import { isTokenAlgorithm, TOKEN_ALGORITHMS, usesSharedSecret } from './auth/token.ts';
 import type { TokenAlgorithm } from './auth/token.ts';
 
@@ -26,8 +23,10 @@ export interface Config {
   readonly labelClaim: string;
 }
 
+/** The example secret from .env.example, refused in production. */
 const PLACEHOLDER_SECRET = 'replace-me-locally';
 
+/** Checks every variable, then throws once with all problems found. */
 export function readConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const problems: string[] = [];
 
@@ -69,6 +68,7 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env): Config {
     throw new Error(`invalid configuration:\n  - ${problems.join('\n  - ')}`);
   }
 
+  // The casts are safe: an invalid value would have thrown above.
   return {
     nodeEnv: nodeEnv as NodeEnv,
     port,
@@ -94,6 +94,7 @@ function optionalValue(env: NodeJS.ProcessEnv, name: string): string | undefined
   return value === '' ? undefined : value;
 }
 
+/** Like optionalValue, but records a missing variable as a problem. */
 function requireValue(env: NodeJS.ProcessEnv, name: string, problems: string[]): string {
   const value = optionalValue(env, name);
   if (value === undefined) {
