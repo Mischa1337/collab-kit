@@ -343,7 +343,7 @@ describe('who may see a task', () => {
   });
 
   it('shows a task without anchor to its creator and to whom it belongs', async () => {
-    const reading = await task({ subject: { kind: 'actor', id: 'carol' } });
+    const reading = await task({ assignee: { kind: 'actor', id: 'carol' } });
 
     expect((await traces(reading._id, tokenFor('dora'))).status).toBe(200);
     expect((await traces(reading._id, tokenFor('carol'))).status).toBe(200);
@@ -352,7 +352,7 @@ describe('who may see a task', () => {
 
   it('shows a task given to a group to its members', async () => {
     const { groupId } = await setUp();
-    const shared = await task({ subject: { kind: 'group', id: new ObjectId(groupId) } });
+    const shared = await task({ assignee: { kind: 'group', id: new ObjectId(groupId) } });
 
     expect((await traces(shared._id, bob)).status).toBe(200);
     expect((await traces(shared._id, tokenFor('carol'))).status).toBe(404);

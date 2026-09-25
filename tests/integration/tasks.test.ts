@@ -55,7 +55,7 @@ describe('creating a task', () => {
       title: 'Kundenteil modellieren',
       state: 'offen',
     });
-    expect(created.subject).toBeUndefined();
+    expect(created.assignee).toBeUndefined();
     expect(created.anchor).toBeUndefined();
     expect(created.parentId).toBeUndefined();
   });
@@ -72,9 +72,9 @@ describe('creating a task', () => {
 
   it('goes to a group just as well as to a person', async () => {
     const groupId = new ObjectId();
-    const created = await plain({ subject: { kind: 'group', id: groupId } });
+    const created = await plain({ assignee: { kind: 'group', id: groupId } });
 
-    expect((await findTask(storage.db, created._id))?.subject).toEqual({
+    expect((await findTask(storage.db, created._id))?.assignee).toEqual({
       kind: 'group',
       id: groupId,
     });
@@ -170,52 +170,55 @@ describe('changing the state', () => {
 });
 
 describe('assigning', () => {
-  it('sets the subject and keeps who gave it to whom', async () => {
+  it('sets the assignee and keeps who gave it to whom', async () => {
     const task = await plain();
     const groupId = new ObjectId();
 
     const after = await assignTask(storage.db, task._id, {
-      subject: { kind: 'group', id: groupId },
+      assignee: { kind: 'group', id: groupId },
       changedBy: 'alice',
     });
 
-    expect(after.subject).toEqual({ kind: 'group', id: groupId });
+    expect(after.assignee).toEqual({ kind: 'group', id: groupId });
 
     const [event] = await historyOf(task);
-    expect(event).toMatchObject({ kind: 'task-subject', createdBy: 'alice' });
+    expect(event).toMatchObject({ kind: 'task-assignee', createdBy: 'alice' });
     expect(event?.detail?.['to']).toEqual({ kind: 'group', id: groupId });
   });
 
   it('can hand a task on and the handover stays readable', async () => {
-    const task = await plain({ subject: { kind: 'actor', id: 'alice' } });
+    const task = await plain({ assignee: { kind: 'actor', id: 'alice' } });
 
     await assignTask(storage.db, task._id, {
-      subject: { kind: 'actor', id: 'bob' },
+      assignee: { kind: 'actor', id: 'bob' },
       changedBy: 'alice',
     });
     await assignTask(storage.db, task._id, {
-      subject: { kind: 'actor', id: 'carol' },
+      assignee: { kind: 'actor', id: 'carol' },
       changedBy: 'bob',
     });
 
     const history = await historyOf(task);
     expect(history.map((event) => event.createdBy)).toEqual(['bob', 'alice']);
-    expect((await findTask(storage.db, task._id))?.subject).toEqual({ kind: 'actor', id: 'carol' });
+    expect((await findTask(storage.db, task._id))?.assignee).toEqual({
+      kind: 'actor',
+      id: 'carol',
+    });
   });
 });
 
 describe('reading tasks back', () => {
-  it('finds everything of one subject, and narrows by state', async () => {
+  it('finds everything of one assignee, and narrows by state', async () => {
     const groupId = new ObjectId();
-    const subject = { kind: 'group' as const, id: groupId };
+    const assignee = { kind: 'group' as const, id: groupId };
 
-    await plain({ subject, title: 'eins' });
-    await plain({ subject, title: 'zwei', state: 'fertig' });
+    await plain({ assignee, title: 'eins' });
+    await plain({ assignee, title: 'zwei', state: 'fertig' });
     await plain({ title: 'ohne' });
 
-    await expect(readTasks(storage.db, { subject })).resolves.toHaveLength(2);
+    await expect(readTasks(storage.db, { assignee })).resolves.toHaveLength(2);
 
-    const done = await readTasks(storage.db, { subject, state: 'fertig' });
+    const done = await readTasks(storage.db, { assignee, state: 'fertig' });
     expect(done.map((task) => task.title)).toEqual(['zwei']);
   });
 

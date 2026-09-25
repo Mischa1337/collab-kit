@@ -122,18 +122,18 @@ export async function mayReach(db: Db, actor: Actor, target: Reference): Promise
   return true;
 }
 
-/** A task is seen by its creator, its subject, and whoever may reach its anchor or its parent. */
+/** A task is seen by its creator, its assignee, and whoever may reach its anchor or its parent. */
 async function maySeeTask(db: Db, actor: Actor, task: TaskRecord): Promise<boolean> {
-  const { subject } = task;
+  const { assignee } = task;
 
   if (task.createdBy === actor.actorId) {
     return true;
   }
-  if (subject?.kind === 'actor' && subject.id === actor.actorId) {
+  if (assignee?.kind === 'actor' && assignee.id === actor.actorId) {
     return true;
   }
-  if (subject?.kind === 'group' && subject.id instanceof ObjectId) {
-    if (await isMemberOfAny(db, [subject.id], actor.actorId)) {
+  if (assignee?.kind === 'group' && assignee.id instanceof ObjectId) {
+    if (await isMemberOfAny(db, [assignee.id], actor.actorId)) {
       return true;
     }
   }

@@ -5,8 +5,8 @@ import { defined, matchOptional } from '../../utils/optional.ts';
 import type { CollectionDefinition } from '../apply.ts';
 import { changeWithEvent } from './events.ts';
 
-/** Who a task belongs to. A group can hold one, the change it leads to cannot. */
-export interface TaskSubject {
+/** Who a task is assigned to. A group can hold one, the change it leads to cannot. */
+export interface Assignee {
   kind: 'actor' | 'group';
   id: unknown;
 }
@@ -20,7 +20,7 @@ export interface TaskRecord {
   /** What it is about. With a unit it is the cut of a subtask. */
   anchor?: Anchor;
   parentId?: ObjectId;
-  subject?: TaskSubject;
+  assignee?: Assignee;
   /** Order among siblings, D9.3. The tool decides the numbers. */
   order?: number;
   /** Free, the service never reads it. */
@@ -43,7 +43,7 @@ export const tasksDefinition: CollectionDefinition = {
       },
       anchor: anchorSchema,
       parentId: { bsonType: 'objectId', description: 'makes it a subtask' },
-      subject: {
+      assignee: {
         bsonType: 'object',
         required: ['kind', 'id'],
         properties: { kind: { enum: ['actor', 'group'] }, id: {} },
@@ -55,7 +55,7 @@ export const tasksDefinition: CollectionDefinition = {
     },
   },
   indexes: [
-    { key: { 'subject.id': 1, state: 1 }, name: 'subject_state' },
+    { key: { 'assignee.id': 1, state: 1 }, name: 'assignee_state' },
     { key: { 'anchor.id': 1 }, name: 'anchor_id' },
     { key: { parentId: 1, order: 1 }, name: 'parent_order' },
   ],
@@ -69,7 +69,7 @@ export interface NewTask {
   readonly createdBy: string;
   readonly anchor?: Anchor;
   readonly parentId?: ObjectId;
-  readonly subject?: TaskSubject;
+  readonly assignee?: Assignee;
   readonly order?: number;
   readonly detail?: Document;
 }
@@ -85,7 +85,7 @@ export async function createTask(db: Db, input: NewTask, now = new Date()): Prom
     ...defined({
       anchor: input.anchor,
       parentId: input.parentId,
-      subject: input.subject,
+      assignee: input.assignee,
       order: input.order,
       detail: input.detail,
     }),
@@ -103,7 +103,7 @@ export async function findTask(db: Db, id: ObjectId): Promise<TaskRecord | null>
 async function changeTask(
   db: Db,
   taskId: ObjectId,
-  change: Partial<Pick<TaskRecord, 'state' | 'subject'>>,
+  change: Partial<Pick<TaskRecord, 'state' | 'assignee'>>,
   event: { kind: string; createdBy: string; reason?: string; detail: Document },
   now: Date,
 ): Promise<TaskRecord> {
@@ -154,7 +154,7 @@ export async function setTaskState(
 }
 
 export interface Assignment {
-  readonly subject: TaskSubject;
+  readonly assignee: Assignee;
   readonly changedBy: string;
   readonly reason?: string;
 }
@@ -168,11 +168,11 @@ export async function assignTask(
   return changeTask(
     db,
     taskId,
-    { subject: input.subject },
+    { assignee: input.assignee },
     {
-      kind: 'task-subject',
+      kind: 'task-assignee',
       createdBy: input.changedBy,
-      detail: { to: input.subject },
+      detail: { to: input.assignee },
       ...defined({ reason: input.reason }),
     },
     now,
@@ -185,7 +185,7 @@ export const TOP = null;
 export interface TaskQuery {
   readonly kind?: string;
   readonly state?: string;
-  readonly subject?: TaskSubject;
+  readonly assignee?: Assignee;
   readonly anchor?: AnchorQuery;
   /** Left out matches every task, TOP only those without a parent. */
   readonly parentId?: ObjectId | null;
@@ -196,9 +196,9 @@ export async function readTasks(db: Db, query: TaskQuery = {}): Promise<TaskReco
   const filter: Document = {
     ...(query.anchor === undefined ? {} : anchoredAt(query.anchor)),
     ...defined({ kind: query.kind, state: query.state }),
-    ...(query.subject === undefined
+    ...(query.assignee === undefined
       ? {}
-      : { 'subject.kind': query.subject.kind, 'subject.id': query.subject.id }),
+      : { 'assignee.kind': query.assignee.kind, 'assignee.id': query.assignee.id }),
     ...matchOptional('parentId', query.parentId),
   };
 
