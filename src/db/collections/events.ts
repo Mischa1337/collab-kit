@@ -1,6 +1,12 @@
 import { ObjectId, type ClientSession, type Db, type Document, type Filter } from 'mongodb';
 
-import { anchorSchema, anchoredAt, type Anchor, type AnchorQuery } from '../../model/anchor.ts';
+import {
+  anchorSchema,
+  anchoredAt,
+  type Anchor,
+  type AnchorQuery,
+  type Reference,
+} from '../../model/anchor.ts';
 import { defined } from '../../utils/optional.ts';
 import type { CollectionDefinition } from '../apply.ts';
 
@@ -80,8 +86,8 @@ function recordOf(input: NewEvent, now: Date): EventRecord {
 
 export interface EventQuery {
   readonly anchor?: AnchorQuery;
-  /** Anchors on any of these things, which is how a room asks about what it bundles. */
-  readonly anchorIds?: readonly unknown[];
+  /** Anchors on any of these things, by kind and id; how a room asks about what it bundles. */
+  readonly references?: readonly [Reference, ...Reference[]];
   readonly createdBy?: string;
   readonly kind?: string;
   /** Only what happened after this event, the cut for polling. */
@@ -92,7 +98,9 @@ export interface EventQuery {
 function filterOf(query: EventQuery): Filter<EventRecord> {
   return {
     ...(query.anchor === undefined ? {} : anchoredAt(query.anchor)),
-    ...(query.anchorIds === undefined ? {} : { 'anchor.id': { $in: [...query.anchorIds] } }),
+    ...(query.references === undefined
+      ? {}
+      : { $or: query.references.map((reference) => anchoredAt(reference)) }),
     ...defined({ createdBy: query.createdBy, kind: query.kind }),
     ...(query.since === undefined ? {} : { _id: { $gt: query.since } }),
   } as Filter<EventRecord>;

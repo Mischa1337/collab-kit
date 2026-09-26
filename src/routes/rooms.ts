@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import type { Db } from 'mongodb';
 
-import { mayChange, mayEnterRoom } from '../auth/access.ts';
+import { mayChange, maySee, maySeeRoom } from '../auth/access.ts';
 import { readEventsSince } from '../db/collections/events.ts';
 import {
   addToRoom,
@@ -25,7 +25,7 @@ export function roomRoutes(db: Db): Router {
 
   // Deliberately the same answer as a room that does not exist: whether one is there
   // is already more than somebody outside it should learn.
-  const entering = guard((actor, id) => mayEnterRoom(db, actor, id), 404, 'unknown room');
+  const seeing = guard((actor, id) => maySeeRoom(db, actor, id), 404, 'unknown room');
   const changing = guard(
     (actor, id) => mayChange(db, actor, 'room', id),
     403,
@@ -50,7 +50,7 @@ export function roomRoutes(db: Db): Router {
     response.status(201).json(room);
   });
 
-  routes.get('/rooms/:id', entering, async (request, response) => {
+  routes.get('/rooms/:id', seeing, async (request, response) => {
     response.json(await findRoom(db, idOf(request)));
   });
 
@@ -74,12 +74,14 @@ export function roomRoutes(db: Db): Router {
       return fail(response, 400, 'kind and id are needed');
     }
 
+    // A room hands what it bundles to its groups, so only what the actor may see goes in.
+    const reference = { kind, id: asReferenceId(body['id']) };
+    if (!(await maySee(db, actorOf(request), reference))) {
+      return fail(response, 404, 'unknown reference');
+    }
+
     const id = idOf(request);
-    const added = await addToRoom(db, id, {
-      kind,
-      id: asReferenceId(body['id']),
-      addedBy: actorOf(request).actorId,
-    });
+    const added = await addToRoom(db, id, { ...reference, addedBy: actorOf(request).actorId });
 
     // 200 and not 201 when it was already in: putting the same thing in twice is not
     // an error, it just did not change anything.
@@ -110,17 +112,25 @@ export function roomRoutes(db: Db): Router {
    * the workpiece they belong to and not at the room. Asking for anchorKind=room alone
    * would find the chat and nothing of the work.
    */
-  routes.get('/rooms/:id/events', entering, async (request, response) => {
+  routes.get('/rooms/:id/events', seeing, async (request, response) => {
     const id = idOf(request);
     const room = await findRoom(db, id);
-    // Groups stay out: who joins or leaves one is only for its members to see, see maySeeGroup.
-    const bundled = (room?.references ?? []).filter((reference) => reference.kind !== 'group');
-    const anchorIds = [id, ...bundled.map((reference) => reference.id)];
+    const bundled = room?.references ?? [];
+    // Only what the actor may see, so the room shows no more than /events would.
+    const visible = await Promise.all(
+      bundled.map((reference) => maySee(db, actorOf(request), reference)),
+    );
+    const seen = bundled.filter((_, index) => visible[index]);
     const since = asObjectId(request.query['since']);
     const kind = asText(request.query['kind']);
     const limit = asCount(request.query['limit']);
 
-    response.json(await readEventsSince(db, { anchorIds, ...defined({ since, kind, limit }) }));
+    response.json(
+      await readEventsSince(db, {
+        references: [{ kind: 'room', id }, ...seen],
+        ...defined({ since, kind, limit }),
+      }),
+    );
   });
 
   return routes;

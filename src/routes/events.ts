@@ -2,7 +2,7 @@ import { Router } from 'express';
 import type { Db } from 'mongodb';
 
 import { WHOLE, type Anchor, type AnchorQuery } from '../model/anchor.ts';
-import { mayReach } from '../auth/access.ts';
+import { maySee } from '../auth/access.ts';
 import { readEvents, readEventsSince, recordEvent } from '../db/collections/events.ts';
 import { asCount, asObject, asObjectId, asReferenceId, asText } from '../utils/input.ts';
 import { defined } from '../utils/optional.ts';
@@ -21,7 +21,7 @@ export function eventRoutes(db: Db): Router {
     if (anchor === undefined) {
       return fail(response, 400, 'anchorKind and anchorId are needed');
     }
-    if (!(await mayReach(db, actorOf(request), anchor))) {
+    if (!(await maySee(db, actorOf(request), anchor))) {
       return fail(response, 404, 'unknown anchor');
     }
 
@@ -55,7 +55,7 @@ export function eventRoutes(db: Db): Router {
     if (anchor === undefined) {
       return fail(response, 400, 'anchor with kind and id is needed');
     }
-    if (!(await mayReach(db, actorOf(request), anchor))) {
+    if (!(await maySee(db, actorOf(request), anchor))) {
       return fail(response, 404, 'unknown anchor');
     }
 

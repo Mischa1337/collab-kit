@@ -138,6 +138,19 @@ describe('who may change what', () => {
     expect(pushed.status).toBe(403);
   });
 
+  it('lets nobody put what they may not see into a room of their own', async () => {
+    const { workpieceId } = await setUp();
+    const carol = tokenFor('carol');
+    const room = await request(server).post('/rooms').set(as(carol)).send({ name: 'Eigen' });
+
+    const pushed = await request(server)
+      .post(`/rooms/${room.body._id as string}/references`)
+      .set(as(carol))
+      .send({ kind: 'workpiece', id: workpieceId });
+
+    expect(pushed.status).toBe(404);
+  });
+
   it('lets nobody add themselves to a group they did not create', async () => {
     const { groupId } = await setUp();
     const carol = tokenFor('carol');
@@ -227,14 +240,43 @@ describe('the room as a channel', () => {
     expect(events.body.map((event: { kind: string }) => event.kind)).toContain('note');
   });
 
-  it('shows how the room was put together, but not who joined its groups', async () => {
+  it('keeps out a trace of a made-up kind that borrows the id of the room', async () => {
     const { roomId } = await setUp();
+    const carol = tokenFor('carol');
+
+    const planted = await request(server)
+      .post('/events')
+      .set(as(carol))
+      .send({ kind: 'planted', anchor: { kind: 'made-up', id: roomId } });
+    expect(planted.status).toBe(201);
 
     const events = await request(server).get(`/rooms/${roomId}/events`).set(as(bob));
-    const kinds = events.body.map((event: { kind: string }) => event.kind);
 
-    expect(kinds).toContain('reference-added');
-    expect(kinds).not.toContain('member-added');
+    expect(events.body.map((event: { kind: string }) => event.kind)).not.toContain('planted');
+  });
+
+  it('shows who joined a group of the room only to whoever may see that group', async () => {
+    const { roomId, groupId } = await setUp();
+    const carol = tokenFor('carol');
+    const others = await request(server)
+      .post('/groups')
+      .set(as(alice))
+      .send({ name: 'Andere', members: ['carol'] });
+    await request(server)
+      .post(`/rooms/${roomId}/references`)
+      .set(as(alice))
+      .send({ kind: 'group', id: others.body._id as string });
+
+    const joinedAt = async (token: string) => {
+      const events = await request(server)
+        .get(`/rooms/${roomId}/events`)
+        .query({ kind: 'member-added' })
+        .set(as(token));
+      return events.body.map((event: { anchor: { id: string } }) => event.anchor.id);
+    };
+
+    expect(await joinedAt(bob)).toContain(groupId);
+    expect(await joinedAt(carol)).not.toContain(groupId);
   });
 
   it('shows who joined a group to its members and to nobody else', async () => {
@@ -249,7 +291,7 @@ describe('the room as a channel', () => {
     expect((await request(server).get('/events').query(query).set(as(carol))).status).toBe(404);
   });
 
-  it('shows the traces at a comment only to whoever may open what it is about', async () => {
+  it('shows the traces at a comment only to whoever may see what it is about', async () => {
     const { workpieceId } = await setUp();
     const comment = await createComment(storage.db, {
       kind: 'feedback',
@@ -270,15 +312,12 @@ describe('the room as a channel', () => {
     ).toBe(404);
   });
 
-  it('refuses a trace on a workpiece the actor may not open', async () => {
+  it('refuses a trace on a workpiece the actor may not see, but not to its creator', async () => {
     const loose = await request(server).post('/workpieces').set(as(alice)).send({ name: 'Allein' });
+    const trace = { kind: 'note', anchor: { kind: 'workpiece', id: loose.body._id as string } };
 
-    const refused = await request(server)
-      .post('/events')
-      .set(as(bob))
-      .send({ kind: 'note', anchor: { kind: 'workpiece', id: loose.body._id as string } });
-
-    expect(refused.status).toBe(404);
+    expect((await request(server).post('/events').set(as(bob)).send(trace)).status).toBe(404);
+    expect((await request(server).post('/events').set(as(alice)).send(trace)).status).toBe(201);
   });
 });
 

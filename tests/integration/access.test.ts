@@ -53,25 +53,19 @@ describe('who may open a workpiece', () => {
   it('lets a member of a group in the room in', async () => {
     const workpieceId = await bundled(['alice']);
 
-    await expect(
-      mayOpenWorkpiece({ db: storage.db, actor: actor('alice'), workpieceId }),
-    ).resolves.toBe(true);
+    await expect(mayOpenWorkpiece(storage.db, actor('alice'), workpieceId)).resolves.toBe(true);
   });
 
   it('keeps everybody else out', async () => {
     const workpieceId = await bundled(['alice']);
 
-    await expect(
-      mayOpenWorkpiece({ db: storage.db, actor: actor('mallory'), workpieceId }),
-    ).resolves.toBe(false);
+    await expect(mayOpenWorkpiece(storage.db, actor('mallory'), workpieceId)).resolves.toBe(false);
   });
 
   it('keeps everybody out of a workpiece that sits in no room', async () => {
     const workpiece = await createWorkpiece(storage.db, { name: 'Allein', createdBy: 'alice' });
 
-    await expect(
-      mayOpenWorkpiece({ db: storage.db, actor: actor('alice'), workpieceId: workpiece._id }),
-    ).resolves.toBe(false);
+    await expect(mayOpenWorkpiece(storage.db, actor('alice'), workpiece._id)).resolves.toBe(false);
   });
 
   it('keeps everybody out of a room that holds no group', async () => {
@@ -83,9 +77,7 @@ describe('who may open a workpiece', () => {
       addedBy: 'alice',
     });
 
-    await expect(
-      mayOpenWorkpiece({ db: storage.db, actor: actor('alice'), workpieceId: workpiece._id }),
-    ).resolves.toBe(false);
+    await expect(mayOpenWorkpiece(storage.db, actor('alice'), workpiece._id)).resolves.toBe(false);
   });
 
   it('lets a second room in, because a workpiece may sit in several', async () => {
@@ -101,12 +93,8 @@ describe('who may open a workpiece', () => {
     await addToRoom(storage.db, other._id, { kind: 'group', id: theirs._id, addedBy: 'bob' });
 
     // Both ways in hold, neither room knows about the other.
-    await expect(
-      mayOpenWorkpiece({ db: storage.db, actor: actor('alice'), workpieceId }),
-    ).resolves.toBe(true);
-    await expect(
-      mayOpenWorkpiece({ db: storage.db, actor: actor('bob'), workpieceId }),
-    ).resolves.toBe(true);
+    await expect(mayOpenWorkpiece(storage.db, actor('alice'), workpieceId)).resolves.toBe(true);
+    await expect(mayOpenWorkpiece(storage.db, actor('bob'), workpieceId)).resolves.toBe(true);
   });
 
   it('ignores a reference of a kind the service does not keep', async () => {
@@ -124,8 +112,6 @@ describe('who may open a workpiece', () => {
       addedBy: 'alice',
     });
 
-    await expect(
-      mayOpenWorkpiece({ db: storage.db, actor: actor('alice'), workpieceId: workpiece._id }),
-    ).resolves.toBe(false);
+    await expect(mayOpenWorkpiece(storage.db, actor('alice'), workpiece._id)).resolves.toBe(false);
   });
 });

@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import type { Db } from 'mongodb';
 
-import { mayOpenWorkpiece, mayReadWorkpiece } from '../auth/access.ts';
+import { mayOpenWorkpiece, maySeeWorkpiece } from '../auth/access.ts';
 import { createWorkpiece, findWorkpiece } from '../db/collections/workpieces.ts';
 import { readUpdatesSince } from '../db/collections/updates.ts';
 import { asObject, asObjectId, asText } from '../utils/input.ts';
@@ -19,11 +19,7 @@ export function workpieceRoutes(db: Db, hub: WorkpieceHub): Router {
 
   routes.param('id', requireId('workpiece'));
 
-  const opening = guard(
-    (actor, id) => mayOpenWorkpiece({ db, actor, workpieceId: id }),
-    404,
-    'unknown workpiece',
-  );
+  const opening = guard((actor, id) => mayOpenWorkpiece(db, actor, id), 404, 'unknown workpiece');
 
   routes.post('/workpieces', async (request, response) => {
     const body = bodyOf(request);
@@ -48,7 +44,7 @@ export function workpieceRoutes(db: Db, hub: WorkpieceHub): Router {
   routes.get('/workpieces/:id', async (request, response) => {
     const workpiece = await findWorkpiece(db, idOf(request));
 
-    if (workpiece === null || !(await mayReadWorkpiece(db, actorOf(request), workpiece))) {
+    if (workpiece === null || !(await maySeeWorkpiece(db, actorOf(request), workpiece))) {
       return fail(response, 404, 'unknown workpiece');
     }
 

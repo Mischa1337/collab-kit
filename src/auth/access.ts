@@ -1,53 +1,29 @@
-/**
- * Every rule about who may see or change what, and nowhere else. Routes and the
- * gateway ask and never decide, so changing a rule means changing this file only.
- */
+/** Every rule on who may see or change what; routes and the gateway only ask. */
 
 import { ObjectId, type Db } from 'mongodb';
 
 import type { Actor } from '../model/actor.ts';
 import type { Reference } from '../model/anchor.ts';
-import type { WorkpieceRecord } from '../db/collections/workpieces.ts';
+import { findWorkpiece, type WorkpieceRecord } from '../db/collections/workpieces.ts';
 import { findComment } from '../db/collections/comments.ts';
 import { findGroup, isMemberOfAny, type GroupRecord } from '../db/collections/groups.ts';
-import { findRoom, roomsContaining } from '../db/collections/rooms.ts';
+import { findRoom, roomsContaining, type RoomRecord } from '../db/collections/rooms.ts';
 import { findTask, type TaskRecord } from '../db/collections/tasks.ts';
 
-export interface AccessRequest {
-  readonly db: Db;
-  readonly actor: Actor;
-  readonly workpieceId: ObjectId;
-}
-
-/**
- * The single place that decides who may open a workpiece. It knows neither HTTP nor
- * WebSocket, so both ways in ask the same question.
- *
- * The rule: there is a room that bundles this workpiece and a group this actor is in.
- * Nothing finer than that is decided here, because a group in a room is already the
- * role, and which roles exist is the business of the docking tool.
- *
- * Two consequences worth knowing. A workpiece that sits in no room cannot be opened by
- * anybody, not even by whoever created it. And a room that holds a workpiece but no
- * group locks everyone out, which is correct and looks like a fault the first time.
- */
-export async function mayOpenWorkpiece(request: AccessRequest): Promise<boolean> {
-  const rooms = await roomsContaining(request.db, {
-    kind: 'workpiece',
-    id: request.workpieceId,
-  });
-
+/** Open: some room bundles the workpiece and a group the actor is in. No room, nobody. */
+export async function mayOpenWorkpiece(
+  db: Db,
+  actor: Actor,
+  workpieceId: ObjectId,
+): Promise<boolean> {
+  const rooms = await roomsContaining(db, { kind: 'workpiece', id: workpieceId });
   const groupIds = rooms.flatMap((room) => groupsIn(room.references));
 
-  return isMemberOfAny(request.db, groupIds, request.actor.actorId);
+  return isMemberOfAny(db, groupIds, actor.actorId);
 }
 
-/**
- * Whether the actor may read what is known about a workpiece, without working on it.
- * The same rule as for opening, plus the creator, so a workpiece that sits in no room
- * yet is not lost to whoever made it.
- */
-export async function mayReadWorkpiece(
+/** See it without working on it: whoever may open it, and its creator. */
+export async function maySeeWorkpiece(
   db: Db,
   actor: Actor,
   workpiece: Pick<WorkpieceRecord, '_id' | 'createdBy'>,
@@ -56,55 +32,42 @@ export async function mayReadWorkpiece(
     return true;
   }
 
-  return mayOpenWorkpiece({ db, actor, workpieceId: workpiece._id });
+  return mayOpenWorkpiece(db, actor, workpiece._id);
 }
 
-/**
- * Whether the actor may see what a room bundles. The same rule as for a workpiece, one
- * step shorter: membership in a group the room holds.
- *
- * The creator is let in as well. A fresh room holds no group yet, so without this
- * clause whoever just created one could not put the first group into it.
- */
-export async function mayEnterRoom(db: Db, actor: Actor, roomId: ObjectId): Promise<boolean> {
+/** See what a room bundles: a member of a group it holds, or whoever may change it. */
+export async function maySeeRoom(db: Db, actor: Actor, roomId: ObjectId): Promise<boolean> {
   const room = await findRoom(db, roomId);
 
   if (room === null) {
     return false;
   }
-  if (room.createdBy === actor.actorId) {
+  if (mayChangeRecord(actor, room)) {
     return true;
   }
 
   return isMemberOfAny(db, groupsIn(room.references), actor.actorId);
 }
 
-/**
- * Whether the actor may see a group: its members and whoever created it, nobody else.
- * Who is in a group is exactly what that group opens.
- */
+/** Seen by its members and whoever may change it, since who is in it tells what it opens. */
 export function maySeeGroup(
   actor: Actor,
   group: Pick<GroupRecord, 'createdBy' | 'members'>,
 ): boolean {
-  return group.createdBy === actor.actorId || group.members.includes(actor.actorId);
+  return mayChangeRecord(actor, group) || group.members.includes(actor.actorId);
 }
 
-/**
- * Whether the actor may look at the thing a reference names, which is what reading or
- * leaving a trace at an anchor asks. Only the kinds the service keeps itself are
- * decided here; for everything a tool anchors at, there is nothing this service could
- * ask.
- */
-export async function mayReach(db: Db, actor: Actor, target: Reference): Promise<boolean> {
+/** May the actor see what a reference names? Only the service's own kinds are decided. */
+export async function maySee(db: Db, actor: Actor, target: Reference): Promise<boolean> {
   if (!(target.id instanceof ObjectId)) {
     return true;
   }
   if (target.kind === 'workpiece') {
-    return mayOpenWorkpiece({ db, actor, workpieceId: target.id });
+    const workpiece = await findWorkpiece(db, target.id);
+    return workpiece !== null && maySeeWorkpiece(db, actor, workpiece);
   }
   if (target.kind === 'room') {
-    return mayEnterRoom(db, actor, target.id);
+    return maySeeRoom(db, actor, target.id);
   }
   if (target.kind === 'group') {
     const group = await findGroup(db, target.id);
@@ -113,7 +76,7 @@ export async function mayReach(db: Db, actor: Actor, target: Reference): Promise
   if (target.kind === 'comment') {
     // A comment is as visible as what it is about, down the chain to a workpiece or room.
     const comment = await findComment(db, target.id);
-    return comment !== null && mayReach(db, actor, comment.anchor);
+    return comment !== null && maySee(db, actor, comment.anchor);
   }
   if (target.kind === 'task') {
     const task = await findTask(db, target.id);
@@ -122,7 +85,7 @@ export async function mayReach(db: Db, actor: Actor, target: Reference): Promise
   return true;
 }
 
-/** A task is seen by its creator, its assignee, and whoever may reach its anchor or its parent. */
+/** A task is seen by its creator, its assignee, and whoever may see its anchor or its parent. */
 async function maySeeTask(db: Db, actor: Actor, task: TaskRecord): Promise<boolean> {
   const { assignee } = task;
 
@@ -137,22 +100,13 @@ async function maySeeTask(db: Db, actor: Actor, task: TaskRecord): Promise<boole
       return true;
     }
   }
-  if (task.anchor !== undefined && (await mayReach(db, actor, task.anchor))) {
+  if (task.anchor !== undefined && (await maySee(db, actor, task.anchor))) {
     return true;
   }
-  return task.parentId !== undefined && mayReach(db, actor, { kind: 'task', id: task.parentId });
+  return task.parentId !== undefined && maySee(db, actor, { kind: 'task', id: task.parentId });
 }
 
-/**
- * Whether the actor may change a room or a group.
- *
- * Provisional, and the one rule in here that is not derived from the model: whoever
- * created a thing may change it. Something has to hold, because the right to open a
- * workpiece is derived from membership, so whoever may change a group hands out access
- * to everything that group opens.
- *
- * When the real rule is decided, this is the only function to replace.
- */
+/** Whether the actor may change a room or group, looked up by its id. */
 export async function mayChange(
   db: Db,
   actor: Actor,
@@ -161,13 +115,18 @@ export async function mayChange(
 ): Promise<boolean> {
   const found = kind === 'room' ? await findRoom(db, id) : await findGroup(db, id);
 
-  return found !== null && found.createdBy === actor.actorId;
+  return found !== null && mayChangeRecord(actor, found);
 }
 
-/**
- * Only what the service keeps itself is resolved. A room may bundle kinds this
- * service has never heard of, and those cannot grant anything here.
- */
+/** Provisional: only the creator changes a room or group, as changing hands out access. */
+function mayChangeRecord(
+  actor: Actor,
+  found: Pick<RoomRecord | GroupRecord, 'createdBy'>,
+): boolean {
+  return found.createdBy === actor.actorId;
+}
+
+/** The groups a room holds; references the service does not keep grant nothing. */
 function groupsIn(references: readonly Reference[]): ObjectId[] {
   return references
     .filter((entry) => entry.kind === 'group')

@@ -214,8 +214,9 @@ async function admit(
     return { status: 404, text: 'Not Found', reason: 'unknown workpiece' };
   }
 
-  if (!(await mayOpenWorkpiece({ db: options.db, actor, workpieceId }))) {
-    return { status: 403, text: 'Forbidden', reason: 'not allowed to open' };
+  if (!(await mayOpenWorkpiece(options.db, actor, workpieceId))) {
+    // The same answer as for an unknown one, so a handshake does not tell which keys exist.
+    return { status: 404, text: 'Not Found', reason: 'not allowed to open' };
   }
 
   return { workpieceId, actor };

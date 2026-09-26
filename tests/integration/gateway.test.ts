@@ -148,12 +148,12 @@ describe('the handshake', () => {
     });
   });
 
-  it('refuses somebody who is in no group of the room with 403', async () => {
+  it('refuses somebody who is in no group of the room with 404, as if it were not there', async () => {
     const stranger = jwt.sign({ sub: 'mallory', name: 'Mallory' }, secret, { expiresIn: '15m' });
 
     await expect(tryOpen(`/ws/${workpieceId}`, ['bearer', stranger])).resolves.toEqual({
       ok: false,
-      status: 403,
+      status: 404,
     });
   });
 
