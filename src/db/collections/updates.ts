@@ -55,10 +55,41 @@ export async function readUpdatesSince(
   workpieceId: ObjectId,
   since?: ObjectId,
 ): Promise<UpdateRecord[]> {
-  const filter: Filter<UpdateRecord> =
-    since === undefined ? { workpieceId } : { workpieceId, _id: { $gt: since } };
+  return db
+    .collection<UpdateRecord>('updates')
+    .find(after(workpieceId, since))
+    .sort({ _id: 1 })
+    .toArray();
+}
 
-  return db.collection<UpdateRecord>('updates').find(filter).sort({ _id: 1 }).toArray();
+/** One change as the service tells of it: who, when and how many bytes, never the bytes. */
+export interface UpdateSummary {
+  _id: ObjectId;
+  createdBy: string;
+  createdAt: Date;
+  bytes: number;
+}
+
+/** Like readUpdatesSince, but MongoDB counts the bytes instead of sending them; limit caps it. */
+export async function summarizeUpdatesSince(
+  db: Db,
+  workpieceId: ObjectId,
+  since?: ObjectId,
+  limit?: number,
+): Promise<UpdateSummary[]> {
+  const found = db
+    .collection<UpdateRecord>('updates')
+    .find<UpdateSummary>(after(workpieceId, since), {
+      projection: { createdBy: 1, createdAt: 1, bytes: { $binarySize: '$bytes' } },
+    })
+    .sort({ _id: 1 });
+
+  return limit === undefined ? found.toArray() : found.limit(limit).toArray();
+}
+
+/** The changes of a workpiece after the given one, or all of them. */
+function after(workpieceId: ObjectId, since: ObjectId | undefined): Filter<UpdateRecord> {
+  return since === undefined ? { workpieceId } : { workpieceId, _id: { $gt: since } };
 }
 
 /** The id of the newest change of a workpiece, or undefined while it has none. */

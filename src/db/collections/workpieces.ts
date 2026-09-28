@@ -70,7 +70,18 @@ export async function createWorkpiece(
   return created;
 }
 
-export async function findWorkpiece(db: Db, id: ObjectId): Promise<WorkpieceRecord | null> {
+/** A workpiece as a thing, without the folded state that only loading needs. */
+export type Workpiece = Omit<WorkpieceRecord, 'fold'>;
+
+/** Leaves the folded state in the database: it can be large, and a check never needs it. */
+export async function findWorkpiece(db: Db, id: ObjectId): Promise<Workpiece | null> {
+  return db
+    .collection<WorkpieceRecord>('workpieces')
+    .findOne<Workpiece>({ _id: id }, { projection: { fold: 0 } });
+}
+
+/** The whole stored workpiece, folded state included, for loading it into memory. */
+export async function findWorkpieceWithFold(db: Db, id: ObjectId): Promise<WorkpieceRecord | null> {
   return db.collection<WorkpieceRecord>('workpieces').findOne({ _id: id });
 }
 

@@ -1,7 +1,7 @@
 import type { Db, ObjectId } from 'mongodb';
 import * as Y from 'yjs';
 
-import { findWorkpiece, foldState } from '../db/collections/workpieces.ts';
+import { findWorkpieceWithFold, foldState } from '../db/collections/workpieces.ts';
 import { appendUpdate, readUpdatesSince } from '../db/collections/updates.ts';
 import { defined } from '../utils/optional.ts';
 
@@ -27,7 +27,7 @@ export interface WorkingCopy {
  * listens to the Y.Doc yet, so replaying the history does not store it a second time.
  */
 export async function loadWorkingCopy(db: Db, workpieceId: ObjectId): Promise<WorkingCopy> {
-  const record = await findWorkpiece(db, workpieceId);
+  const record = await findWorkpieceWithFold(db, workpieceId);
 
   if (record === null) {
     throw new Error(`unknown workpiece ${workpieceId.toHexString()}`);

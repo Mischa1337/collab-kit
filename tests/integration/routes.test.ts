@@ -9,6 +9,8 @@ import { applyDefinitions } from '../../src/db/apply.ts';
 import { connect, type Storage } from '../../src/db/client.ts';
 import { createComment } from '../../src/db/collections/comments.ts';
 import { createTask, type NewTask } from '../../src/db/collections/tasks.ts';
+import { appendUpdate } from '../../src/db/collections/updates.ts';
+import { foldState } from '../../src/db/collections/workpieces.ts';
 import { collectionDefinitions } from '../../src/db/schemas.ts';
 import { createWorkpieceHub } from '../../src/realtime/hub.ts';
 import { createApi } from '../../src/routes/index.ts';
@@ -432,6 +434,58 @@ describe('the history of a workpiece', () => {
       .set(as(bob));
 
     expect(refused.status).toBe(404);
+  });
+
+  it('tells of each change by its size and hands the chain out in pieces', async () => {
+    const { workpieceId } = await setUp();
+    const id = new ObjectId(workpieceId);
+    const change = (size: number) =>
+      appendUpdate(storage.db, { workpieceId: id, bytes: new Uint8Array(size), createdBy: 'bob' });
+    await change(3);
+    const second = await change(5);
+    await change(7);
+    const sizes = async (query: Record<string, string>) => {
+      const updates = await request(server)
+        .get(`/workpieces/${workpieceId}/updates`)
+        .query(query)
+        .set(as(bob));
+      return updates.body.map((update: { bytes: number }) => update.bytes);
+    };
+
+    expect(await sizes({})).toEqual([3, 5, 7]);
+    expect(await sizes({ limit: '2' })).toEqual([3, 5]);
+    expect(await sizes({ since: second._id.toHexString(), limit: '2' })).toEqual([7]);
+  });
+});
+
+describe('a workpiece as a thing', () => {
+  it('describes it without the folded state, which belongs to loading', async () => {
+    const { workpieceId } = await setUp();
+    const id = new ObjectId(workpieceId);
+    await foldState(storage.db, {
+      workpieceId: id,
+      state: new Uint8Array(8),
+      upToUpdateId: new ObjectId(),
+    });
+
+    const described = await request(server).get(`/workpieces/${workpieceId}`).set(as(bob));
+
+    expect(described.body).toEqual({
+      _id: workpieceId,
+      name: 'Entwurf',
+      contract: { kind: 'sql-skript' },
+      createdAt: expect.any(String),
+      createdBy: 'alice',
+    });
+  });
+
+  it('refuses a contract that is no object', async () => {
+    const refused = await request(server)
+      .post('/workpieces')
+      .set(as(alice))
+      .send({ name: 'Entwurf', contract: 'sql' });
+
+    expect(refused.status).toBe(400);
   });
 });
 

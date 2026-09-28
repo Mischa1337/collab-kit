@@ -9,6 +9,7 @@ import {
   createWorkpiece,
   workpieceExists,
   findWorkpiece,
+  findWorkpieceWithFold,
   foldState,
 } from '../../src/db/collections/workpieces.ts';
 
@@ -80,12 +81,23 @@ describe('folding', () => {
       foldState(storage.db, { workpieceId: created._id, state: typed('hallo welt'), upToUpdateId }),
     ).resolves.toBe(true);
 
-    const stored = await findWorkpiece(storage.db, created._id);
+    const stored = await findWorkpieceWithFold(storage.db, created._id);
     const read = new Y.Doc();
     Y.applyUpdate(read, new Uint8Array(stored!.fold!.state.buffer));
 
     expect(read.getText('anything').toString()).toBe('hallo welt');
     expect(stored?.fold?.upToUpdateId).toEqual(upToUpdateId);
+  });
+
+  it('leaves the folded state out of findWorkpiece, which only checks and describes', async () => {
+    const created = await createWorkpiece(storage.db, { name: 'Entwurf', createdBy: 'alice' });
+    const upToUpdateId = new ObjectId();
+    await foldState(storage.db, { workpieceId: created._id, state: typed('gross'), upToUpdateId });
+
+    const found = await findWorkpiece(storage.db, created._id);
+
+    expect(found).toEqual(created);
+    expect(found).not.toHaveProperty('fold');
   });
 
   it('refuses to push an older state over a newer one', async () => {
