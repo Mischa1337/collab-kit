@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import type { Db } from 'mongodb';
 
-import { mayChange, maySee, maySeeRoom, roomsVisibleTo } from '../auth/access.ts';
+import { mayChange, maySee, roomsVisibleTo } from '../auth/access.ts';
 import { readEventsSince } from '../db/collections/events.ts';
 import {
   addToRoom,
@@ -21,7 +21,8 @@ export function roomRoutes(db: Db): Router {
   routes.param('id', requireId('room'));
 
   // 404 as for a missing room: that one exists is already more than an outsider should learn.
-  const seeing = guard((actor, id) => maySeeRoom(db, actor, id), 404, 'unknown room');
+  const seeing = guard((actor, id) => maySee(db, actor, { kind: 'room', id }), 404, 'unknown room');
+  // Behind seeing, so 403 tells only whoever already sees the room.
   const changing = guard(
     (actor, id) => mayChange(db, actor, 'room', id),
     403,
@@ -37,8 +38,9 @@ export function roomRoutes(db: Db): Router {
     }
 
     const settings = asObject(body['settings']);
-    if (unusableField(body, { settings }) !== undefined) {
-      return fail(response, 400, 'settings is unusable');
+    const unusable = unusableField(body, { settings });
+    if (unusable !== undefined) {
+      return fail(response, 400, `${unusable} is unusable`);
     }
 
     const room = await createRoom(db, {
@@ -54,7 +56,7 @@ export function roomRoutes(db: Db): Router {
     response.json(await findRoom(db, idOf(request)));
   });
 
-  routes.patch('/rooms/:id', changing, async (request, response) => {
+  routes.patch('/rooms/:id', seeing, changing, async (request, response) => {
     const settings = asObject(bodyOf(request)['settings']);
 
     if (settings === undefined) {
@@ -66,7 +68,7 @@ export function roomRoutes(db: Db): Router {
     response.json(await findRoom(db, id));
   });
 
-  routes.post('/rooms/:id/references', changing, async (request, response) => {
+  routes.post('/rooms/:id/references', seeing, changing, async (request, response) => {
     const reference = asReference(bodyOf(request));
 
     if (reference === undefined) {
@@ -74,19 +76,20 @@ export function roomRoutes(db: Db): Router {
     }
 
     // A room hands what it bundles to its groups, so only what the actor may see goes in.
-    if (!(await maySee(db, actorOf(request), reference))) {
+    const actor = actorOf(request);
+    if (!(await maySee(db, actor, reference))) {
       return fail(response, 404, 'unknown reference');
     }
 
     const id = idOf(request);
-    const added = await addToRoom(db, id, { ...reference, addedBy: actorOf(request).actorId });
+    const added = await addToRoom(db, id, { ...reference, addedBy: actor.actorId });
 
     // 200 if it was already in: adding it twice is no error, it just changes nothing.
     response.status(added ? 201 : 200).json(await findRoom(db, id));
   });
 
   // In the query and not the body: a body on DELETE may get lost on the way.
-  routes.delete('/rooms/:id/references', changing, async (request, response) => {
+  routes.delete('/rooms/:id/references', seeing, changing, async (request, response) => {
     const reference = asReference(request.query);
 
     if (reference === undefined) {

@@ -35,6 +35,14 @@ export function createServer(options: ServerOptions): Server {
   return createHttpServer(app);
 }
 
+/** Own words for what went wrong reading a body; never the message, which may echo the input. */
+const BODY_ERRORS: ReadonlyMap<string, string> = new Map([
+  ['entity.parse.failed', 'body is no valid JSON'],
+  ['entity.too.large', 'body is too large'],
+  ['charset.unsupported', 'body charset is unsupported'],
+  ['encoding.unsupported', 'body encoding is unsupported'],
+]);
+
 /** A client error keeps its status; anything else is logged and answered with 500. */
 const answerError: ErrorRequestHandler = (error, request, response, next) => {
   if (response.headersSent) {
@@ -43,7 +51,9 @@ const answerError: ErrorRequestHandler = (error, request, response, next) => {
   const status: unknown = error?.status;
 
   if (typeof status === 'number' && status >= 400 && status < 500) {
-    return fail(response, status, 'bad request');
+    const type: unknown = error?.type;
+    const told = typeof type === 'string' ? BODY_ERRORS.get(type) : undefined;
+    return fail(response, status, told ?? 'bad request');
   }
   request.log.error({ err: error }, 'request failed');
   fail(response, 500, 'internal');

@@ -199,14 +199,27 @@ describe('who may change what', () => {
 
   it('lets nobody add themselves to a group they did not create', async () => {
     const { groupId } = await setUp();
-    const carol = tokenFor('carol');
+    const addSelf = (name: string) =>
+      request(server)
+        .post(`/groups/${groupId}/members`)
+        .set(as(tokenFor(name)))
+        .send({ actorId: name });
 
-    const added = await request(server)
-      .post(`/groups/${groupId}/members`)
-      .set(as(carol))
-      .send({ actorId: 'carol' });
+    // bob is in it and sees it, carol does not even learn that it exists.
+    expect((await addSelf('bob')).status).toBe(403);
+    expect((await addSelf('carol')).status).toBe(404);
+  });
 
-    expect(added.status).toBe(403);
+  it('answers a change to what the actor cannot see as if it were not there', async () => {
+    const { roomId } = await setUp();
+    const rename = (id: string) =>
+      request(server)
+        .patch(`/rooms/${id}`)
+        .set(as(tokenFor('carol')))
+        .send({ settings: {} });
+
+    expect((await rename(roomId)).status).toBe(404);
+    expect((await rename('000000000000000000000000')).status).toBe(404);
   });
 
   it('hides a room from somebody in none of its groups', async () => {

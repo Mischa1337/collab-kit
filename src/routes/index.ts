@@ -5,11 +5,11 @@ import type { Logger } from 'pino';
 import type { Actor } from '../model/actor.ts';
 import { requireActor } from '../auth/middleware.ts';
 import type { WorkpieceHub } from '../realtime/hub.ts';
-import { workpieceRoutes } from './workpieces.ts';
-import { commentRoutes } from './comments.ts';
-import { eventRoutes } from './events.ts';
-import { groupRoutes } from './groups.ts';
 import { roomRoutes } from './rooms.ts';
+import { groupRoutes } from './groups.ts';
+import { workpieceRoutes } from './workpieces.ts';
+import { eventRoutes } from './events.ts';
+import { commentRoutes } from './comments.ts';
 import { taskRoutes } from './tasks.ts';
 
 export interface ApiOptions {

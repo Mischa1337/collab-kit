@@ -72,10 +72,23 @@ describe('createServer', () => {
 
     const malformed = await post('{nope');
     expect(malformed.status).toBe(400);
-    expect(malformed.body).toEqual({ error: 'bad request' });
+    expect(malformed.body).toEqual({ error: 'body is no valid JSON' });
 
-    expect((await post(JSON.stringify({ text: 'far too long for the limit' }))).status).toBe(413);
-    expect((await request(strict).get('/things/%E0%A4%A')).status).toBe(400);
+    const large = await post(JSON.stringify({ text: 'far too long for the limit' }));
+    expect(large.status).toBe(413);
+    expect(large.body).toEqual({ error: 'body is too large' });
+
+    const latin = await request(strict)
+      .post('/things')
+      .set('Content-Type', 'application/json; charset=latin1')
+      .send('{}');
+    expect(latin.status).toBe(415);
+    expect(latin.body).toEqual({ error: 'body charset is unsupported' });
+
+    // Not about the body, so no words of its own.
+    const broken = await request(strict).get('/things/%E0%A4%A');
+    expect(broken.status).toBe(400);
+    expect(broken.body).toEqual({ error: 'bad request' });
   });
 
   it('does not announce which server it is', async () => {

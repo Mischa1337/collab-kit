@@ -17,6 +17,8 @@ import {
   type TaskQuery,
 } from '../db/collections/tasks.ts';
 import {
+  ANCHOR_QUERY_RULE,
+  ASSIGNEE_RULE,
   asAnchor,
   asAnchorQuery,
   asAssignee,
@@ -35,10 +37,19 @@ export function taskRoutes(db: Db): Router {
 
   routes.param('id', requireId('task'));
 
+  // Seen by its creator, its assignee and whoever sees its anchor or parent; 404 hides it too.
   const seeing = guard((actor, id) => maySee(db, actor, { kind: 'task', id }), 404, 'unknown task');
-  // 404 as well while both rules equal seeing; a narrower one will want 403.
-  const marking = guard((actor, id) => maySetTaskState(db, actor, id), 404, 'unknown task');
-  const assigning = guard((actor, id) => mayAssignTask(db, actor, id), 404, 'unknown task');
+  // Behind seeing, so 403 tells only whoever already sees the task; today all three agree.
+  const moving = guard(
+    (actor, id) => maySetTaskState(db, actor, id),
+    403,
+    'not allowed to change this task',
+  );
+  const assigning = guard(
+    (actor, id) => mayAssignTask(db, actor, id),
+    403,
+    'not allowed to change this task',
+  );
 
   routes.post('/tasks', async (request, response) => {
     const body = bodyOf(request);
@@ -51,8 +62,14 @@ export function taskRoutes(db: Db): Router {
     const order = asNumber(body['order']);
     const detail = asObject(body['detail']);
 
-    if (kind === undefined || title === undefined || state === undefined) {
-      return fail(response, 400, 'kind, title and state are needed, as text');
+    if (kind === undefined) {
+      return fail(response, 400, 'kind is missing');
+    }
+    if (title === undefined) {
+      return fail(response, 400, 'title is missing');
+    }
+    if (state === undefined) {
+      return fail(response, 400, 'state is missing');
     }
     const unusable = unusableField(body, { anchor, parentId, assignee, order, detail });
     if (unusable !== undefined) {
@@ -100,7 +117,7 @@ export function taskRoutes(db: Db): Router {
     const state = asText(query['state']);
 
     if (anchorSent && anchor === undefined) {
-      return fail(response, 400, 'anchorKind and anchorId are needed, then unit or scope=whole');
+      return fail(response, 400, ANCHOR_QUERY_RULE);
     }
     if (assigneeSent && assignee === undefined) {
       return fail(response, 400, 'assigneeKind and assigneeId are unusable');
@@ -128,7 +145,7 @@ export function taskRoutes(db: Db): Router {
   });
 
   /** Moves the state; who moved it and why land in the events of the task. */
-  routes.patch('/tasks/:id', marking, async (request, response) => {
+  routes.patch('/tasks/:id', seeing, moving, async (request, response) => {
     const body = bodyOf(request);
     const state = asText(body['state']);
     const reason = asText(body['reason']);
@@ -136,8 +153,9 @@ export function taskRoutes(db: Db): Router {
     if (state === undefined) {
       return fail(response, 400, 'state is missing');
     }
-    if (unusableField(body, { reason }) !== undefined) {
-      return fail(response, 400, 'reason is unusable');
+    const unusable = unusableField(body, { reason });
+    if (unusable !== undefined) {
+      return fail(response, 400, `${unusable} is unusable`);
     }
 
     response.json(
@@ -150,20 +168,17 @@ export function taskRoutes(db: Db): Router {
   });
 
   /** Hands the task on; who gave it to whom and why land in the events of the task. */
-  routes.put('/tasks/:id/assignee', assigning, async (request, response) => {
+  routes.put('/tasks/:id/assignee', seeing, assigning, async (request, response) => {
     const body = bodyOf(request);
     const assignee = asAssignee(body['assignee']);
     const reason = asText(body['reason']);
 
     if (assignee === undefined) {
-      return fail(
-        response,
-        400,
-        'assignee needs kind actor with an actor key, or group with a key',
-      );
+      return fail(response, 400, ASSIGNEE_RULE);
     }
-    if (unusableField(body, { reason }) !== undefined) {
-      return fail(response, 400, 'reason is unusable');
+    const unusable = unusableField(body, { reason });
+    if (unusable !== undefined) {
+      return fail(response, 400, `${unusable} is unusable`);
     }
     const actor = actorOf(request);
     if (!(await mayAssignTo(db, actor, assignee))) {
@@ -183,8 +198,9 @@ export function taskRoutes(db: Db): Router {
   routes.get('/me/tasks', async (request, response) => {
     const state = asText(request.query['state']);
 
-    if (unusableField(request.query, { state }) !== undefined) {
-      return fail(response, 400, 'state is unusable');
+    const unusable = unusableField(request.query, { state });
+    if (unusable !== undefined) {
+      return fail(response, 400, `${unusable} is unusable`);
     }
 
     const assignees = await assigneesFor(db, actorOf(request));

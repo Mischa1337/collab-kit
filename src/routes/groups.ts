@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import type { Db } from 'mongodb';
 
-import { mayChange, maySeeGroup } from '../auth/access.ts';
+import { mayChange, maySee, maySeeGroup } from '../auth/access.ts';
 import {
   addMember,
   createGroup,
@@ -20,6 +20,13 @@ export function groupRoutes(db: Db): Router {
 
   routes.param('id', requireId('group'));
 
+  // Who is in a group tells what it opens, so an outsider learns not even that it exists.
+  const seeing = guard(
+    (actor, id) => maySee(db, actor, { kind: 'group', id }),
+    404,
+    'unknown group',
+  );
+  // Behind seeing, so 403 tells only whoever already sees the group.
   const changing = guard(
     (actor, id) => mayChange(db, actor, 'group', id),
     403,
@@ -40,8 +47,9 @@ export function groupRoutes(db: Db): Router {
     }
 
     const settings = asObject(body['settings']);
-    if (unusableField(body, { settings }) !== undefined) {
-      return fail(response, 400, 'settings is unusable');
+    const unusable = unusableField(body, { settings });
+    if (unusable !== undefined) {
+      return fail(response, 400, `${unusable} is unusable`);
     }
 
     const group = await createGroup(db, {
@@ -64,7 +72,7 @@ export function groupRoutes(db: Db): Router {
     response.json(group);
   });
 
-  routes.patch('/groups/:id', changing, async (request, response) => {
+  routes.patch('/groups/:id', seeing, changing, async (request, response) => {
     const settings = asObject(bodyOf(request)['settings']);
 
     if (settings === undefined) {
@@ -76,7 +84,7 @@ export function groupRoutes(db: Db): Router {
     response.json(await findGroup(db, id));
   });
 
-  routes.post('/groups/:id/members', changing, async (request, response) => {
+  routes.post('/groups/:id/members', seeing, changing, async (request, response) => {
     const actorId = asActorId(bodyOf(request)['actorId']);
 
     if (actorId === undefined) {
@@ -88,7 +96,7 @@ export function groupRoutes(db: Db): Router {
     response.status(added ? 201 : 200).json(await findGroup(db, id));
   });
 
-  routes.delete('/groups/:id/members/:actorId', changing, async (request, response) => {
+  routes.delete('/groups/:id/members/:actorId', seeing, changing, async (request, response) => {
     const actorId = asActorId(request.params['actorId']);
 
     if (actorId === undefined) {

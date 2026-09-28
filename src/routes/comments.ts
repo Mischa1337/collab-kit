@@ -9,6 +9,8 @@ import {
   setCommentState,
 } from '../db/collections/comments.ts';
 import {
+  ANCHOR_QUERY_RULE,
+  ANCHOR_RULE,
   asActorId,
   asAnchor,
   asAnchorQuery,
@@ -32,8 +34,12 @@ export function commentRoutes(db: Db): Router {
     404,
     'unknown comment',
   );
-  // 404 as well while the rule equals seeing; a narrower one will want 403.
-  const marking = guard((actor, id) => maySetCommentState(db, actor, id), 404, 'unknown comment');
+  // Behind seeing, so 403 tells only whoever already sees the comment; today both rules agree.
+  const moving = guard(
+    (actor, id) => maySetCommentState(db, actor, id),
+    403,
+    'not allowed to change this comment',
+  );
 
   routes.post('/comments', async (request, response) => {
     const body = bodyOf(request);
@@ -47,7 +53,7 @@ export function commentRoutes(db: Db): Router {
       return fail(response, 400, 'kind is missing');
     }
     if (anchor === undefined) {
-      return fail(response, 400, 'anchor needs kind and id, and a unit only as text');
+      return fail(response, 400, ANCHOR_RULE);
     }
     if (content === undefined) {
       return fail(response, 400, 'body must be an object');
@@ -92,7 +98,7 @@ export function commentRoutes(db: Db): Router {
     const since = asObjectId(request.query['since']);
 
     if (anchor === undefined) {
-      return fail(response, 400, 'anchorKind and anchorId are needed, then unit or scope=whole');
+      return fail(response, 400, ANCHOR_QUERY_RULE);
     }
     const unusable = unusableField(request.query, { parentId, kind, state, createdBy, since });
     if (unusable !== undefined) {
@@ -108,7 +114,7 @@ export function commentRoutes(db: Db): Router {
   });
 
   /** Moves the state; who moved it and why land in the events of the comment, D8.16. */
-  routes.patch('/comments/:id', marking, async (request, response) => {
+  routes.patch('/comments/:id', seeing, moving, async (request, response) => {
     const body = bodyOf(request);
     const state = asText(body['state']);
     const reason = asText(body['reason']);
@@ -116,8 +122,9 @@ export function commentRoutes(db: Db): Router {
     if (state === undefined) {
       return fail(response, 400, 'state is missing');
     }
-    if (unusableField(body, { reason }) !== undefined) {
-      return fail(response, 400, 'reason is unusable');
+    const unusable = unusableField(body, { reason });
+    if (unusable !== undefined) {
+      return fail(response, 400, `${unusable} is unusable`);
     }
 
     response.json(

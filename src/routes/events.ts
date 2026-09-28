@@ -9,6 +9,8 @@ import {
   SERVICE_KINDS,
 } from '../db/collections/events.ts';
 import {
+  ANCHOR_QUERY_RULE,
+  ANCHOR_RULE,
   asActorId,
   asAnchor,
   asAnchorQuery,
@@ -33,7 +35,7 @@ export function eventRoutes(db: Db): Router {
     const limit = asCount(request.query['limit']);
 
     if (anchor === undefined) {
-      return fail(response, 400, 'anchorKind and anchorId are needed, then unit or scope=whole');
+      return fail(response, 400, ANCHOR_QUERY_RULE);
     }
     // Dropped, a filter would widen the answer unnoticed, a cut turn a stream into a history.
     const unusable = unusableField(request.query, { since, before, kind, createdBy, limit });
@@ -72,20 +74,21 @@ export function eventRoutes(db: Db): Router {
       return fail(response, 400, 'kind is written by the service alone');
     }
     if (anchor === undefined) {
-      return fail(response, 400, 'anchor needs kind and id, and a unit only as text');
+      return fail(response, 400, ANCHOR_RULE);
     }
     const unusable = unusableField(body, { at, label, reason, detail });
     if (unusable !== undefined) {
       return fail(response, 400, `${unusable} is unusable`);
     }
-    if (!(await maySee(db, actorOf(request), anchor))) {
+    const actor = actorOf(request);
+    if (!(await maySee(db, actor, anchor))) {
       return fail(response, 404, 'unknown anchor');
     }
 
     response.status(201).json(
       await recordEvent(db, {
         kind,
-        createdBy: actorOf(request).actorId,
+        createdBy: actor.actorId,
         anchor,
         ...defined({ at, label, reason, detail }),
       }),

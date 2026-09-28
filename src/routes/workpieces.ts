@@ -4,9 +4,9 @@ import type { Db } from 'mongodb';
 import { mayOpenWorkpiece, maySeeWorkpiece } from '../auth/access.ts';
 import { createWorkpiece, findWorkpiece } from '../db/collections/workpieces.ts';
 import { summarizeUpdatesSince } from '../db/collections/updates.ts';
+import type { WorkpieceHub } from '../realtime/hub.ts';
 import { asCount, asObject, asObjectId, asText } from '../utils/input.ts';
 import { defined } from '../utils/optional.ts';
-import type { WorkpieceHub } from '../realtime/hub.ts';
 import { actorOf, bodyOf, fail, guard, idOf, requireId, unusableField } from './http.ts';
 
 /** The workpiece as a thing; working on it runs over the WebSocket, so nothing here writes. */
@@ -26,8 +26,9 @@ export function workpieceRoutes(db: Db, hub: WorkpieceHub): Router {
     }
 
     const contract = asObject(body['contract']);
-    if (unusableField(body, { contract }) !== undefined) {
-      return fail(response, 400, 'contract is unusable');
+    const unusable = unusableField(body, { contract });
+    if (unusable !== undefined) {
+      return fail(response, 400, `${unusable} is unusable`);
     }
 
     const workpiece = await createWorkpiece(db, {

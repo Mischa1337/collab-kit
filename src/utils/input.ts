@@ -65,6 +65,12 @@ export function asReference(raw: unknown): Reference | undefined {
   return kind === undefined || id === undefined ? undefined : { kind, id };
 }
 
+/** What asAnchor needs, for the 400 of a route that takes an anchor in its body. */
+export const ANCHOR_RULE = 'anchor needs kind and id, and a unit only as text';
+
+/** What asAnchorQuery needs, for the 400 of a route that reads an anchor from the query. */
+export const ANCHOR_QUERY_RULE = 'anchorKind and anchorId are needed, then unit or scope=whole';
+
 /** A reference with an optional unit; a unit sent but unusable makes the anchor unusable. */
 export function asAnchor(raw: unknown): Anchor | undefined {
   const reference = asReference(raw);
@@ -101,6 +107,9 @@ export function asAnchorQuery(query: Record<string, unknown>): AnchorQuery | und
 export function asParentId(raw: unknown): ObjectId | null | undefined {
   return raw === 'none' ? null : asObjectId(raw);
 }
+
+/** What asAssignee needs, for the 400 of a route that takes an assignee in its body. */
+export const ASSIGNEE_RULE = 'assignee needs kind actor or group, and an id of that kind';
 
 /** A person by actor key as the token gives it, a group by its ObjectId; nothing else. */
 export function asAssignee(raw: unknown): Assignee | undefined {
