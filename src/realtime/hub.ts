@@ -232,7 +232,7 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
         await Promise.all([
           trace(workpieceId, 'joined', connection.actor.actorId),
           touchActor(options.db, connection.actor).catch((error: unknown) => {
-            options.logger.error({ error }, 'could not record the actor');
+            options.logger.error({ err: error }, 'could not record the actor');
           }),
         ]);
 
@@ -266,7 +266,7 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
       await Promise.all([
         trace(workpieceId, 'left', connection.actor.actorId, entry.copy.lastUpdateId),
         touchActor(options.db, connection.actor).catch((error: unknown) => {
-          options.logger.error({ error }, 'could not record the actor');
+          options.logger.error({ err: error }, 'could not record the actor');
         }),
       ]);
 

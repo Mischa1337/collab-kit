@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import express, { Router } from 'express';
 import pino from 'pino';
 import request from 'supertest';
 import { describe, expect, it } from 'vitest';
@@ -17,7 +17,10 @@ describe('createServer', () => {
   });
 
   it('carries no routes of the service without an api', async () => {
-    expect((await request(server).get('/rooms/abc')).status).toBe(404);
+    const response = await request(server).get('/rooms/abc');
+
+    expect(response.status).toBe(404);
+    expect(response.body).toEqual({ error: 'unknown route' });
   });
 
   it('answers a failing route without telling what broke', async () => {
@@ -39,6 +42,40 @@ describe('createServer', () => {
     });
 
     expect((await request(createServer({ logger: silent, api })).get('/boom')).status).toBe(500);
+  });
+
+  it('writes the reason of a failure to the log', async () => {
+    const lines: string[] = [];
+    const logger = pino({ level: 'error' }, { write: (line: string) => lines.push(line) });
+    const api = Router();
+    api.get('/boom', () => {
+      throw new Error('the reason nobody outside may read');
+    });
+
+    await request(createServer({ logger, api })).get('/boom');
+
+    expect(lines.join('')).toContain('the reason nobody outside may read');
+  });
+
+  it('keeps the status of what the client got wrong', async () => {
+    const api = Router();
+    api.use(express.json({ limit: '20b' }));
+    api.post('/things', (_request, response) => {
+      response.json({});
+    });
+    api.get('/things/:id', (_request, response) => {
+      response.json({});
+    });
+    const strict = createServer({ logger: silent, api });
+    const post = (body: string) =>
+      request(strict).post('/things').set('Content-Type', 'application/json').send(body);
+
+    const malformed = await post('{nope');
+    expect(malformed.status).toBe(400);
+    expect(malformed.body).toEqual({ error: 'bad request' });
+
+    expect((await post(JSON.stringify({ text: 'far too long for the limit' }))).status).toBe(413);
+    expect((await request(strict).get('/things/%E0%A4%A')).status).toBe(400);
   });
 
   it('does not announce which server it is', async () => {

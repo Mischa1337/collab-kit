@@ -17,19 +17,16 @@ export interface ApiOptions {
   readonly logger: Logger;
 }
 
-/**
- * Every route of the service, all behind the same guard. Nothing in here takes an
- * actor key from a body: who is acting comes from the token and from nowhere else.
- */
+/** Every route behind requireActor: who acts comes from the token, never from a body. */
 export function createApi(options: ApiOptions): Router {
   const api = Router();
 
-  api.use(express.json({ limit: '1mb' }));
   api.use(
     requireActor(options.checkToken, (error) => {
-      options.logger.info({ error }, 'token rejected');
+      options.logger.info({ err: error }, 'token rejected');
     }),
   );
+  api.use(express.json({ limit: '1mb' }));
 
   api.use(roomRoutes(options.db));
   api.use(groupRoutes(options.db));

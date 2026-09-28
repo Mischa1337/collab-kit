@@ -26,7 +26,6 @@
     "measure": "node --env-file-if-exists=.env scripts/measure-load.ts"
   },
   "dependencies": {
-    "cors": "^2.8.6",
     "express": "^5.2.1",
     "helmet": "^8.3.0",
     "jsonwebtoken": "^9.0.3",
@@ -39,7 +38,6 @@
     "yjs": "^13.6.32"
   },
   "devDependencies": {
-    "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^24.13.5",

@@ -49,7 +49,7 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
       .then(
         () => process.exit(0),
         (error: unknown) => {
-          log.error({ error }, 'shutdown failed');
+          log.error({ err: error }, 'shutdown failed');
           process.exit(1);
         },
       );

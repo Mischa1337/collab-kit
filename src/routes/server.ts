@@ -5,21 +5,18 @@ import helmet from 'helmet';
 import { pinoHttp } from 'pino-http';
 import type { Logger } from 'pino';
 
+import { fail } from './http.ts';
+
 export interface ServerOptions {
   readonly logger: Logger;
   /** The routes of the service. Left out, only the health check answers. */
   readonly api?: Router;
 }
 
-/**
- * Builds the HTTP server. The routes are handed in rather than built here, so this
- * file stays about transport and the API can be mounted and tested on its own.
- * The WebSocket gateway attaches to the returned server, not to Express.
- */
+/** Builds the HTTP server around the routes handed in; the WebSocket gateway attaches to it. */
 export function createServer(options: ServerOptions): Server {
   const app = express();
 
-  app.disable('x-powered-by');
   app.use(helmet());
   app.use(pinoHttp({ logger: options.logger }));
 
@@ -32,22 +29,22 @@ export function createServer(options: ServerOptions): Server {
     app.use(options.api);
   }
 
-  app.use(failed(options.logger));
+  app.use((_request, response) => fail(response, 404, 'unknown route'));
+  app.use(answerError);
 
   return createHttpServer(app);
 }
 
-/**
- * The last word on anything that got through. What went wrong goes to the log and
- * never into the answer: a client that learns the reason learns about the inside.
- */
-function failed(logger: Logger): ErrorRequestHandler {
-  return (error, _request, response, next) => {
-    if (response.headersSent) {
-      return next(error);
-    }
+/** A client error keeps its status; anything else is logged and answered with 500. */
+const answerError: ErrorRequestHandler = (error, request, response, next) => {
+  if (response.headersSent) {
+    return next(error);
+  }
+  const status: unknown = error?.status;
 
-    logger.error({ error }, 'request failed');
-    response.status(500).json({ error: 'internal' });
-  };
-}
+  if (typeof status === 'number' && status >= 400 && status < 500) {
+    return fail(response, status, 'bad request');
+  }
+  request.log.error({ err: error }, 'request failed');
+  fail(response, 500, 'internal');
+};

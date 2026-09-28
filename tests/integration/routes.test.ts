@@ -84,6 +84,16 @@ describe('the guard in front of everything', () => {
 
     expect((await request(server).get('/me/groups').set(as(forged))).status).toBe(401);
   });
+
+  it('checks the token before it reads the body', async () => {
+    const malformed = (token?: string) => {
+      const sent = request(server).post('/rooms').set('Content-Type', 'application/json');
+      return (token === undefined ? sent : sent.set(as(token))).send('{nope');
+    };
+
+    expect((await malformed()).status).toBe(401);
+    expect((await malformed(alice)).status).toBe(400);
+  });
 });
 
 describe('setting a room up', () => {

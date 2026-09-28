@@ -1,7 +1,4 @@
-/**
- * What every route file needs from Express: refusing in one shape, reading the actor,
- * the body and the id, and guarding a route. Reading plain values is in utils/input.ts.
- */
+/** What every route file needs from Express; plain values are checked in utils/input.ts. */
 
 import type { Request, RequestHandler, RequestParamHandler, Response } from 'express';
 import type { Document, ObjectId } from 'mongodb';
@@ -14,10 +11,7 @@ export function fail(response: Response, status: number, error: string): void {
   response.status(status).json({ error });
 }
 
-/**
- * The actor requireActor hung on the request. Throwing here would mean a route was
- * mounted outside the guard, which is a mistake in the wiring and not in the request.
- */
+/** The actor requireActor set; none means a route sits outside it, a wiring mistake. */
 export function actorOf(request: Request): Actor {
   const actor = request.actor;
 
@@ -32,10 +26,7 @@ export function bodyOf(request: Request): Document {
   return asObject(request.body) ?? {};
 }
 
-/**
- * Refuses a request whose :id is not an ObjectId before any handler sees it.
- * Registered once per router with routes.param('id', ...), so no route repeats it.
- */
+/** Refuses an :id that is no ObjectId; registered once per router with routes.param. */
 export function requireId(what: string): RequestParamHandler {
   return (_request, response, next, raw) => {
     if (asObjectId(raw) === undefined) {
@@ -45,10 +36,7 @@ export function requireId(what: string): RequestParamHandler {
   };
 }
 
-/**
- * The :id that requireId let through. Throwing here would mean a router takes an id
- * without checking it, which is a mistake in the wiring, as in actorOf.
- */
+/** The :id requireId let through; none means the router skipped requireId, a wiring mistake. */
 export function idOf(request: Request): ObjectId {
   const id = asObjectId(request.params['id']);
 
@@ -58,10 +46,7 @@ export function idOf(request: Request): ObjectId {
   return id;
 }
 
-/**
- * Lets a request through only when the rule says yes, and refuses it otherwise.
- * Placed in front of a handler, so a route shows what it demands where it is declared.
- */
+/** Lets a request through only if the rule says yes; placed in front of a handler. */
 export function guard(
   rule: (actor: Actor, id: ObjectId) => Promise<boolean>,
   status: number,
