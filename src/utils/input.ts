@@ -17,6 +17,14 @@ export function asReferenceId(raw: unknown): ObjectId | string | undefined {
   return asObjectId(raw) ?? raw;
 }
 
+/** An actor key as the token gives it: text kept as it is, or a finite number as text. */
+export function asActorId(raw: unknown): string | undefined {
+  if (typeof raw === 'string') {
+    return raw.trim() === '' ? undefined : raw;
+  }
+  return typeof raw === 'number' && Number.isFinite(raw) ? String(raw) : undefined;
+}
+
 /** A trimmed string that is not empty, otherwise undefined. */
 export function asText(raw: unknown): string | undefined {
   if (typeof raw !== 'string') {

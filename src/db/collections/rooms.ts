@@ -129,6 +129,23 @@ export async function roomsContaining(db: Db, what: Reference): Promise<RoomReco
     .toArray();
 }
 
+/** Every room this actor created or that holds one of these groups, in one query. */
+export async function roomsCreatedByOrHolding(
+  db: Db,
+  createdBy: string,
+  groupIds: readonly ObjectId[],
+): Promise<RoomRecord[]> {
+  return db
+    .collection<RoomRecord>('rooms')
+    .find({
+      $or: [
+        { createdBy },
+        { references: { $elemMatch: { kind: 'group', id: { $in: [...groupIds] } } } },
+      ],
+    })
+    .toArray();
+}
+
 /** Replaces the switch positions, never merges: unread here, so which keys to drop is unknown. */
 export async function setRoomSettings(
   db: Db,

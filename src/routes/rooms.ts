@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import type { Db } from 'mongodb';
 
-import { mayChange, maySee, maySeeRoom } from '../auth/access.ts';
+import { mayChange, maySee, maySeeRoom, roomsVisibleTo } from '../auth/access.ts';
 import { readEventsSince } from '../db/collections/events.ts';
 import {
   addToRoom,
@@ -118,6 +118,11 @@ export function roomRoutes(db: Db): Router {
         ...defined({ since, kind, limit }),
       }),
     );
+  });
+
+  /** Where a client starts: every room this token may see. */
+  routes.get('/me/rooms', async (request, response) => {
+    response.json(await roomsVisibleTo(db, actorOf(request)));
   });
 
   return routes;

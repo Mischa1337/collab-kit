@@ -6,8 +6,13 @@ import type { Actor } from '../model/actor.ts';
 import type { Reference } from '../model/anchor.ts';
 import { findWorkpiece, type WorkpieceRecord } from '../db/collections/workpieces.ts';
 import { findComment } from '../db/collections/comments.ts';
-import { findGroup, isMemberOfAny, type GroupRecord } from '../db/collections/groups.ts';
-import { findRoom, roomsContaining, type RoomRecord } from '../db/collections/rooms.ts';
+import { findGroup, groupsOf, isMemberOfAny, type GroupRecord } from '../db/collections/groups.ts';
+import {
+  findRoom,
+  roomsContaining,
+  roomsCreatedByOrHolding,
+  type RoomRecord,
+} from '../db/collections/rooms.ts';
 import { findTask, type TaskRecord } from '../db/collections/tasks.ts';
 
 /** Open: some room bundles the workpiece and a group the actor is in. No room, nobody. */
@@ -47,6 +52,17 @@ export async function maySeeRoom(db: Db, actor: Actor, roomId: ObjectId): Promis
   }
 
   return isMemberOfAny(db, groupsIn(room.references), actor.actorId);
+}
+
+/** Every room maySeeRoom would let the actor see, as one list; keep both rules in step. */
+export async function roomsVisibleTo(db: Db, actor: Actor): Promise<RoomRecord[]> {
+  const groups = await groupsOf(db, actor.actorId);
+
+  return roomsCreatedByOrHolding(
+    db,
+    actor.actorId,
+    groups.map((group) => group._id),
+  );
 }
 
 /** Seen by its members and whoever may change it, since who is in it tells what it opens. */

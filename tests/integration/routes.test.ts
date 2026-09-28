@@ -231,6 +231,34 @@ describe('who may change what', () => {
   });
 });
 
+describe('where a client starts', () => {
+  it('lists the rooms a token may see, and no other', async () => {
+    const { roomId } = await setUp();
+    const empty = await request(server).post('/rooms').set(as(alice)).send({ name: 'Leer' });
+    const emptyId = empty.body._id as string;
+    const listed = async (token: string) => {
+      const rooms = await request(server).get('/me/rooms').set(as(token));
+      return rooms.body.map((room: { _id: string }) => room._id);
+    };
+
+    expect(await listed(alice)).toEqual(expect.arrayContaining([roomId, emptyId]));
+    expect(await listed(bob)).toContain(roomId);
+    expect(await listed(bob)).not.toContain(emptyId);
+    expect(await listed(tokenFor('carol'))).not.toContain(roomId);
+  });
+
+  it('reads an actor key in a body as the token does, numbers included', async () => {
+    const { groupId } = await setUp();
+
+    await request(server).post(`/groups/${groupId}/members`).set(as(alice)).send({ actorId: 42 });
+    const groups = await request(server)
+      .get('/me/groups')
+      .set(as(tokenFor('42')));
+
+    expect(groups.body.map((group: { _id: string }) => group._id)).toContain(groupId);
+  });
+});
+
 describe('settings, which the service stores and never reads', () => {
   it('takes whatever shape the tool chose and gives it back unchanged', async () => {
     const { groupId } = await setUp();

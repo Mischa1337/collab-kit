@@ -1,6 +1,7 @@
 import { createPublicKey, createSecretKey } from 'node:crypto';
 import jwt from 'jsonwebtoken';
 import type { Actor } from '../model/actor.ts';
+import { asActorId } from '../utils/input.ts';
 
 /** Every algorithm a docking tool may sign with. `none` is left out on purpose. */
 export const TOKEN_ALGORITHMS = [
@@ -86,12 +87,4 @@ export function createTokenCheck(options: TokenOptions): (token: string) => Acto
     const name = claims[labelClaim];
     return typeof name === 'string' && name.trim() !== '' ? { actorId, label: name } : { actorId };
   };
-}
-
-/** Text that is not blank, or a finite number for tools that number their users. */
-function asActorId(raw: unknown): string | undefined {
-  if (typeof raw === 'string') {
-    return raw.trim() === '' ? undefined : raw;
-  }
-  return typeof raw === 'number' && Number.isFinite(raw) ? String(raw) : undefined;
 }

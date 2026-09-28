@@ -10,14 +10,11 @@ import {
   removeMember,
   setGroupSettings,
 } from '../db/collections/groups.ts';
-import { asObject, asText } from '../utils/input.ts';
+import { asActorId, asObject, asText } from '../utils/input.ts';
 import { defined } from '../utils/optional.ts';
 import { actorOf, bodyOf, fail, guard, idOf, requireId } from './http.ts';
 
-/**
- * A group is a set of actors and nothing else. What it stands for lives in settings,
- * which the service stores and never reads: the roles are the business of the tool.
- */
+/** A group is a set of actors; what it stands for, a role say, lives in settings, unread. */
 export function groupRoutes(db: Db): Router {
   const routes = Router();
 
@@ -80,7 +77,7 @@ export function groupRoutes(db: Db): Router {
   });
 
   routes.post('/groups/:id/members', changing, async (request, response) => {
-    const actorId = asText(bodyOf(request)['actorId']);
+    const actorId = asActorId(bodyOf(request)['actorId']);
 
     if (actorId === undefined) {
       return fail(response, 400, 'actorId is missing');
@@ -92,7 +89,7 @@ export function groupRoutes(db: Db): Router {
   });
 
   routes.delete('/groups/:id/members/:actorId', changing, async (request, response) => {
-    const actorId = asText(request.params['actorId']);
+    const actorId = asActorId(request.params['actorId']);
 
     if (actorId === undefined) {
       return fail(response, 400, 'actorId is missing');
@@ -103,7 +100,7 @@ export function groupRoutes(db: Db): Router {
     response.json(await findGroup(db, id));
   });
 
-  /** Where a client starts: the groups this token is in, and from there the rooms. */
+  /** The groups this token is in; the rooms it may see are at /me/rooms. */
   routes.get('/me/groups', async (request, response) => {
     response.json(await groupsOf(db, actorOf(request).actorId));
   });
@@ -120,6 +117,6 @@ function asMembers(raw: unknown): readonly string[] | undefined {
     return undefined;
   }
 
-  const members = raw.map((entry: unknown) => asText(entry));
-  return members.every((member) => member !== undefined) ? (members as string[]) : undefined;
+  const members = raw.map((entry: unknown) => asActorId(entry));
+  return members.every((member): member is string => member !== undefined) ? members : undefined;
 }
