@@ -80,12 +80,13 @@ export function eventRoutes(db: Db): Router {
 /** The anchor as it arrives in a body: kind and id required, unit optional. */
 function anchorOf(raw: Record<string, unknown> | undefined): Anchor | undefined {
   const kind = asText(raw?.['kind']);
+  const id = asReferenceId(raw?.['id']);
 
-  if (raw === undefined || kind === undefined || raw['id'] === undefined) {
+  if (raw === undefined || kind === undefined || id === undefined) {
     return undefined;
   }
 
-  return { kind, id: asReferenceId(raw['id']), ...defined({ unit: raw['unit'] }) };
+  return { kind, id, ...defined({ unit: raw['unit'] }) };
 }
 
 /**
@@ -95,12 +96,12 @@ function anchorOf(raw: Record<string, unknown> | undefined): Anchor | undefined 
  */
 function anchorQueryOf(query: Record<string, unknown>): AnchorQuery | undefined {
   const kind = asText(query['anchorKind']);
+  const id = asReferenceId(query['anchorId']);
 
-  if (kind === undefined || query['anchorId'] === undefined) {
+  if (kind === undefined || id === undefined) {
     return undefined;
   }
 
-  const id = asReferenceId(query['anchorId']);
   const unit = query['unit'];
 
   if (unit !== undefined) {

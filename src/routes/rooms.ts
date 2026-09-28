@@ -10,21 +10,18 @@ import {
   removeFromRoom,
   setRoomSettings,
 } from '../db/collections/rooms.ts';
+import type { Reference } from '../model/anchor.ts';
 import { asCount, asObject, asObjectId, asReferenceId, asText } from '../utils/input.ts';
 import { defined } from '../utils/optional.ts';
 import { actorOf, bodyOf, fail, guard, idOf, requireId } from './http.ts';
 
-/**
- * The room bundles, so these routes only ever move references around. Nothing here
- * creates or deletes the things pointed at.
- */
+/** A room bundles: these routes move references, never create or delete what they point at. */
 export function roomRoutes(db: Db): Router {
   const routes = Router();
 
   routes.param('id', requireId('room'));
 
-  // Deliberately the same answer as a room that does not exist: whether one is there
-  // is already more than somebody outside it should learn.
+  // 404 as for a missing room: that one exists is already more than an outsider should learn.
   const seeing = guard((actor, id) => maySeeRoom(db, actor, id), 404, 'unknown room');
   const changing = guard(
     (actor, id) => mayChange(db, actor, 'room', id),
@@ -41,6 +38,10 @@ export function roomRoutes(db: Db): Router {
     }
 
     const settings = asObject(body['settings']);
+    if (body['settings'] !== undefined && settings === undefined) {
+      return fail(response, 400, 'settings must be an object');
+    }
+
     const room = await createRoom(db, {
       name,
       createdBy: actorOf(request).actorId,
@@ -67,15 +68,13 @@ export function roomRoutes(db: Db): Router {
   });
 
   routes.post('/rooms/:id/references', changing, async (request, response) => {
-    const body = bodyOf(request);
-    const kind = asText(body['kind']);
+    const reference = referenceOf(bodyOf(request));
 
-    if (kind === undefined || body['id'] === undefined) {
-      return fail(response, 400, 'kind and id are needed');
+    if (reference === undefined) {
+      return fail(response, 400, 'kind and id are needed, both as text');
     }
 
     // A room hands what it bundles to its groups, so only what the actor may see goes in.
-    const reference = { kind, id: asReferenceId(body['id']) };
     if (!(await maySee(db, actorOf(request), reference))) {
       return fail(response, 404, 'unknown reference');
     }
@@ -83,43 +82,31 @@ export function roomRoutes(db: Db): Router {
     const id = idOf(request);
     const added = await addToRoom(db, id, { ...reference, addedBy: actorOf(request).actorId });
 
-    // 200 and not 201 when it was already in: putting the same thing in twice is not
-    // an error, it just did not change anything.
+    // 200 if it was already in: adding it twice is no error, it just changes nothing.
     response.status(added ? 201 : 200).json(await findRoom(db, id));
   });
 
+  // In the query and not the body: a body on DELETE may get lost on the way.
   routes.delete('/rooms/:id/references', changing, async (request, response) => {
-    const body = bodyOf(request);
-    const kind = asText(body['kind']);
+    const reference = referenceOf(request.query);
 
-    if (kind === undefined || body['id'] === undefined) {
-      return fail(response, 400, 'kind and id are needed');
+    if (reference === undefined) {
+      return fail(response, 400, 'kind and id are needed, both as text');
     }
 
     const id = idOf(request);
-    await removeFromRoom(db, id, {
-      kind,
-      id: asReferenceId(body['id']),
-      removedBy: actorOf(request).actorId,
-    });
+    await removeFromRoom(db, id, { ...reference, removedBy: actorOf(request).actorId });
     response.json(await findRoom(db, id));
   });
 
-  /**
-   * Everything that happened in this room, oldest first, with `since` as the cut.
-   *
-   * The room has to resolve what it bundles, because the traces of the hub anchor at
-   * the workpiece they belong to and not at the room. Asking for anchorKind=room alone
-   * would find the chat and nothing of the work.
-   */
+  /** The room and all it bundles, oldest first after since; hub traces anchor at workpieces. */
   routes.get('/rooms/:id/events', seeing, async (request, response) => {
     const id = idOf(request);
     const room = await findRoom(db, id);
     const bundled = room?.references ?? [];
     // Only what the actor may see, so the room shows no more than /events would.
-    const visible = await Promise.all(
-      bundled.map((reference) => maySee(db, actorOf(request), reference)),
-    );
+    const actor = actorOf(request);
+    const visible = await Promise.all(bundled.map((reference) => maySee(db, actor, reference)));
     const seen = bundled.filter((_, index) => visible[index]);
     const since = asObjectId(request.query['since']);
     const kind = asText(request.query['kind']);
@@ -134,4 +121,12 @@ export function roomRoutes(db: Db): Router {
   });
 
   return routes;
+}
+
+/** Kind and id of a reference, from a body or a query; undefined if either does not fit. */
+function referenceOf(raw: Record<string, unknown>): Reference | undefined {
+  const kind = asText(raw['kind']);
+  const id = asReferenceId(raw['id']);
+
+  return kind === undefined || id === undefined ? undefined : { kind, id };
 }

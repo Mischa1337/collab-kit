@@ -43,6 +43,10 @@ export function groupRoutes(db: Db): Router {
     }
 
     const settings = asObject(body['settings']);
+    if (body['settings'] !== undefined && settings === undefined) {
+      return fail(response, 400, 'settings must be an object');
+    }
+
     const group = await createGroup(db, {
       name,
       createdBy: actorOf(request).actorId,

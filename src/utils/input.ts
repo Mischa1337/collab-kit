@@ -9,8 +9,11 @@ export function asObjectId(raw: unknown): ObjectId | undefined {
   return typeof raw === 'string' && HEX24.test(raw) ? new ObjectId(raw) : undefined;
 }
 
-/** An ObjectId if the value looks like one, otherwise the value unchanged (own tool ids). */
-export function asReferenceId(raw: unknown): unknown {
+/** Text only, as an object would reach MongoDB as an operator; ObjectId if it looks like one. */
+export function asReferenceId(raw: unknown): ObjectId | string | undefined {
+  if (typeof raw !== 'string' || raw === '') {
+    return undefined;
+  }
   return asObjectId(raw) ?? raw;
 }
 

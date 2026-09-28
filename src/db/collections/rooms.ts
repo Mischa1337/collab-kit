@@ -4,7 +4,7 @@ import { referenceProperties, type Reference } from '../../model/anchor.ts';
 import type { CollectionDefinition } from '../apply.ts';
 import { writeWithEvents, type NewEvent } from './events.ts';
 
-/** Bundles without owning: what it refere1nces lives on its own and may sit in several rooms. */
+/** Bundles without owning: what it references lives on its own and may sit in several rooms. */
 export interface RoomRecord {
   _id: ObjectId;
   name: string;

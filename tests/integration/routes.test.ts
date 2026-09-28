@@ -128,6 +128,20 @@ describe('setting a room up', () => {
     expect((await request(server).post('/rooms').set(as(alice)).send({})).status).toBe(400);
   });
 
+  it('takes a reference out again, named in the query', async () => {
+    const { roomId, groupId } = await setUp();
+    const unnamed = await request(server).delete(`/rooms/${roomId}/references`).set(as(alice));
+    expect(unnamed.status).toBe(400);
+
+    const removed = await request(server)
+      .delete(`/rooms/${roomId}/references`)
+      .query({ kind: 'group', id: groupId })
+      .set(as(alice));
+
+    expect(removed.status).toBe(200);
+    expect(removed.body.references).toEqual([{ kind: 'workpiece', id: expect.any(String) }]);
+  });
+
   it('answers a malformed key with 400 and an unknown one with 404', async () => {
     expect((await request(server).get('/rooms/nonsense').set(as(alice))).status).toBe(400);
     expect(
@@ -159,6 +173,26 @@ describe('who may change what', () => {
       .send({ kind: 'workpiece', id: workpieceId });
 
     expect(pushed.status).toBe(404);
+  });
+
+  it('takes an id only as text, so it never reaches the database as an operator', async () => {
+    const carol = tokenFor('carol');
+    const room = await request(server).post('/rooms').set(as(carol)).send({ name: 'Eigen' });
+    const statuses = async (id: unknown) => {
+      const pushed = await request(server)
+        .post(`/rooms/${room.body._id as string}/references`)
+        .set(as(carol))
+        .send({ kind: 'workpiece', id });
+      const traced = await request(server)
+        .post('/events')
+        .set(as(carol))
+        .send({ kind: 'note', anchor: { kind: 'workpiece', id } });
+      return [pushed.status, traced.status];
+    };
+
+    // As an operator it would have matched the traces at every workpiece of the service.
+    expect(await statuses({ $exists: true })).toEqual([400, 400]);
+    expect(await statuses(42)).toEqual([400, 400]);
   });
 
   it('lets nobody add themselves to a group they did not create', async () => {
@@ -208,6 +242,14 @@ describe('settings, which the service stores and never reads', () => {
       .send({ settings });
 
     expect(patched.body.settings).toEqual(settings);
+  });
+
+  it('refuses settings that are no object, also when creating', async () => {
+    const room = { name: 'Laut', settings: 'laut' };
+    const group = { name: 'Laut', settings: 'laut', members: [] };
+
+    expect((await request(server).post('/rooms').set(as(alice)).send(room)).status).toBe(400);
+    expect((await request(server).post('/groups').set(as(alice)).send(group)).status).toBe(400);
   });
 });
 
