@@ -30,13 +30,6 @@ describe('anchoredAt', () => {
     });
   });
 
-  it('carries a unit of whatever shape the contract declared', () => {
-    expect(anchoredAt({ kind: 'workpiece', id, unit: { row: 4, column: 'name' } })).toMatchObject({
-      'anchor.unit': { row: 4, column: 'name' },
-    });
-    expect(anchoredAt({ kind: 'workpiece', id, unit: 17 })).toMatchObject({ 'anchor.unit': 17 });
-  });
-
   it('points at things other than workpieces', () => {
     expect(anchoredAt({ kind: 'comment', id })).toMatchObject({ 'anchor.kind': 'comment' });
   });

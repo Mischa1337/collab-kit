@@ -10,7 +10,8 @@ export interface Reference {
 
 /** A reference, optionally narrowed to one unit inside the thing as the tool defines it. */
 export interface Anchor extends Reference {
-  unit?: unknown;
+  /** The key the tool gives a place inside. Text only, as a query can ask for nothing else. */
+  unit?: string;
 }
 
 /** Database schema of the fields of a Reference, for schemas that embed one. */
@@ -25,7 +26,7 @@ export const anchorSchema: Document = {
   required: ['kind', 'id'],
   properties: {
     ...referenceProperties,
-    unit: { description: 'the unit inside, shaped as the contract of the tool declares' },
+    unit: { bsonType: 'string', description: 'the key the tool gives a place inside' },
   },
 };
 
@@ -36,8 +37,8 @@ export const WHOLE = null;
 export interface AnchorQuery {
   readonly kind: string;
   readonly id: unknown;
-  /** Omitted: the thing and all its units. WHOLE: the thing only. Any value: that unit. */
-  readonly unit?: unknown;
+  /** Omitted: the thing and all its units. WHOLE: the thing only. A key: that unit. */
+  readonly unit?: string | typeof WHOLE;
 }
 
 /** Turns an AnchorQuery into a MongoDB filter on the field `anchor`. */

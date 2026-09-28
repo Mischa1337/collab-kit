@@ -24,7 +24,7 @@ const database = `collab_kit_comments_${Date.now()}_${Math.random().toString(36)
 let storage: Storage;
 let workpieceId: ObjectId;
 
-const on = (unit?: unknown) => ({
+const on = (unit?: string) => ({
   kind: 'workpiece',
   id: workpieceId,
   ...(unit === undefined ? {} : { unit }),
@@ -169,7 +169,7 @@ describe('reading back', () => {
     await said({ body: { text: 'global' } });
     await said({ anchor: on('statement-3'), body: { text: 'lokal' } });
 
-    const global = await readComments(storage.db, { anchor: on(WHOLE) });
+    const global = await readComments(storage.db, { anchor: { ...on(), unit: WHOLE } });
     expect(global.map((comment) => comment.body['text'])).toEqual(['global']);
 
     const local = await readComments(storage.db, { anchor: on('statement-3') });
@@ -183,6 +183,14 @@ describe('reading back', () => {
 
     const answers = await readComments(storage.db, { parentId: first._id });
     expect(answers.map((comment) => comment.body['text'])).toEqual(['zwei', 'drei']);
+  });
+
+  it('gives only what was said after a comment, for polling', async () => {
+    const first = await said({ body: { text: 'eins' } });
+    await said({ body: { text: 'zwei' } });
+
+    const later = await readComments(storage.db, { anchor: on(), since: first._id });
+    expect(later.map((comment) => comment.body['text'])).toEqual(['zwei']);
   });
 
   it('gives only the starts of the threads when asked for them', async () => {

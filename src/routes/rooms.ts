@@ -10,8 +10,7 @@ import {
   removeFromRoom,
   setRoomSettings,
 } from '../db/collections/rooms.ts';
-import type { Reference } from '../model/anchor.ts';
-import { asActorId, asCount, asObject, asObjectId, asReferenceId, asText } from '../utils/input.ts';
+import { asActorId, asCount, asObject, asObjectId, asReference, asText } from '../utils/input.ts';
 import { defined } from '../utils/optional.ts';
 import { actorOf, bodyOf, fail, guard, idOf, requireId, unusableField } from './http.ts';
 
@@ -68,7 +67,7 @@ export function roomRoutes(db: Db): Router {
   });
 
   routes.post('/rooms/:id/references', changing, async (request, response) => {
-    const reference = referenceOf(bodyOf(request));
+    const reference = asReference(bodyOf(request));
 
     if (reference === undefined) {
       return fail(response, 400, 'kind and id are needed, both as text');
@@ -88,7 +87,7 @@ export function roomRoutes(db: Db): Router {
 
   // In the query and not the body: a body on DELETE may get lost on the way.
   routes.delete('/rooms/:id/references', changing, async (request, response) => {
-    const reference = referenceOf(request.query);
+    const reference = asReference(request.query);
 
     if (reference === undefined) {
       return fail(response, 400, 'kind and id are needed, both as text');
@@ -133,12 +132,4 @@ export function roomRoutes(db: Db): Router {
   });
 
   return routes;
-}
-
-/** Kind and id of a reference, from a body or a query; undefined if either does not fit. */
-function referenceOf(raw: Record<string, unknown>): Reference | undefined {
-  const kind = asText(raw['kind']);
-  const id = asReferenceId(raw['id']);
-
-  return kind === undefined || id === undefined ? undefined : { kind, id };
 }

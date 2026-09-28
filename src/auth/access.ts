@@ -122,6 +122,15 @@ async function maySeeTask(db: Db, actor: Actor, task: TaskRecord): Promise<boole
   return task.parentId !== undefined && maySee(db, actor, { kind: 'task', id: task.parentId });
 }
 
+/** Provisional: whoever may see a comment moves its state; each move keeps who and why, D8.16. */
+export async function maySetCommentState(
+  db: Db,
+  actor: Actor,
+  commentId: ObjectId,
+): Promise<boolean> {
+  return maySee(db, actor, { kind: 'comment', id: commentId });
+}
+
 /** Whether the actor may change a room or group, looked up by its id. */
 export async function mayChange(
   db: Db,

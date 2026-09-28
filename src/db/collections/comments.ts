@@ -119,6 +119,8 @@ export interface CommentQuery {
   readonly anchor?: AnchorQuery;
   /** Left out matches every comment, ROOT only those that answer nothing. */
   readonly parentId?: ObjectId | null;
+  /** Only what was said after this comment, the cut for polling. */
+  readonly since?: ObjectId;
 }
 
 /** Oldest first, unlike the events: a conversation is read forwards. */
@@ -127,6 +129,7 @@ export async function readComments(db: Db, query: CommentQuery = {}): Promise<Co
     ...(query.anchor === undefined ? {} : anchoredAt(query.anchor)),
     ...defined({ kind: query.kind, state: query.state, createdBy: query.createdBy }),
     ...matchOptional('parentId', query.parentId),
+    ...(query.since === undefined ? {} : { _id: { $gt: query.since } }),
   };
 
   return db

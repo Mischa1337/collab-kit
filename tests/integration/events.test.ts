@@ -17,7 +17,7 @@ const database = `collab_kit_events_${Date.now()}_${Math.random().toString(36).s
 let storage: Storage;
 
 /** A fresh workpiece key per test, so the collection stays shared but the anchors do not. */
-const on = (unit?: unknown) => ({
+const on = (unit?: string) => ({
   kind: 'workpiece',
   id: workpieceId,
   ...(unit === undefined ? {} : { unit }),
@@ -68,16 +68,16 @@ describe('recording what happened', () => {
     expect(created.reason).toBe('vor dem Umbau des Kundenteils');
   });
 
-  it('carries a unit of whatever shape, untouched', async () => {
+  it('carries a detail of whatever shape, untouched', async () => {
     await recordEvent(storage.db, {
       kind: 'visit',
       createdBy: 'alice',
-      anchor: on({ row: 4, column: 'name' }),
+      anchor: on('row-4/name'),
       detail: { whatever: [1, 2, 3] },
     });
 
     const [stored] = await readEvents(storage.db, { anchor: on() });
-    expect(stored?.anchor.unit).toEqual({ row: 4, column: 'name' });
+    expect(stored?.anchor.unit).toBe('row-4/name');
     expect(stored?.detail).toEqual({ whatever: [1, 2, 3] });
   });
 });
@@ -99,7 +99,7 @@ describe('reading back', () => {
   it('gives only the thing itself when asked for the whole', async () => {
     await three();
 
-    const found = await readEvents(storage.db, { anchor: on(WHOLE) });
+    const found = await readEvents(storage.db, { anchor: { ...on(), unit: WHOLE } });
     expect(found.map((event) => event.kind)).toEqual(['read']);
   });
 
