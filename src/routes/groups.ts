@@ -12,7 +12,7 @@ import {
 } from '../db/collections/groups.ts';
 import { asActorId, asObject, asText } from '../utils/input.ts';
 import { defined } from '../utils/optional.ts';
-import { actorOf, bodyOf, fail, guard, idOf, requireId } from './http.ts';
+import { actorOf, bodyOf, fail, guard, idOf, requireId, unusableField } from './http.ts';
 
 /** A group is a set of actors; what it stands for, a role say, lives in settings, unread. */
 export function groupRoutes(db: Db): Router {
@@ -40,8 +40,8 @@ export function groupRoutes(db: Db): Router {
     }
 
     const settings = asObject(body['settings']);
-    if (body['settings'] !== undefined && settings === undefined) {
-      return fail(response, 400, 'settings must be an object');
+    if (unusableField(body, { settings }) !== undefined) {
+      return fail(response, 400, 'settings is unusable');
     }
 
     const group = await createGroup(db, {

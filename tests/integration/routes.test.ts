@@ -309,6 +309,21 @@ describe('the room as a channel', () => {
     expect(since.body[0].createdBy).toBe('bob');
   });
 
+  it('shows what one person did in the room', async () => {
+    const { roomId } = await setUp();
+    await request(server)
+      .post('/events')
+      .set(as(bob))
+      .send({ kind: 'visit', anchor: { kind: 'room', id: roomId } });
+
+    const bobs = await request(server)
+      .get(`/rooms/${roomId}/events`)
+      .query({ createdBy: 'bob' })
+      .set(as(alice));
+
+    expect(bobs.body.map((event: { kind: string }) => event.kind)).toEqual(['visit']);
+  });
+
   it('gathers what the room bundles, not only what anchors at the room', async () => {
     const { roomId, workpieceId } = await setUp();
 
@@ -458,6 +473,26 @@ describe('traces and marks', () => {
       .send({ kind: 'visit', anchor });
 
     expect((await readAt(anchor, { createdBy: 'u-17 ' })).body).toHaveLength(1);
+  });
+});
+
+describe('a value that was sent but cannot be used', () => {
+  it('is refused instead of dropped unnoticed, in queries and in bodies', async () => {
+    const { roomId, workpieceId } = await setUp();
+    const anchor = board();
+    const read = (path: string, query: Record<string, string>) =>
+      request(server).get(path).query(query).set(as(bob));
+    const send = (path: string, body: object) => request(server).post(path).set(as(bob)).send(body);
+    const at = { anchorKind: anchor.kind, anchorId: anchor.id };
+
+    expect((await read(`/rooms/${roomId}/events`, { since: 'undefined' })).status).toBe(400);
+    expect((await read(`/rooms/${roomId}/events`, { limit: '0' })).status).toBe(400);
+    expect((await read(`/workpieces/${workpieceId}/updates`, { since: 'x' })).status).toBe(400);
+    expect((await read('/events', { ...at, scope: 'wohle' })).status).toBe(400);
+    expect((await read('/events', { ...at, limit: 'viele' })).status).toBe(400);
+    expect((await send('/events', { kind: 'note', anchor, reason: 42 })).status).toBe(400);
+    expect((await send('/events', { kind: 'note', anchor, detail: 'frei' })).status).toBe(400);
+    expect((await send(`/workpieces/${workpieceId}/checkpoints`, { reason: 42 })).status).toBe(400);
   });
 });
 

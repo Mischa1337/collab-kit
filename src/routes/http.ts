@@ -26,6 +26,14 @@ export function bodyOf(request: Request): Document {
   return asObject(request.body) ?? {};
 }
 
+/** The first optional field that was sent but read as nothing; dropping it would go unnoticed. */
+export function unusableField(
+  sent: Record<string, unknown>,
+  read: Record<string, unknown>,
+): string | undefined {
+  return Object.keys(read).find((name) => sent[name] !== undefined && read[name] === undefined);
+}
+
 /** Refuses an :id that is no ObjectId; registered once per router with routes.param. */
 export function requireId(what: string): RequestParamHandler {
   return (_request, response, next, raw) => {

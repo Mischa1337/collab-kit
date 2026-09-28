@@ -11,7 +11,7 @@ import {
 } from '../db/collections/events.ts';
 import { asActorId, asCount, asObject, asObjectId, asReferenceId, asText } from '../utils/input.ts';
 import { defined } from '../utils/optional.ts';
-import { actorOf, bodyOf, fail } from './http.ts';
+import { actorOf, bodyOf, fail, unusableField } from './http.ts';
 
 /** Traces and marks: forwards with since to follow along, backwards without it to look back. */
 export function eventRoutes(db: Db): Router {
@@ -21,24 +21,23 @@ export function eventRoutes(db: Db): Router {
     const anchor = anchorQueryOf(request.query);
     const since = asObjectId(request.query['since']);
     const before = asObjectId(request.query['before']);
+    const kind = asText(request.query['kind']);
+    const createdBy = asActorId(request.query['createdBy']);
+    const limit = asCount(request.query['limit']);
+    const scope = request.query['scope'] === 'whole' ? 'whole' : undefined;
 
     if (anchor === undefined) {
       return fail(response, 400, 'anchorKind and anchorId are needed');
     }
-    // A cut given but unusable must not quietly turn a stream into a history.
-    if (
-      (request.query['since'] !== undefined && since === undefined) ||
-      (request.query['before'] !== undefined && before === undefined)
-    ) {
-      return fail(response, 400, 'since and before must be event keys');
+    // Dropped, a filter would widen the answer unnoticed, a cut turn a stream into a history.
+    const unusable = unusableField(request.query, { since, before, kind, createdBy, limit, scope });
+    if (unusable !== undefined) {
+      return fail(response, 400, `${unusable} is unusable`);
     }
     if (!(await maySee(db, actorOf(request), anchor))) {
       return fail(response, 404, 'unknown anchor');
     }
 
-    const kind = asText(request.query['kind']);
-    const createdBy = asActorId(request.query['createdBy']);
-    const limit = asCount(request.query['limit']);
     const query = { anchor, ...defined({ kind, createdBy, before, limit }) };
 
     // With a cut a stream, read forwards; without one a history, read backwards.
@@ -54,6 +53,10 @@ export function eventRoutes(db: Db): Router {
     const body = bodyOf(request);
     const kind = asText(body['kind']);
     const anchor = anchorOf(asObject(body['anchor']));
+    const at = asObjectId(body['at']);
+    const label = asText(body['label']);
+    const reason = asText(body['reason']);
+    const detail = asObject(body['detail']);
 
     if (kind === undefined) {
       return fail(response, 400, 'kind is missing');
@@ -65,14 +68,13 @@ export function eventRoutes(db: Db): Router {
     if (anchor === undefined) {
       return fail(response, 400, 'anchor with kind and id is needed');
     }
+    const unusable = unusableField(body, { at, label, reason, detail });
+    if (unusable !== undefined) {
+      return fail(response, 400, `${unusable} is unusable`);
+    }
     if (!(await maySee(db, actorOf(request), anchor))) {
       return fail(response, 404, 'unknown anchor');
     }
-
-    const at = asObjectId(body['at']);
-    const label = asText(body['label']);
-    const reason = asText(body['reason']);
-    const detail = asObject(body['detail']);
 
     response.status(201).json(
       await recordEvent(db, {

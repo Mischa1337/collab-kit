@@ -7,7 +7,7 @@ import { summarizeUpdatesSince } from '../db/collections/updates.ts';
 import { asCount, asObject, asObjectId, asText } from '../utils/input.ts';
 import { defined } from '../utils/optional.ts';
 import type { WorkpieceHub } from '../realtime/hub.ts';
-import { actorOf, bodyOf, fail, guard, idOf, requireId } from './http.ts';
+import { actorOf, bodyOf, fail, guard, idOf, requireId, unusableField } from './http.ts';
 
 /** The workpiece as a thing; working on it runs over the WebSocket, so nothing here writes. */
 export function workpieceRoutes(db: Db, hub: WorkpieceHub): Router {
@@ -26,8 +26,8 @@ export function workpieceRoutes(db: Db, hub: WorkpieceHub): Router {
     }
 
     const contract = asObject(body['contract']);
-    if (body['contract'] !== undefined && contract === undefined) {
-      return fail(response, 400, 'contract must be an object');
+    if (unusableField(body, { contract }) !== undefined) {
+      return fail(response, 400, 'contract is unusable');
     }
 
     const workpiece = await createWorkpiece(db, {
@@ -55,6 +55,11 @@ export function workpieceRoutes(db: Db, hub: WorkpieceHub): Router {
     const since = asObjectId(request.query['since']);
     const limit = asCount(request.query['limit']);
 
+    const unusable = unusableField(request.query, { since, limit });
+    if (unusable !== undefined) {
+      return fail(response, 400, `${unusable} is unusable`);
+    }
+
     response.json(await summarizeUpdatesSince(db, idOf(request), since, limit));
   });
 
@@ -63,6 +68,11 @@ export function workpieceRoutes(db: Db, hub: WorkpieceHub): Router {
     const body = bodyOf(request);
     const label = asText(body['label']);
     const reason = asText(body['reason']);
+
+    const unusable = unusableField(body, { label, reason });
+    if (unusable !== undefined) {
+      return fail(response, 400, `${unusable} is unusable`);
+    }
 
     response.status(201).json(
       await hub.checkpoint(idOf(request), {

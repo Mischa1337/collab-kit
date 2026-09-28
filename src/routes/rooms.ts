@@ -11,9 +11,9 @@ import {
   setRoomSettings,
 } from '../db/collections/rooms.ts';
 import type { Reference } from '../model/anchor.ts';
-import { asCount, asObject, asObjectId, asReferenceId, asText } from '../utils/input.ts';
+import { asActorId, asCount, asObject, asObjectId, asReferenceId, asText } from '../utils/input.ts';
 import { defined } from '../utils/optional.ts';
-import { actorOf, bodyOf, fail, guard, idOf, requireId } from './http.ts';
+import { actorOf, bodyOf, fail, guard, idOf, requireId, unusableField } from './http.ts';
 
 /** A room bundles: these routes move references, never create or delete what they point at. */
 export function roomRoutes(db: Db): Router {
@@ -38,8 +38,8 @@ export function roomRoutes(db: Db): Router {
     }
 
     const settings = asObject(body['settings']);
-    if (body['settings'] !== undefined && settings === undefined) {
-      return fail(response, 400, 'settings must be an object');
+    if (unusableField(body, { settings }) !== undefined) {
+      return fail(response, 400, 'settings is unusable');
     }
 
     const room = await createRoom(db, {
@@ -101,6 +101,16 @@ export function roomRoutes(db: Db): Router {
 
   /** The room and all it bundles, oldest first after since; hub traces anchor at workpieces. */
   routes.get('/rooms/:id/events', seeing, async (request, response) => {
+    const since = asObjectId(request.query['since']);
+    const kind = asText(request.query['kind']);
+    const createdBy = asActorId(request.query['createdBy']);
+    const limit = asCount(request.query['limit']);
+
+    const unusable = unusableField(request.query, { since, kind, createdBy, limit });
+    if (unusable !== undefined) {
+      return fail(response, 400, `${unusable} is unusable`);
+    }
+
     const id = idOf(request);
     const room = await findRoom(db, id);
     const bundled = room?.references ?? [];
@@ -108,14 +118,11 @@ export function roomRoutes(db: Db): Router {
     const actor = actorOf(request);
     const visible = await Promise.all(bundled.map((reference) => maySee(db, actor, reference)));
     const seen = bundled.filter((_, index) => visible[index]);
-    const since = asObjectId(request.query['since']);
-    const kind = asText(request.query['kind']);
-    const limit = asCount(request.query['limit']);
 
     response.json(
       await readEventsSince(db, {
         references: [{ kind: 'room', id }, ...seen],
-        ...defined({ since, kind, limit }),
+        ...defined({ since, kind, createdBy, limit }),
       }),
     );
   });
