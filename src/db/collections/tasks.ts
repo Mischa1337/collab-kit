@@ -5,11 +5,8 @@ import { defined, matchOptional } from '../../utils/optional.ts';
 import type { CollectionDefinition } from '../apply.ts';
 import { changeWithEvent } from './events.ts';
 
-/** Who a task is assigned to. A group can hold one, the change it leads to cannot. */
-export interface Assignee {
-  kind: 'actor' | 'group';
-  id: unknown;
-}
+/** Who a task is assigned to: a person by actor key, or a group; a change cannot hold one. */
+export type Assignee = { kind: 'actor'; id: string } | { kind: 'group'; id: ObjectId };
 
 /** Something to be done, with a state; its history lives in events, state is only the shortcut. */
 export interface TaskRecord {
@@ -46,7 +43,10 @@ export const tasksDefinition: CollectionDefinition = {
       assignee: {
         bsonType: 'object',
         required: ['kind', 'id'],
-        properties: { kind: { enum: ['actor', 'group'] }, id: {} },
+        oneOf: [
+          { properties: { kind: { enum: ['actor'] }, id: { bsonType: 'string' } } },
+          { properties: { kind: { enum: ['group'] }, id: { bsonType: 'objectId' } } },
+        ],
       },
       order: { bsonType: 'number', description: 'order among siblings, D9.3' },
       detail: { bsonType: 'object', description: 'free, the service never reads it' },
@@ -185,7 +185,8 @@ export const TOP = null;
 export interface TaskQuery {
   readonly kind?: string;
   readonly state?: string;
-  readonly assignee?: Assignee;
+  /** Assigned to any of these; a person and their groups is how "mine" is asked for. */
+  readonly assignees?: readonly [Assignee, ...Assignee[]];
   readonly anchor?: AnchorQuery;
   /** Left out matches every task, TOP only those without a parent. */
   readonly parentId?: ObjectId | null;
@@ -196,9 +197,14 @@ export async function readTasks(db: Db, query: TaskQuery = {}): Promise<TaskReco
   const filter: Document = {
     ...(query.anchor === undefined ? {} : anchoredAt(query.anchor)),
     ...defined({ kind: query.kind, state: query.state }),
-    ...(query.assignee === undefined
+    ...(query.assignees === undefined
       ? {}
-      : { 'assignee.kind': query.assignee.kind, 'assignee.id': query.assignee.id }),
+      : {
+          $or: query.assignees.map((assignee) => ({
+            'assignee.kind': assignee.kind,
+            'assignee.id': assignee.id,
+          })),
+        }),
     ...matchOptional('parentId', query.parentId),
   };
 

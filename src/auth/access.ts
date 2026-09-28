@@ -13,7 +13,7 @@ import {
   roomsCreatedByOrHolding,
   type RoomRecord,
 } from '../db/collections/rooms.ts';
-import { findTask, type TaskRecord } from '../db/collections/tasks.ts';
+import { findTask, type Assignee, type TaskRecord } from '../db/collections/tasks.ts';
 
 /** Open: some room bundles the workpiece and a group the actor is in. No room, nobody. */
 export async function mayOpenWorkpiece(
@@ -111,15 +111,38 @@ async function maySeeTask(db: Db, actor: Actor, task: TaskRecord): Promise<boole
   if (assignee?.kind === 'actor' && assignee.id === actor.actorId) {
     return true;
   }
-  if (assignee?.kind === 'group' && assignee.id instanceof ObjectId) {
-    if (await isMemberOfAny(db, [assignee.id], actor.actorId)) {
-      return true;
-    }
+  if (assignee?.kind === 'group' && (await isMemberOfAny(db, [assignee.id], actor.actorId))) {
+    return true;
   }
   if (task.anchor !== undefined && (await maySee(db, actor, task.anchor))) {
     return true;
   }
   return task.parentId !== undefined && maySee(db, actor, { kind: 'task', id: task.parentId });
+}
+
+/** Every assignee maySeeTask lets the actor see through: themselves and each of their groups. */
+export async function assigneesFor(db: Db, actor: Actor): Promise<[Assignee, ...Assignee[]]> {
+  const groups = await groupsOf(db, actor.actorId);
+
+  return [
+    { kind: 'actor', id: actor.actorId },
+    ...groups.map((group) => ({ kind: 'group' as const, id: group._id })),
+  ];
+}
+
+/** Provisional: whoever may see a task moves its state; each move keeps who and why. */
+export async function maySetTaskState(db: Db, actor: Actor, taskId: ObjectId): Promise<boolean> {
+  return maySee(db, actor, { kind: 'task', id: taskId });
+}
+
+/** Provisional: whoever may see a task hands it on, so a group can take up one left lying. */
+export async function mayAssignTask(db: Db, actor: Actor, taskId: ObjectId): Promise<boolean> {
+  return maySee(db, actor, { kind: 'task', id: taskId });
+}
+
+/** Any actor key, as the service cannot know them; a group only if the actor may see it. */
+export async function mayAssignTo(db: Db, actor: Actor, assignee: Assignee): Promise<boolean> {
+  return assignee.kind === 'actor' || maySee(db, actor, assignee);
 }
 
 /** Provisional: whoever may see a comment moves its state; each move keeps who and why, D8.16. */

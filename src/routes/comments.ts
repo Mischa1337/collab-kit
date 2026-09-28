@@ -1,12 +1,11 @@
 import { Router } from 'express';
-import type { Db, ObjectId } from 'mongodb';
+import type { Db } from 'mongodb';
 
 import { maySee, maySetCommentState } from '../auth/access.ts';
 import {
   createComment,
   findComment,
   readComments,
-  ROOT,
   setCommentState,
 } from '../db/collections/comments.ts';
 import {
@@ -15,6 +14,7 @@ import {
   asAnchorQuery,
   asObject,
   asObjectId,
+  asParentId,
   asText,
 } from '../utils/input.ts';
 import { defined } from '../utils/optional.ts';
@@ -130,9 +130,4 @@ export function commentRoutes(db: Db): Router {
   });
 
   return routes;
-}
-
-/** none asks for the starts of the threads, a comment key for the answers to that one. */
-function asParentId(raw: unknown): ObjectId | typeof ROOT | undefined {
-  return raw === 'none' ? ROOT : asObjectId(raw);
 }

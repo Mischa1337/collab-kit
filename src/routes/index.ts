@@ -10,6 +10,7 @@ import { commentRoutes } from './comments.ts';
 import { eventRoutes } from './events.ts';
 import { groupRoutes } from './groups.ts';
 import { roomRoutes } from './rooms.ts';
+import { taskRoutes } from './tasks.ts';
 
 export interface ApiOptions {
   readonly db: Db;
@@ -34,6 +35,7 @@ export function createApi(options: ApiOptions): Router {
   api.use(workpieceRoutes(options.db, options.hub));
   api.use(eventRoutes(options.db));
   api.use(commentRoutes(options.db));
+  api.use(taskRoutes(options.db));
 
   return api;
 }

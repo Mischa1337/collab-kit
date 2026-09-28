@@ -216,10 +216,23 @@ describe('reading tasks back', () => {
     await plain({ assignee, title: 'zwei', state: 'fertig' });
     await plain({ title: 'ohne' });
 
-    await expect(readTasks(storage.db, { assignee })).resolves.toHaveLength(2);
+    await expect(readTasks(storage.db, { assignees: [assignee] })).resolves.toHaveLength(2);
 
-    const done = await readTasks(storage.db, { assignee, state: 'fertig' });
+    const done = await readTasks(storage.db, { assignees: [assignee], state: 'fertig' });
     expect(done.map((task) => task.title)).toEqual(['zwei']);
+  });
+
+  it('finds what went to a person and to any of their groups in one go', async () => {
+    const groupId = new ObjectId();
+    const person = { kind: 'actor' as const, id: `p-${groupId.toHexString()}` };
+    const group = { kind: 'group' as const, id: groupId };
+
+    await plain({ assignee: person, title: 'selbst' });
+    await plain({ assignee: group, title: 'Gruppe' });
+    await plain({ assignee: { kind: 'group', id: new ObjectId() }, title: 'fremd' });
+
+    const mine = await readTasks(storage.db, { assignees: [person, group] });
+    expect(mine.map((task) => task.title)).toEqual(['selbst', 'Gruppe']);
   });
 
   it('tells the kinds apart', async () => {

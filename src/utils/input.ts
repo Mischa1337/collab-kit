@@ -2,6 +2,7 @@
 
 import { ObjectId, type Document } from 'mongodb';
 
+import type { Assignee } from '../db/collections/tasks.ts';
 import { WHOLE, type Anchor, type AnchorQuery, type Reference } from '../model/anchor.ts';
 import { defined } from './optional.ts';
 
@@ -42,6 +43,11 @@ export function asObject(raw: unknown): Document | undefined {
   return typeof raw === 'object' && raw !== null && !Array.isArray(raw)
     ? (raw as Document)
     : undefined;
+}
+
+/** A finite number as sent in a body, fractions and negatives included, otherwise undefined. */
+export function asNumber(raw: unknown): number | undefined {
+  return typeof raw === 'number' && Number.isFinite(raw) ? raw : undefined;
 }
 
 /** A whole number above zero, also from text like "20", otherwise undefined. */
@@ -89,6 +95,27 @@ export function asAnchorQuery(query: Record<string, unknown>): AnchorQuery | und
     return unit === undefined ? undefined : { ...reference, unit };
   }
   return reference;
+}
+
+/** A parent from a query: none for what has no parent (null), else the ObjectId of the parent. */
+export function asParentId(raw: unknown): ObjectId | null | undefined {
+  return raw === 'none' ? null : asObjectId(raw);
+}
+
+/** A person by actor key as the token gives it, a group by its ObjectId; nothing else. */
+export function asAssignee(raw: unknown): Assignee | undefined {
+  const fields = asObject(raw);
+  const kind = fields?.['kind'];
+
+  if (kind === 'actor') {
+    const id = asActorId(fields?.['id']);
+    return id === undefined ? undefined : { kind, id };
+  }
+  if (kind === 'group') {
+    const id = asObjectId(fields?.['id']);
+    return id === undefined ? undefined : { kind, id };
+  }
+  return undefined;
 }
 
 /** The key the tool gives a place: text kept as it is, not blank. A query can send nothing else. */
