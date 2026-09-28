@@ -49,6 +49,20 @@ export const eventsDefinition: CollectionDefinition = {
   indexes: [{ key: { 'anchor.id': 1, kind: 1, _id: -1 }, name: 'anchor_id_kind' }],
 };
 
+/** Kinds only the service writes, each the proof of a change it made; add every new one here. */
+export const SERVICE_KINDS: ReadonlySet<string> = new Set([
+  'joined',
+  'left',
+  'checkpoint',
+  'member-added',
+  'member-removed',
+  'reference-added',
+  'reference-removed',
+  'task-state',
+  'task-assignee',
+  'comment-state',
+]);
+
 export interface NewEvent {
   readonly kind: string;
   readonly createdBy: string;
@@ -92,17 +106,22 @@ export interface EventQuery {
   readonly kind?: string;
   /** Only what happened after this event, the cut for polling. */
   readonly since?: ObjectId;
+  /** Only what happened before this event, for paging back through a history. */
+  readonly before?: ObjectId;
   readonly limit?: number;
 }
 
 function filterOf(query: EventQuery): Filter<EventRecord> {
+  // Both cuts work on _id, so they have to share one condition.
+  const window = defined({ $gt: query.since, $lt: query.before });
+
   return {
     ...(query.anchor === undefined ? {} : anchoredAt(query.anchor)),
     ...(query.references === undefined
       ? {}
       : { $or: query.references.map((reference) => anchoredAt(reference)) }),
     ...defined({ createdBy: query.createdBy, kind: query.kind }),
-    ...(query.since === undefined ? {} : { _id: { $gt: query.since } }),
+    ...(Object.keys(window).length === 0 ? {} : { _id: window }),
   } as Filter<EventRecord>;
 }
 

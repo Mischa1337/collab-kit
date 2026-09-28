@@ -403,6 +403,64 @@ describe('the room as a channel', () => {
   });
 });
 
+/** An anchor of a kind the tool made up, so nothing but what a test reports sits at it. */
+const board = () => ({ kind: 'board', id: `b-${new ObjectId().toHexString()}` });
+
+describe('traces and marks', () => {
+  const readAt = (anchor: { kind: string; id: string }, query: Record<string, string>) =>
+    request(server)
+      .get('/events')
+      .query({ anchorKind: anchor.kind, anchorId: anchor.id, ...query })
+      .set(as(alice));
+
+  it('keeps the kinds the service writes out of what a tool may report', async () => {
+    const { groupId } = await setUp();
+    const report = (kind: string) =>
+      request(server)
+        .post('/events')
+        .set(as(bob))
+        .send({ kind, anchor: { kind: 'group', id: groupId }, detail: { actorId: 'mallory' } });
+
+    expect((await report('member-added')).status).toBe(400);
+    expect((await report('checkpoint')).status).toBe(400);
+    expect((await report('visit')).status).toBe(201);
+  });
+
+  it('pages back through a history with before, and cuts a window with both', async () => {
+    const anchor = board();
+    const report = async (kind: string) => {
+      const event = await request(server).post('/events').set(as(alice)).send({ kind, anchor });
+      return event.body._id as string;
+    };
+    const one = await report('one');
+    const two = await report('two');
+    const three = await report('three');
+    const kinds = async (query: Record<string, string>) =>
+      (await readAt(anchor, query)).body.map((event: { kind: string }) => event.kind);
+
+    expect(await kinds({ limit: '2' })).toEqual(['three', 'two']);
+    expect(await kinds({ before: two, limit: '2' })).toEqual(['one']);
+    expect(await kinds({ since: one, before: three })).toEqual(['two']);
+  });
+
+  it('refuses a cut it cannot read instead of turning the stream around', async () => {
+    const anchor = board();
+
+    expect((await readAt(anchor, { since: 'undefined' })).status).toBe(400);
+    expect((await readAt(anchor, { before: 'undefined' })).status).toBe(400);
+  });
+
+  it('filters by an actor key exactly as the token gave it', async () => {
+    const anchor = board();
+    await request(server)
+      .post('/events')
+      .set(as(tokenFor('u-17 ')))
+      .send({ kind: 'visit', anchor });
+
+    expect((await readAt(anchor, { createdBy: 'u-17 ' })).body).toHaveLength(1);
+  });
+});
+
 describe('the history of a workpiece', () => {
   it('answers with an empty chain and a checkpoint that names the moment', async () => {
     const { workpieceId } = await setUp();

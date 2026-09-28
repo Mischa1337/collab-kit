@@ -3,36 +3,45 @@ import type { Db } from 'mongodb';
 
 import { WHOLE, type Anchor, type AnchorQuery } from '../model/anchor.ts';
 import { maySee } from '../auth/access.ts';
-import { readEvents, readEventsSince, recordEvent } from '../db/collections/events.ts';
-import { asCount, asObject, asObjectId, asReferenceId, asText } from '../utils/input.ts';
+import {
+  readEvents,
+  readEventsSince,
+  recordEvent,
+  SERVICE_KINDS,
+} from '../db/collections/events.ts';
+import { asActorId, asCount, asObject, asObjectId, asReferenceId, asText } from '../utils/input.ts';
 import { defined } from '../utils/optional.ts';
 import { actorOf, bodyOf, fail } from './http.ts';
 
-/**
- * Traces and marks. Read forwards with `since` for polling, backwards without it for
- * a history, which is the difference between following along and looking back.
- */
+/** Traces and marks: forwards with since to follow along, backwards without it to look back. */
 export function eventRoutes(db: Db): Router {
   const routes = Router();
 
   routes.get('/events', async (request, response) => {
     const anchor = anchorQueryOf(request.query);
+    const since = asObjectId(request.query['since']);
+    const before = asObjectId(request.query['before']);
 
     if (anchor === undefined) {
       return fail(response, 400, 'anchorKind and anchorId are needed');
+    }
+    // A cut given but unusable must not quietly turn a stream into a history.
+    if (
+      (request.query['since'] !== undefined && since === undefined) ||
+      (request.query['before'] !== undefined && before === undefined)
+    ) {
+      return fail(response, 400, 'since and before must be event keys');
     }
     if (!(await maySee(db, actorOf(request), anchor))) {
       return fail(response, 404, 'unknown anchor');
     }
 
-    const since = asObjectId(request.query['since']);
     const kind = asText(request.query['kind']);
-    const createdBy = asText(request.query['createdBy']);
+    const createdBy = asActorId(request.query['createdBy']);
     const limit = asCount(request.query['limit']);
-    const query = { anchor, ...defined({ kind, createdBy, limit }) };
+    const query = { anchor, ...defined({ kind, createdBy, before, limit }) };
 
-    // With a cut it is a stream and reads forwards, without one it is a history and
-    // reads backwards.
+    // With a cut a stream, read forwards; without one a history, read backwards.
     response.json(
       since === undefined
         ? await readEvents(db, query)
@@ -40,10 +49,7 @@ export function eventRoutes(db: Db): Router {
     );
   });
 
-  /**
-   * What the tool reports itself: that somebody visited, read up to here, or whatever
-   * else it finds worth keeping. The kind is free, the actor comes from the token.
-   */
+  /** What the tool reports itself, a visit or a reading mark; the kind is free. */
   routes.post('/events', async (request, response) => {
     const body = bodyOf(request);
     const kind = asText(body['kind']);
@@ -51,6 +57,10 @@ export function eventRoutes(db: Db): Router {
 
     if (kind === undefined) {
       return fail(response, 400, 'kind is missing');
+    }
+    // Otherwise a report could pass for the proof of a change that never happened.
+    if (SERVICE_KINDS.has(kind)) {
+      return fail(response, 400, 'kind is written by the service alone');
     }
     if (anchor === undefined) {
       return fail(response, 400, 'anchor with kind and id is needed');
@@ -89,11 +99,7 @@ function anchorOf(raw: Record<string, unknown> | undefined): Anchor | undefined 
   return { kind, id, ...defined({ unit: raw['unit'] }) };
 }
 
-/**
- * The anchor as it arrives in a query, flat so it survives any query parser. Leaving
- * the unit out asks about the thing and everything in it, scope=whole about the thing
- * alone, and a unit about that one place.
- */
+/** The anchor from a flat query: no unit is all of it, scope=whole the thing, a unit one place. */
 function anchorQueryOf(query: Record<string, unknown>): AnchorQuery | undefined {
   const kind = asText(query['anchorKind']);
   const id = asReferenceId(query['anchorId']);
