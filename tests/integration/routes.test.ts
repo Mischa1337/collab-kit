@@ -3,6 +3,7 @@ import { ObjectId } from 'mongodb';
 import pino from 'pino';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import * as Y from 'yjs';
 
 import { createTokenCheck } from '../../src/auth/token.ts';
 import { applyDefinitions } from '../../src/db/apply.ts';
@@ -598,6 +599,92 @@ describe('the history of a workpiece', () => {
     expect(await sizes({})).toEqual([3, 5, 7]);
     expect(await sizes({ limit: '2' })).toEqual([3, 5]);
     expect(await sizes({ since: second._id.toHexString(), limit: '2' })).toEqual([7]);
+  });
+
+  /** Types the words one after another and stores each keystroke's change as bob. */
+  async function typed(workpieceId: string, words: string[]): Promise<ObjectId[]> {
+    const writer = new Y.Doc();
+    const captured: Uint8Array[] = [];
+    writer.on('update', (update: Uint8Array) => captured.push(update));
+    for (const word of words) {
+      writer.getText('t').insert(writer.getText('t').length, word);
+    }
+
+    const ids: ObjectId[] = [];
+    for (const bytes of captured) {
+      // eslint-disable-next-line no-await-in-loop
+      const stored = await appendUpdate(storage.db, {
+        workpieceId: new ObjectId(workpieceId),
+        bytes,
+        createdBy: 'bob',
+      });
+      ids.push(stored._id);
+    }
+    return ids;
+  }
+
+  /** The state a route hands out, read back into a doc, and the change it says it reaches. */
+  async function stateOf(workpieceId: string, token: string, query: Record<string, string> = {}) {
+    const answer = await request(server)
+      .get(`/workpieces/${workpieceId}/state`)
+      .query(query)
+      .set(as(token))
+      .buffer(true)
+      .parse((response, done) => {
+        const chunks: Buffer[] = [];
+        response.on('data', (chunk: Buffer) => chunks.push(chunk));
+        response.on('end', () => done(null, Buffer.concat(chunks)));
+      });
+
+    const doc = new Y.Doc();
+    if (answer.status === 200) {
+      Y.applyUpdate(doc, new Uint8Array(answer.body as Buffer));
+    }
+    return {
+      status: answer.status,
+      type: answer.type,
+      text: doc.getText('t').toString(),
+      upTo: answer.headers['x-up-to-update-id'],
+    };
+  }
+
+  it('hands out the state after a change, or the newest one', async () => {
+    const { workpieceId } = await setUp();
+    const [, second, third] = await typed(workpieceId, ['eins', ' zwei', ' drei']);
+
+    const earlier = await stateOf(workpieceId, bob, { at: second!.toHexString() });
+    expect(earlier).toEqual({
+      status: 200,
+      type: 'application/octet-stream',
+      text: 'eins zwei',
+      upTo: second!.toHexString(),
+    });
+
+    const newest = await stateOf(workpieceId, bob);
+    expect(newest).toMatchObject({ text: 'eins zwei drei', upTo: third!.toHexString() });
+  });
+
+  it('refuses a point that is no change of this workpiece', async () => {
+    const { workpieceId } = await setUp();
+    await typed(workpieceId, ['eins']);
+    const elsewhere = (await setUp()).workpieceId;
+    const [foreign] = await typed(elsewhere, ['anderswo']);
+
+    expect((await stateOf(workpieceId, bob, { at: 'kaputt' })).status).toBe(400);
+    expect((await stateOf(workpieceId, bob, { at: foreign!.toHexString() })).status).toBe(404);
+  });
+
+  it('lets whoever sees the workpiece read its state and history, and nobody else', async () => {
+    // alice made it and sees it, but it lies in no room, so nobody may open it.
+    const loose = await request(server).post('/workpieces').set(as(alice)).send({ name: 'Allein' });
+    const workpieceId = loose.body._id as string;
+    await typed(workpieceId, ['Abgabe']);
+
+    expect(await stateOf(workpieceId, alice)).toMatchObject({ status: 200, text: 'Abgabe' });
+    expect(
+      (await request(server).get(`/workpieces/${workpieceId}/updates`).set(as(alice))).status,
+    ).toBe(200);
+    expect((await stateOf(workpieceId, bob)).status).toBe(404);
   });
 });
 

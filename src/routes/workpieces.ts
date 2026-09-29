@@ -1,10 +1,11 @@
 import { Router } from 'express';
 import type { Db } from 'mongodb';
 
-import { mayOpenWorkpiece, maySeeWorkpiece } from '../auth/access.ts';
+import { mayOpenWorkpiece, maySee, maySeeWorkpiece } from '../auth/access.ts';
 import { createWorkpiece, findWorkpiece } from '../db/collections/workpieces.ts';
-import { summarizeUpdatesSince } from '../db/collections/updates.ts';
+import { isUpdateOf, summarizeUpdatesSince } from '../db/collections/updates.ts';
 import type { WorkpieceHub } from '../realtime/hub.ts';
+import { readStateAt } from '../realtime/persistence.ts';
 import { asCount, asObject, asObjectId, asText } from '../utils/input.ts';
 import { defined } from '../utils/optional.ts';
 import { actorOf, bodyOf, fail, guard, idOf, requireId, unusableField } from './http.ts';
@@ -16,6 +17,12 @@ export function workpieceRoutes(db: Db, hub: WorkpieceHub): Router {
   routes.param('id', requireId('workpiece'));
 
   const opening = guard((actor, id) => mayOpenWorkpiece(db, actor, id), 404, 'unknown workpiece');
+  // Reading what is there, the history as the state: whoever sees it, its creator included.
+  const seeing = guard(
+    (actor, id) => maySee(db, actor, { kind: 'workpiece', id }),
+    404,
+    'unknown workpiece',
+  );
 
   routes.post('/workpieces', async (request, response) => {
     const body = bodyOf(request);
@@ -52,7 +59,7 @@ export function workpieceRoutes(db: Db, hub: WorkpieceHub): Router {
   });
 
   /** The chain of changes, oldest first after since: who and when, the bytes only as a size. */
-  routes.get('/workpieces/:id/updates', opening, async (request, response) => {
+  routes.get('/workpieces/:id/updates', seeing, async (request, response) => {
     const since = asObjectId(request.query['since']);
     const limit = asCount(request.query['limit']);
 
@@ -62,6 +69,28 @@ export function workpieceRoutes(db: Db, hub: WorkpieceHub): Router {
     }
 
     response.json(await summarizeUpdatesSince(db, idOf(request), since, limit));
+  });
+
+  /** The stored state as Yjs bytes after the change at, or the newest; restoring is the tool's. */
+  routes.get('/workpieces/:id/state', seeing, async (request, response) => {
+    const at = asObjectId(request.query['at']);
+
+    const unusable = unusableField(request.query, { at });
+    if (unusable !== undefined) {
+      return fail(response, 400, `${unusable} is unusable`);
+    }
+
+    const id = idOf(request);
+    if (at !== undefined && !(await isUpdateOf(db, id, at))) {
+      return fail(response, 404, 'unknown change');
+    }
+
+    const { state, upToUpdateId } = await readStateAt(db, id, at);
+    // Which change the state reaches, so the tool knows what it holds.
+    if (upToUpdateId !== undefined) {
+      response.set('X-Up-To-Update-Id', upToUpdateId.toHexString());
+    }
+    response.type('application/octet-stream').send(Buffer.from(state));
   });
 
   /** Names this moment; reason is the only place in the model for the why of a change. */

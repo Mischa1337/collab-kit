@@ -2,7 +2,7 @@ import type { Db, ObjectId } from 'mongodb';
 import * as Y from 'yjs';
 
 import { findWorkpieceWithFold, foldState } from '../db/collections/workpieces.ts';
-import { appendUpdate, readUpdatesSince } from '../db/collections/updates.ts';
+import { appendUpdate, readUpdatesSince, readUpdatesUntil } from '../db/collections/updates.ts';
 import { defined } from '../utils/optional.ts';
 
 /** How far a workpiece is stored, and the queue its writes run through. */
@@ -53,6 +53,30 @@ export async function loadWorkpiece(
   };
 
   return { doc, stored };
+}
+
+/** A stored state as one Yjs update: as it stood after the change at, or the newest one. */
+export async function readStateAt(
+  db: Db,
+  workpieceId: ObjectId,
+  at?: ObjectId,
+): Promise<{ readonly state: Uint8Array; readonly upToUpdateId?: ObjectId }> {
+  // The newest comes the way a workpiece loads, from the fold plus what came after it.
+  if (at === undefined) {
+    const { doc, stored } = await loadWorkpiece(db, workpieceId);
+    const state = Y.encodeStateAsUpdate(doc);
+    doc.destroy();
+    return { state, ...defined({ upToUpdateId: stored.lastUpdateId }) };
+  }
+
+  // The fold is mostly newer than the point asked for, so the chain is replayed from its start.
+  const doc = new Y.Doc();
+  for (const row of await readUpdatesUntil(db, workpieceId, at)) {
+    Y.applyUpdate(doc, new Uint8Array(row.bytes.buffer));
+  }
+  const state = Y.encodeStateAsUpdate(doc);
+  doc.destroy();
+  return { state, upToUpdateId: at };
 }
 
 /** Runs work after everything queued before it; a failure reaches only whoever queued it. */
