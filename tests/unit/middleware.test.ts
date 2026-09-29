@@ -9,7 +9,7 @@ import { createTokenCheck } from '../../src/auth/token.ts';
 const secret = 'geheimnis-des-werkzeugs';
 
 const app = express();
-app.get('/probe', requireActor(createTokenCheck({ secret })), (req, res) => {
+app.get('/probe', requireActor(createTokenCheck({ key: secret })), (req, res) => {
   res.json(req.actor);
 });
 
@@ -49,7 +49,7 @@ describe('requireActor', () => {
     const logging = express();
     logging.get(
       '/probe',
-      requireActor(createTokenCheck({ secret }), (error) => reasons.push(error)),
+      requireActor(createTokenCheck({ key: secret }), (error) => reasons.push(error)),
       (req, res) => res.json(req.actor),
     );
 

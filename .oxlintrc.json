@@ -10,6 +10,7 @@
     "eqeqeq": "error",
     "no-var": "error",
     "prefer-const": "error",
+    "no-async-endpoint-handlers": "off",
     "no-underscore-dangle": [
       "error",
       {

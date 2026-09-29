@@ -1,4 +1,4 @@
-import type { Actor } from '../auth/token.ts';
+import type { Actor } from '../model/actor.ts';
 
 declare module 'express-serve-static-core' {
   interface Request {

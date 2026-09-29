@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { applyDefinitions } from '../../src/db/apply.ts';
 import { connect, type Storage } from '../../src/db/client.ts';
 import { collectionDefinitions } from '../../src/db/schemas.ts';
-import { touchActor } from '../../src/db/actors.ts';
+import { touchActor } from '../../src/db/collections/actors.ts';
 
 const uri = process.env['MONGODB_URI'];
 if (uri === undefined || uri === '') {
@@ -33,19 +33,17 @@ describe('touchActor', () => {
     expect(record).toEqual({
       _id: 'u-1',
       label: 'Alice',
-      firstSeenAt: first,
       lastSeenAt: first,
     });
   });
 
-  it('keeps firstSeenAt and only moves lastSeenAt afterwards', async () => {
+  it('moves lastSeenAt on every later contact', async () => {
     const first = new Date('2026-09-18T08:00:00Z');
     const later = new Date('2026-09-18T12:30:00Z');
 
     await touchActor(storage.db, { actorId: 'u-2', label: 'Bob' }, first);
     const again = await touchActor(storage.db, { actorId: 'u-2', label: 'Bob' }, later);
 
-    expect(again.firstSeenAt).toEqual(first);
     expect(again.lastSeenAt).toEqual(later);
   });
 

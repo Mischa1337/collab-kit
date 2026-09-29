@@ -1,0 +1,36 @@
+import { ObjectId } from 'mongodb';
+import { describe, expect, it } from 'vitest';
+
+import { anchoredAt, WHOLE } from '../../src/model/anchor.ts';
+
+const id = new ObjectId();
+
+describe('anchoredAt', () => {
+  it('matches everything about a thing when no unit is named', () => {
+    // No condition on the unit at all: the unit-bound anchors belong to the thing too.
+    expect(anchoredAt({ kind: 'workpiece', id })).toEqual({
+      'anchor.kind': 'workpiece',
+      'anchor.id': id,
+    });
+  });
+
+  it('narrows down to one unit', () => {
+    expect(anchoredAt({ kind: 'workpiece', id, unit: 'statement-3' })).toEqual({
+      'anchor.kind': 'workpiece',
+      'anchor.id': id,
+      'anchor.unit': 'statement-3',
+    });
+  });
+
+  it('matches only the thing itself when asked for the whole', () => {
+    expect(anchoredAt({ kind: 'workpiece', id, unit: WHOLE })).toEqual({
+      'anchor.kind': 'workpiece',
+      'anchor.id': id,
+      'anchor.unit': { $exists: false },
+    });
+  });
+
+  it('points at things other than workpieces', () => {
+    expect(anchoredAt({ kind: 'comment', id })).toMatchObject({ 'anchor.kind': 'comment' });
+  });
+});

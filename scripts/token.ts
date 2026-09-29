@@ -8,10 +8,12 @@
 import jwt from 'jsonwebtoken';
 import type { SignOptions } from 'jsonwebtoken';
 
+import { isTokenAlgorithm, usesSharedSecret } from '../src/auth/token.ts';
+
 const [subject, name, lifetime] = process.argv.slice(2);
 
 if (subject === undefined || subject === '') {
-  console.error('usage: npm run token -- <sub> [name] [lifetime, default 15m]');
+  console.error('usage: npm run token -- <actor> [name] [lifetime, default 15m]');
   process.exit(1);
 }
 
@@ -21,12 +23,24 @@ if (secret === undefined || secret === '') {
   process.exit(1);
 }
 
+// Only an HS algorithm can be minted here. For any other the private key stays with the
+// tool, neither the service nor its scripts ever hold it.
+const algorithm = process.env['JWT_ALGORITHM']?.trim() || 'HS256';
+if (!isTokenAlgorithm(algorithm) || !usesSharedSecret(algorithm)) {
+  console.error(`cannot mint ${algorithm} tokens, only HS256, HS384 and HS512`);
+  process.exit(1);
+}
+
 const options: SignOptions = {
-  algorithm: 'HS256',
+  algorithm,
   // The type is a template literal union such as '15m', a plain string needs the cast.
   expiresIn: (lifetime ?? '15m') as NonNullable<SignOptions['expiresIn']>,
 };
 
-const token = jwt.sign({ sub: subject, name: name ?? subject }, secret, options);
+// The same claims the service reads, so a token minted here passes there.
+const actorClaim = process.env['ACTOR_CLAIM']?.trim() || 'sub';
+const labelClaim = process.env['LABEL_CLAIM']?.trim() || 'name';
+
+const token = jwt.sign({ [actorClaim]: subject, [labelClaim]: name ?? subject }, secret, options);
 
 console.log(token);
