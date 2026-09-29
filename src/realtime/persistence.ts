@@ -1,4 +1,4 @@
-import type { Db, ObjectId } from 'mongodb';
+import type { Binary, Db, ObjectId } from 'mongodb';
 import * as Y from 'yjs';
 
 import { findWorkpieceWithFold, foldState } from '../db/collections/workpieces.ts';
@@ -32,13 +32,13 @@ export async function loadWorkpiece(
   // Starts from the folded state, if there is one.
   const doc = new Y.Doc();
   if (record.fold !== undefined) {
-    Y.applyUpdate(doc, new Uint8Array(record.fold.state.buffer));
+    applyStored(doc, record.fold.state, `the fold of workpiece ${workpieceId.toHexString()}`);
   }
 
   // Then every change the fold does not cover; never folded means the whole history.
   const afterFold = await readUpdatesSince(db, workpieceId, record.fold?.upToUpdateId);
   for (const row of afterFold) {
-    Y.applyUpdate(doc, new Uint8Array(row.bytes.buffer));
+    applyStored(doc, row.bytes, `update ${row._id.toHexString()}`);
   }
 
   // How far it is stored: the newest change, and how far the fold reaches.
@@ -72,11 +72,20 @@ export async function readStateAt(
   // The fold is mostly newer than the point asked for, so the chain is replayed from its start.
   const doc = new Y.Doc();
   for (const row of await readUpdatesUntil(db, workpieceId, at)) {
-    Y.applyUpdate(doc, new Uint8Array(row.bytes.buffer));
+    applyStored(doc, row.bytes, `update ${row._id.toHexString()}`);
   }
   const state = Y.encodeStateAsUpdate(doc);
   doc.destroy();
   return { state, upToUpdateId: at };
+}
+
+/** Applies stored bytes; what does not apply names itself, so the row can be found. */
+function applyStored(doc: Y.Doc, bytes: Binary, what: string): void {
+  try {
+    Y.applyUpdate(doc, new Uint8Array(bytes.buffer));
+  } catch (error) {
+    throw new Error(`${what} cannot be applied`, { cause: error });
+  }
 }
 
 /** Runs work after everything queued before it; a failure reaches only whoever queued it. */

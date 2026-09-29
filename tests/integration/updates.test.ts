@@ -15,7 +15,7 @@ import { createWorkpiece, findWorkpieceWithFold } from '../../src/db/collections
 import { collectionDefinitions } from '../../src/db/schemas.ts';
 import { appendUpdate, readUpdatesSince } from '../../src/db/collections/updates.ts';
 import { createWorkpieceHub, type WorkpieceHub } from '../../src/realtime/hub.ts';
-import { foldNow } from '../../src/realtime/persistence.ts';
+import { foldNow, loadWorkpiece } from '../../src/realtime/persistence.ts';
 import { attachGateway, type Gateway } from '../../src/realtime/gateway.ts';
 import { createServer } from '../../src/routes/server.ts';
 import { connectClient, waitFor } from './yjs-client.ts';
@@ -146,6 +146,21 @@ describe('the stream of updates', () => {
     });
 
     await expect(readUpdatesSince(storage.db, mine)).resolves.toEqual([]);
+  });
+});
+
+describe('loading', () => {
+  it('names the stored change that cannot be applied, so it can be found', async () => {
+    const workpieceId = await freshWorkpiece();
+    const broken = await appendUpdate(storage.db, {
+      workpieceId,
+      bytes: new Uint8Array([1, 2, 3]),
+      createdBy: 'alice',
+    });
+
+    await expect(loadWorkpiece(storage.db, workpieceId)).rejects.toThrowError(
+      `update ${broken._id.toHexString()} cannot be applied`,
+    );
   });
 });
 

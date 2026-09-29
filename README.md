@@ -61,3 +61,52 @@ npm run token -- alice "Alice Muster" 15m
 
 Das Skript übernimmt `JWT_ALGORITHM`, `ACTOR_CLAIM` und `LABEL_CLAIM` aus der `.env`. Es kann nur
 `HS…`-Tokens erzeugen, denn für die anderen Verfahren fehlt dem Dienst der private Schlüssel.
+
+## Betrieb und Grenzen
+
+### Genau ein Prozess
+
+Der Dienst hält jedes geöffnete Werkstück im Speicher des Prozesses, der es geöffnet hat. Laufen
+zwei Instanzen gegen dieselbe Datenbank, arbeiten Personen auf verschiedenen Instanzen an
+getrennten Ständen. Gespeichert wird alles, aber sie sehen sich nicht live, und die Faltung der
+einen Instanz scheitert an der der anderen. Deshalb:
+
+- immer genau eine Instanz,
+- beim Update erst die alte stoppen, dann die neue starten (bei `docker compose up -d` ist das
+  so),
+- beim Stoppen wartet der Dienst höchstens 5 s auf jeden Client und trennt dann hart. Die Frist,
+  die die Plattform zum Beenden gibt, sollte darüber liegen (Docker: 10 s).
+
+### Größen
+
+| Variable              | Vorgabe | Bedeutung                                                                                                                      |
+| --------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `MAX_MESSAGE_BYTES`   | 8 MiB   | Größte Nachricht eines Clients, höchstens 15 MiB, weil MongoDB eine Änderung in einem Dokument bis 16 MiB ablegt. Größer: 1009 |
+| `MAX_AWARENESS_BYTES` | 64 KiB  | Größter Awareness-Eintrag (Cursor, Auswahl, Name). Er geht alle 15 s an alle. Größer: 1009                                     |
+
+Zur Einordnung: 50 000 Tastendrücke ergeben rund 1 MB Änderungen und 250 KB gefalteten Stand
+(`npm run measure`).
+
+### Uhr
+
+Änderungen werden nach ihrer `_id` geordnet, und die beginnt mit der Uhrzeit in Sekunden. Springt
+die Uhr des Servers um eine Sekunde oder mehr zurück, stimmt die Reihenfolge nicht mehr: `since`,
+`at` und das Laden nach der Faltung können eine Änderung dann falsch einordnen. Verloren geht sie
+nur, wenn der Prozess abstürzt, bevor die nächste Faltung sie mitschreibt. Die Uhr sollte deshalb
+über NTP langsam nachgeführt werden, statt zu springen.
+
+### Eine Änderung, die sich nicht anwenden lässt
+
+Beim Öffnen wendet der Dienst jede gespeicherte Änderung an. Lässt sich eine nicht anwenden, etwa
+weil jemand in der Datenbank von Hand etwas geändert hat, kann niemand das Werkstück mehr öffnen.
+Das Log nennt dann die `_id` der Zeile in `updates` oder die Faltung des Werkstücks. Die Zeile
+einfach zu löschen verliert diese Änderung und alles, was darauf aufbaut.
+
+### Urheber einer Änderung
+
+Der Dienst vergibt den Urheber nach der Verbindung, die eine Änderung liefert. Die Yjs-Bytes
+selbst kennen nur eine Client-Nummer, keine Person. Im Normalfall ist das die Person, die getippt
+hat. Nur in einem Sonderfall nicht: Scheitert das Speichern, trennt der Dienst alle Verbindungen
+des Werkstücks (1011) und lässt nachliefern, was fehlt. Hat jemand das Werkstück genau in den
+Millisekunden davor geöffnet, bekam er die ungespeicherte Änderung schon mit. Liefert er sie zuerst
+nach, steht sie unter seinem Namen.
