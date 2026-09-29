@@ -250,6 +250,38 @@ describe('presence', () => {
     expect(hub.count(unknown)).toBe(0);
   });
 
+  it('writes left for everyone still connected when the service shuts down', async () => {
+    const workpieceId = await freshWorkpiece();
+    const ownServer = createServer({ logger: silent });
+    const ownGateway = attachGateway({
+      server: ownServer,
+      db: storage.db,
+      hub: createWorkpieceHub({ db: storage.db, logger: silent }),
+      checkToken: createTokenCheck({ key: secret }),
+      logger: silent,
+    });
+    await new Promise<void>((resolve) => ownServer.listen(0, resolve));
+    const ownPort = (ownServer.address() as AddressInfo).port;
+
+    const alice = await connectClient(`ws://127.0.0.1:${ownPort}/ws/${workpieceId.toHexString()}`, [
+      'bearer',
+      tokenOf('alice'),
+    ]);
+    await alice.synced;
+    expect(await traced(workpieceId, 'joined', 'alice')).toBe(true);
+
+    await ownGateway.close();
+    await new Promise<void>((resolve) => ownServer.close(() => resolve()));
+
+    // Read straight away: the shutdown itself waited until it was written.
+    const left = await latestEvent(storage.db, {
+      anchor: on(workpieceId),
+      kind: 'left',
+      createdBy: 'alice',
+    });
+    expect(left).not.toBeNull();
+  });
+
   it('keeps one workpiece for whoever comes right after the last two left together', async () => {
     const workpieceId = await freshWorkpiece();
     const alice = quiet('alice');

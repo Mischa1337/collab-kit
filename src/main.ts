@@ -45,7 +45,10 @@ const gateway = attachGateway({
   hub,
   checkToken,
   logger: log,
-  ...defined({ maxMessageBytes: config.maxMessageBytes }),
+  ...defined({
+    maxMessageBytes: config.maxMessageBytes,
+    maxAwarenessBytes: config.maxAwarenessBytes,
+  }),
 });
 
 server.listen(config.port, () => {

@@ -10,7 +10,7 @@ import { mayOpenWorkpiece } from '../auth/access.ts';
 import { workpieceExists } from '../db/collections/workpieces.ts';
 import { asObjectId } from '../utils/input.ts';
 import type { Connection, WorkpieceHub, OpenWorkpiece } from './hub.ts';
-import { encodeAwareness, encodeSyncStep1, handleMessage } from './protocol.ts';
+import { encodeAwareness, encodeSyncStep1, handleMessage, MessageRefused } from './protocol.ts';
 
 /** The client announces two subprotocols: this marker and the token itself. */
 const BEARER = 'bearer';
@@ -29,6 +29,10 @@ export interface GatewayOptions {
   readonly heartbeatMs?: number;
   /** Largest message taken, well below the 16 MiB MongoDB keeps in one document. 8 MiB. */
   readonly maxMessageBytes?: number;
+  /** Largest awareness update, which goes to everyone every 15 s. 64 KiB. */
+  readonly maxAwarenessBytes?: number;
+  /** How long the shutdown waits for a client to answer before cutting it off. 5 s. */
+  readonly shutdownGraceMs?: number;
 }
 
 export interface Gateway {
@@ -147,7 +151,16 @@ export function attachGateway(options: GatewayOptions): Gateway {
       for (const ws of wss.clients) {
         ws.close(1001, 'server shutting down');
       }
+
+      // Whoever does not answer in time is cut off, so the shutdown ends before it is killed.
+      const cutOff = setTimeout(() => {
+        for (const ws of wss.clients) {
+          ws.terminate();
+        }
+      }, options.shutdownGraceMs ?? 5000);
       await new Promise<void>((resolve) => wss.close(() => resolve()));
+      clearTimeout(cutOff);
+
       await options.hub.close();
     },
   };
@@ -189,16 +202,23 @@ async function serveConnection(
 
     try {
       const reply = handleMessage(
-        { doc: workpiece.doc, awareness: workpiece.awareness, origin: connection },
+        {
+          doc: workpiece.doc,
+          awareness: workpiece.awareness,
+          origin: connection,
+          maxAwarenessBytes: options.maxAwarenessBytes ?? 64 * 1024,
+          mayAnnounce: (clientId) => workpiece.mayAnnounce(connection, clientId),
+        },
         data,
       );
       if (reply !== undefined) {
         connection.send(reply);
       }
     } catch (error) {
-      // An unusable message ends this connection, never the service.
-      log.warn({ err: error }, 'unusable message, connection closed');
-      ws.close(1007, 'unusable message');
+      // A refused or unusable message ends this connection, never the service.
+      const refused = error instanceof MessageRefused;
+      log.warn({ err: error }, 'message refused, connection closed');
+      ws.close(refused ? error.closeCode : 1007, refused ? error.message : 'unusable message');
     }
   };
 

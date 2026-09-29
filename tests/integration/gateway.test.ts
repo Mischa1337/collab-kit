@@ -471,3 +471,32 @@ describe('when access is taken away', () => {
     await expect(Promise.all(closing)).resolves.toEqual([4403, 4403]);
   });
 });
+
+describe('shutting down', () => {
+  it('cuts off a client that does not answer, so the shutdown ends in time', async () => {
+    const silent = pino({ level: 'silent' });
+    const ownServer = createServer({ logger: silent });
+    const ownGateway = attachGateway({
+      server: ownServer,
+      db: storage.db,
+      hub: createWorkpieceHub({ db: storage.db, logger: silent }),
+      checkToken: createTokenCheck({ key: secret }),
+      logger: silent,
+      shutdownGraceMs: 200,
+    });
+    await new Promise<void>((resolve) => ownServer.listen(0, resolve));
+    const ownPort = (ownServer.address() as AddressInfo).port;
+
+    // Reads everything but never answers the closing handshake.
+    const mute = await openRaw(ownPort);
+    mute.resume();
+    await expect(waitForCount(1, 2000, ownGateway)).resolves.toBe(1);
+
+    const started = Date.now();
+    await ownGateway.close();
+    expect(Date.now() - started).toBeLessThan(2000);
+
+    mute.destroy();
+    await new Promise<void>((resolve) => ownServer.close(() => resolve()));
+  });
+});

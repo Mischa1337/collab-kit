@@ -43,6 +43,15 @@ describe('readConfig', () => {
     }
   });
 
+  it('takes an awareness limit by the same rule', () => {
+    expect(readConfig({ ...valid, MAX_AWARENESS_BYTES: '4096' })).toMatchObject({
+      maxAwarenessBytes: 4096,
+    });
+    expect(() => readConfig({ ...valid, MAX_AWARENESS_BYTES: '-1' })).toThrowError(
+      /MAX_AWARENESS_BYTES must be whole bytes from 1 to 15 MiB/,
+    );
+  });
+
   it('rejects a clock tolerance that is not whole seconds from 0', () => {
     for (const raw of ['-1', '1.5', 'five']) {
       expect(() => readConfig({ ...valid, JWT_CLOCK_TOLERANCE: raw })).toThrowError(

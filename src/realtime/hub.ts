@@ -27,6 +27,8 @@ export interface OpenWorkpiece {
   readonly doc: Y.Doc;
   readonly awareness: awarenessProtocol.Awareness;
   readonly connections: Set<Connection>;
+  /** Whether a connection may speak for an awareness client: never for another person's. */
+  mayAnnounce(connection: Connection, clientId: number): boolean;
 }
 
 /** What a person gives a checkpoint: who sets it, a name and the why. */
@@ -63,8 +65,8 @@ interface Loaded {
   readonly workpiece: OpenWorkpiece;
   /** The stored side of the same workpiece: its queue and how far it is kept. */
   readonly stored: Stored;
-  /** The awareness client ids each connection announced, removed again when it leaves. */
-  readonly clientIdsByConnection: Map<Connection, Set<number>>;
+  /** Which connection speaks for each awareness client; its entry goes when that one leaves. */
+  readonly announcedBy: Map<number, Connection>;
 }
 
 /** What an awareness update reports: the client ids added, updated and removed. */
@@ -88,19 +90,32 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
   const heldByKey = new Map<string, Held>();
   // Closed for everyone after a change could not be stored; nothing more is done with them.
   const discarded = new WeakSet<Loaded>();
+  // Leaves still being written; close waits for them, so everyone connected gets a left.
+  const leaving = new Set<Promise<void>>();
 
   /** Loads the workpiece and wires its Y.Doc and awareness to this hub. */
   async function load(workpieceId: ObjectId, connections: Set<Connection>): Promise<Loaded> {
     const { doc, stored } = await loadWorkpiece(options.db, workpieceId);
+    const announcedBy = new Map<number, Connection>();
+
+    // The service is nobody in the room, so it holds no presence of its own.
+    const awareness = new awarenessProtocol.Awareness(doc);
+    awareness.setLocalState(null);
+
     const loaded: Loaded = {
       workpiece: {
         workpieceId,
         doc,
-        awareness: new awarenessProtocol.Awareness(doc),
+        awareness,
         connections,
+        // The same person may take their client over, as after a network change.
+        mayAnnounce: (connection, clientId) => {
+          const speaker = announcedBy.get(clientId);
+          return speaker === undefined || speaker.actor.actorId === connection.actor.actorId;
+        },
       },
       stored,
-      clientIdsByConnection: new Map(),
+      announcedBy,
     };
 
     // Attached only now: replaying the stored history must not store it a second time.
@@ -186,20 +201,25 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
     });
   }
 
-  /** Notes whose awareness ids a connection announced and passes the change to the others. */
+  /** Notes which connection speaks for which awareness client and passes the change to all. */
   function onAwareness(loaded: Loaded, change: AwarenessChange, origin: unknown): void {
     const from = asConnection(origin);
     const touched = [...change.added, ...change.updated, ...change.removed];
 
+    // The latest connection to speak for a client owns it, so a return takes it over.
     if (from !== undefined) {
-      const known = loaded.clientIdsByConnection.get(from) ?? new Set<number>();
-      for (const id of [...change.added, ...change.updated]) {
-        known.add(id);
+      for (const clientId of [...change.added, ...change.updated]) {
+        loaded.announcedBy.set(clientId, from);
       }
-      loaded.clientIdsByConnection.set(from, known);
+      for (const clientId of change.removed) {
+        if (loaded.announcedBy.get(clientId) === from) {
+          loaded.announcedBy.delete(clientId);
+        }
+      }
     }
 
-    broadcast(loaded.workpiece, encodeAwareness(loaded.workpiece.awareness, touched), from);
+    // Back to the sender too: a y-websocket client counts it as a sign of life.
+    broadcast(loaded.workpiece, encodeAwareness(loaded.workpiece.awareness, touched), undefined);
   }
 
   /** Holds a workpiece, loading it if nobody holds it yet. */
@@ -239,16 +259,16 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
     }
 
     // Emptied first, so the leave that each closing connection sends finds nothing to do.
-    const leaving = [...loaded.workpiece.connections];
+    const disconnected = [...loaded.workpiece.connections];
     loaded.workpiece.connections.clear();
-    for (const connection of leaving) {
+    for (const connection of disconnected) {
       connection.close(1011, 'could not store a change');
     }
     loaded.workpiece.awareness.destroy();
     loaded.workpiece.doc.destroy();
 
     await Promise.all(
-      leaving.map((connection) =>
+      disconnected.map((connection) =>
         notePresence(
           loaded.workpiece.workpieceId,
           'left',
@@ -286,6 +306,47 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
     }
   }
 
+  /** Takes a connection out, removes its presence and writes left; the last one out releases. */
+  async function leaveNow(workpieceId: ObjectId, connection: Connection): Promise<void> {
+    const key = workpieceId.toHexString();
+    const held = heldByKey.get(key);
+    if (held === undefined) {
+      return;
+    }
+
+    // A load that failed was reported by join already, so there is nothing to leave.
+    let loaded: Loaded;
+    try {
+      loaded = await held.loaded;
+    } catch {
+      return;
+    }
+
+    // Only a connection that joined leaves, and only once.
+    if (!loaded.workpiece.connections.delete(connection)) {
+      return;
+    }
+
+    // Takes away the presence this connection speaks for, not what another one took over.
+    const spokenFor = [...loaded.announcedBy]
+      .filter(([, speaker]) => speaker === connection)
+      .map(([clientId]) => clientId);
+    for (const clientId of spokenFor) {
+      loaded.announcedBy.delete(clientId);
+    }
+    if (spokenFor.length > 0) {
+      awarenessProtocol.removeAwarenessStates(loaded.workpiece.awareness, spokenFor, null);
+    }
+
+    // at: delivered up to here, not read; everything after it this person missed (D6.18).
+    await notePresence(workpieceId, 'left', connection.actor, loaded.stored.lastUpdateId);
+
+    // The last one out closes the workpiece.
+    if (loaded.workpiece.connections.size === 0) {
+      await release(key, loaded);
+    }
+  }
+
   return {
     join: async (workpieceId, connection) => {
       const key = workpieceId.toHexString();
@@ -308,38 +369,12 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
     },
 
     leave: async (workpieceId, connection) => {
-      const key = workpieceId.toHexString();
-      const held = heldByKey.get(key);
-      if (held === undefined) {
-        return;
-      }
-
-      // A load that failed was reported by join already, so there is nothing to leave.
-      let loaded: Loaded;
+      const done = leaveNow(workpieceId, connection);
+      leaving.add(done);
       try {
-        loaded = await held.loaded;
-      } catch {
-        return;
-      }
-
-      // Only a connection that joined leaves, and only once.
-      if (!loaded.workpiece.connections.delete(connection)) {
-        return;
-      }
-
-      // Takes this connection's presence away from the others.
-      const ids = loaded.clientIdsByConnection.get(connection);
-      if (ids !== undefined && ids.size > 0) {
-        awarenessProtocol.removeAwarenessStates(loaded.workpiece.awareness, [...ids], null);
-      }
-      loaded.clientIdsByConnection.delete(connection);
-
-      // at: delivered up to here, not read; everything after it this person missed (D6.18).
-      await notePresence(workpieceId, 'left', connection.actor, loaded.stored.lastUpdateId);
-
-      // The last one out closes the workpiece.
-      if (loaded.workpiece.connections.size === 0) {
-        await release(key, loaded);
+        await done;
+      } finally {
+        leaving.delete(done);
       }
     },
 
@@ -388,6 +423,9 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
     count: (workpieceId) => heldByKey.get(workpieceId.toHexString())?.connections.size ?? 0,
 
     close: async () => {
+      // Every left still being written lands before the workpieces go.
+      await Promise.allSettled(leaving);
+
       // Copied first, because releasing removes the entry it is standing on.
       const snapshot = Array.from(heldByKey);
 

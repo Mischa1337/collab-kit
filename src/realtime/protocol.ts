@@ -38,12 +38,27 @@ export function encodeAwareness(
   return encoding.toUint8Array(encoder);
 }
 
+/** A message turned down on purpose; the close code tells the client why. */
+export class MessageRefused extends Error {
+  readonly closeCode: number;
+
+  constructor(closeCode: number, message: string) {
+    super(message);
+    this.name = 'MessageRefused';
+    this.closeCode = closeCode;
+  }
+}
+
 /** What an incoming message is applied to, and on whose behalf. */
 interface MessageContext {
   readonly doc: Y.Doc;
   readonly awareness: awarenessProtocol.Awareness;
   /** Who sent it: the change is stored under them and not sent back to them. */
   readonly origin: unknown;
+  /** Largest awareness update taken, since presence goes to everyone every 15 s. */
+  readonly maxAwarenessBytes: number;
+  /** Whether the sender may speak for this awareness client. */
+  mayAnnounce(clientId: number): boolean;
 }
 
 /** Applies one message and answers if the protocol wants it; anything unusable throws. */
@@ -67,13 +82,34 @@ export function handleMessage(context: MessageContext, data: Uint8Array): Uint8A
 
   // Awareness is only applied here; passing it on is up to the hub.
   if (kind === MESSAGE_AWARENESS) {
-    awarenessProtocol.applyAwarenessUpdate(
-      context.awareness,
-      decoding.readVarUint8Array(decoder),
-      context.origin,
-    );
+    const update = decoding.readVarUint8Array(decoder);
+    if (update.length > context.maxAwarenessBytes) {
+      throw new MessageRefused(1009, 'awareness update too large');
+    }
+    // Checked before anything is applied: nobody speaks for a client of another person.
+    for (const clientId of clientIdsIn(update)) {
+      if (!context.mayAnnounce(clientId)) {
+        throw new MessageRefused(1008, 'awareness of a client that belongs to somebody else');
+      }
+    }
+    awarenessProtocol.applyAwarenessUpdate(context.awareness, update, context.origin);
   }
 
   // Any other kind is ignored.
   return undefined;
+}
+
+/** The client ids an awareness update speaks for, read without applying it. */
+function clientIdsIn(update: Uint8Array): number[] {
+  const decoder = decoding.createDecoder(update);
+  const count = decoding.readVarUint(decoder);
+  const clientIds: number[] = [];
+
+  for (let entry = 0; entry < count; entry += 1) {
+    clientIds.push(decoding.readVarUint(decoder));
+    // Clock and state follow; only read past them.
+    decoding.readVarUint(decoder);
+    decoding.readVarString(decoder);
+  }
+  return clientIds;
 }

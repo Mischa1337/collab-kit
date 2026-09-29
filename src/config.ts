@@ -24,6 +24,8 @@ export interface Config {
   readonly labelClaim: string;
   /** Largest WebSocket message; left out, the gateway keeps its own default. */
   readonly maxMessageBytes?: number;
+  /** Largest awareness update; left out, the gateway keeps its own default. */
+  readonly maxAwarenessBytes?: number;
 }
 
 /** MongoDB keeps at most 16 MiB in one document, and one change is one document. */
@@ -70,16 +72,8 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env): Config {
     problems.push(`JWT_CLOCK_TOLERANCE must be whole seconds from 0, got "${toleranceRaw}"`);
   }
 
-  const maxMessageRaw = optionalValue(env, 'MAX_MESSAGE_BYTES');
-  const maxMessageBytes = maxMessageRaw === undefined ? undefined : Number(maxMessageRaw);
-  if (
-    maxMessageBytes !== undefined &&
-    (!Number.isInteger(maxMessageBytes) ||
-      maxMessageBytes < 1 ||
-      maxMessageBytes > MAX_MESSAGE_LIMIT)
-  ) {
-    problems.push(`MAX_MESSAGE_BYTES must be whole bytes from 1 to 15 MiB, got "${maxMessageRaw}"`);
-  }
+  const maxMessageBytes = optionalBytes(env, 'MAX_MESSAGE_BYTES', problems);
+  const maxAwarenessBytes = optionalBytes(env, 'MAX_AWARENESS_BYTES', problems);
 
   if (problems.length > 0) {
     throw new Error(`invalid configuration:\n  - ${problems.join('\n  - ')}`);
@@ -98,7 +92,7 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env): Config {
     // The standard claims of RFC 7519 and OpenID Connect, for a tool that follows them.
     actorClaim: optionalValue(env, 'ACTOR_CLAIM') ?? 'sub',
     labelClaim: optionalValue(env, 'LABEL_CLAIM') ?? 'name',
-    ...defined({ maxMessageBytes }),
+    ...defined({ maxMessageBytes, maxAwarenessBytes }),
   };
 }
 
@@ -110,6 +104,23 @@ function isNodeEnv(value: string): value is NodeEnv {
 function optionalValue(env: NodeJS.ProcessEnv, name: string): string | undefined {
   const value = env[name]?.trim();
   return value === '' ? undefined : value;
+}
+
+/** A size in whole bytes up to 15 MiB, undefined when not set; anything else is a problem. */
+function optionalBytes(
+  env: NodeJS.ProcessEnv,
+  name: string,
+  problems: string[],
+): number | undefined {
+  const raw = optionalValue(env, name);
+  if (raw === undefined) {
+    return undefined;
+  }
+  const bytes = Number(raw);
+  if (!Number.isInteger(bytes) || bytes < 1 || bytes > MAX_MESSAGE_LIMIT) {
+    problems.push(`${name} must be whole bytes from 1 to 15 MiB, got "${raw}"`);
+  }
+  return bytes;
 }
 
 /** Like optionalValue, but records a missing variable as a problem. */
