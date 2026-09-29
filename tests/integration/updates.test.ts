@@ -249,7 +249,7 @@ describe('folding', () => {
     Y.applyUpdate(folded, new Uint8Array(stored!.fold!.state.buffer));
 
     expect(folded.getText('t').toString()).toBe('geschlossen');
-    expect(gateway.countFor(workpieceId.toHexString())).toBe(0);
+    expect(gateway.countFor(workpieceId)).toBe(0);
   });
 
   it('does nothing when there is nothing new to fold', async () => {
@@ -279,7 +279,7 @@ describe('folding', () => {
     await folding;
 
     await alice.close();
-    expect(await waitFor(() => gateway.countFor(workpieceId.toHexString()) === 0)).toBe(true);
+    expect(await waitFor(() => gateway.countFor(workpieceId) === 0)).toBe(true);
 
     const bob = await open(workpieceId, 'bob');
     await bob.synced;

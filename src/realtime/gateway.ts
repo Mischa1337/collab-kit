@@ -4,14 +4,13 @@ import type { Duplex } from 'node:stream';
 import type { Db, ObjectId } from 'mongodb';
 import type { Logger } from 'pino';
 import { WebSocketServer, type WebSocket } from 'ws';
-import { encodeAwarenessUpdate } from 'y-protocols/awareness';
 
 import type { Actor } from '../model/actor.ts';
 import { mayOpenWorkpiece } from '../auth/access.ts';
 import { workpieceExists } from '../db/collections/workpieces.ts';
 import { asObjectId } from '../utils/input.ts';
 import type { Connection, WorkpieceHub, OpenWorkpiece } from './hub.ts';
-import { encodeAwareness, encodeSyncStep1, handleMessage } from './sync.ts';
+import { encodeAwareness, encodeSyncStep1, handleMessage } from './protocol.ts';
 
 /** The client announces two subprotocols: this marker and the token itself. */
 const BEARER = 'bearer';
@@ -24,49 +23,51 @@ export interface GatewayOptions {
   readonly logger: Logger;
   /** Left out during development, which lets every origin in. */
   readonly allowedOrigins?: readonly string[];
-  /** Path prefix of the WebSocket address, the workpiece key follows it. */
-  readonly path?: string;
+  /** Start of the WebSocket address, the workpiece key follows it; '/ws/' when left out. */
+  readonly pathPrefix?: string;
 }
 
 export interface Gateway {
   /** How many connections currently hold this workpiece open. */
-  countFor(workpieceId: string): number;
+  countFor(workpieceId: ObjectId): number;
   close(): Promise<void>;
 }
 
-interface Opened {
+/** A handshake that may proceed: which workpiece, and who asks for it. */
+interface Admitted {
   readonly workpieceId: ObjectId;
   readonly actor: Actor;
 }
 
-/**
- * Takes WebSocket connections and keeps them per workpiece. A refusal is answered
- * during the upgrade, so the client reads a plain HTTP status instead of a connection
- * that opens and dies without a word.
- */
+/** Takes WebSocket connections; a refusal is a plain HTTP status, not a socket that dies. */
 export function attachGateway(options: GatewayOptions): Gateway {
-  const prefix = options.path ?? '/ws/';
+  const prefix = options.pathPrefix ?? '/ws/';
   const sockets = new Set<WebSocket>();
 
+  // No port of its own: the HTTP server hands every upgrade over.
   const wss = new WebSocketServer({
     noServer: true,
     // Only the marker is echoed back. Echoing the token would put it into logs again.
     handleProtocols: (protocols) => (protocols.has(BEARER) ? BEARER : false),
   });
 
+  // Checks every upgrade first, then refuses it with a status or lets ws complete it.
   const onUpgrade = (request: IncomingMessage, socket: Duplex, head: Buffer): void => {
     void (async () => {
-      const opened = await admit(request, options, prefix);
+      const admission = await admit(request, options, prefix);
 
-      if ('status' in opened) {
-        options.logger.info({ status: opened.status, reason: opened.reason }, 'upgrade refused');
-        socket.write(`HTTP/1.1 ${opened.status} ${opened.text}\r\nConnection: close\r\n\r\n`);
+      if ('status' in admission) {
+        options.logger.info(
+          { status: admission.status, reason: admission.reason },
+          'upgrade refused',
+        );
+        socket.write(`HTTP/1.1 ${admission.status} ${admission.text}\r\nConnection: close\r\n\r\n`);
         socket.destroy();
         return;
       }
 
       wss.handleUpgrade(request, socket, head, (ws) => {
-        void welcome(ws, opened, options, sockets);
+        void serveConnection(ws, admission, options, sockets);
       });
     })();
   };
@@ -75,6 +76,7 @@ export function attachGateway(options: GatewayOptions): Gateway {
 
   return {
     countFor: (workpieceId) => options.hub.count(workpieceId),
+    // Takes no new connections, closes the open ones, then lets go of the workpieces.
     close: async () => {
       options.server.off('upgrade', onUpgrade);
       for (const ws of sockets) {
@@ -87,19 +89,16 @@ export function attachGateway(options: GatewayOptions): Gateway {
   };
 }
 
-/**
- * Hands the fresh socket to the workpiece it asked for and starts the exchange. The
- * service opens with "this is what I have", the client answers with what it is missing.
- */
-async function welcome(
+/** Serves one connection until it closes: listeners, loading, greeting, then every message. */
+async function serveConnection(
   ws: WebSocket,
-  opened: Opened,
+  admitted: Admitted,
   options: GatewayOptions,
   sockets: Set<WebSocket>,
 ): Promise<void> {
-  const key = opened.workpieceId.toHexString();
+  // What the hub knows of this socket: who is on it and how to reach them.
   const connection: Connection = {
-    actor: opened.actor,
+    actor: admitted.actor,
     send: (message) => {
       if (ws.readyState === ws.OPEN) {
         ws.send(message);
@@ -109,14 +108,14 @@ async function welcome(
 
   sockets.add(ws);
 
-  // Listeners go up before the workpiece is loaded. A client may send its first message
-  // the instant the handshake succeeds, and an event without a listener is simply lost.
-  const state: { open?: OpenWorkpiece; left: boolean } = { left: false };
+  // Listeners before loading: a message may come right after the handshake and would be lost.
+  const progress: { loaded?: OpenWorkpiece; left: boolean } = { left: false };
   const waiting: Uint8Array[] = [];
 
-  const apply = (open: OpenWorkpiece, data: Uint8Array): void => {
+  // One message into the workpiece, and back the answer if the protocol asks for one.
+  const receive = (workpiece: OpenWorkpiece, data: Uint8Array): void => {
     const reply = handleMessage(
-      { doc: open.doc, awareness: open.awareness, origin: connection },
+      { doc: workpiece.doc, awareness: workpiece.awareness, origin: connection },
       data,
     );
     if (reply !== undefined) {
@@ -126,52 +125,62 @@ async function welcome(
 
   ws.on('message', (data: Buffer) => {
     const bytes = new Uint8Array(data);
-    if (state.open === undefined) {
+    if (progress.loaded === undefined) {
       waiting.push(bytes);
       return;
     }
-    apply(state.open, bytes);
+    receive(progress.loaded, bytes);
   });
 
   ws.on('close', () => {
-    state.left = true;
+    progress.left = true;
     sockets.delete(ws);
-    void options.hub.leave(opened.workpieceId, connection);
-    options.logger.info({ workpieceId: key }, 'connection closed');
+    void options.hub.leave(admitted.workpieceId, connection);
+    options.logger.info({ workpieceId: admitted.workpieceId.toHexString() }, 'connection closed');
   });
 
-  let open: OpenWorkpiece;
+  // Opens the workpiece, loading it from the database if nobody holds it yet.
+  let workpiece: OpenWorkpiece;
   try {
-    open = await options.hub.join(opened.workpieceId, connection);
+    workpiece = await options.hub.join(admitted.workpieceId, connection);
   } catch (error) {
-    options.logger.error({ error, workpieceId: key }, 'could not open the workpiece');
+    options.logger.error(
+      { error, workpieceId: admitted.workpieceId.toHexString() },
+      'could not open the workpiece',
+    );
     ws.close(1011, 'workpiece could not be opened');
     sockets.delete(ws);
     return;
   }
 
-  if (state.left) {
+  if (progress.left) {
     // Gone again while the workpiece was still loading.
-    await options.hub.leave(opened.workpieceId, connection);
+    await options.hub.leave(admitted.workpieceId, connection);
     return;
   }
 
-  options.logger.info({ workpieceId: key, actorId: opened.actor.actorId }, 'connection open');
+  options.logger.info(
+    { workpieceId: admitted.workpieceId.toHexString(), actorId: admitted.actor.actorId },
+    'connection open',
+  );
 
-  connection.send(encodeSyncStep1(open.doc));
+  // Greets with the state vector of the workpiece and with who else is there.
+  connection.send(encodeSyncStep1(workpiece.doc));
 
-  const others = [...open.awareness.getStates().keys()];
+  const others = [...workpiece.awareness.getStates().keys()];
   if (others.length > 0) {
-    connection.send(encodeAwareness(encodeAwarenessUpdate(open.awareness, others)));
+    connection.send(encodeAwareness(workpiece.awareness, others));
   }
 
-  state.open = open;
+  // From here messages go straight in, after those that came while it was loading.
+  progress.loaded = workpiece;
   for (const data of waiting) {
-    apply(open, data);
+    receive(workpiece, data);
   }
   waiting.length = 0;
 }
 
+/** A handshake turned away: the status for the client, the reason for the log. */
 interface Refused {
   readonly status: number;
   readonly text: string;
@@ -183,7 +192,7 @@ async function admit(
   request: IncomingMessage,
   options: GatewayOptions,
   prefix: string,
-): Promise<Opened | Refused> {
+): Promise<Admitted | Refused> {
   if (!isAllowedOrigin(request.headers.origin, options.allowedOrigins)) {
     return { status: 403, text: 'Forbidden', reason: 'origin not allowed' };
   }
@@ -222,6 +231,7 @@ async function admit(
   return { workpieceId, actor };
 }
 
+/** Without a list every origin passes, with one only those on it. */
 function isAllowedOrigin(origin: string | undefined, allowed?: readonly string[]): boolean {
   if (allowed === undefined) {
     return true;

@@ -1,6 +1,7 @@
 import type { AddressInfo } from 'node:net';
 
 import jwt from 'jsonwebtoken';
+import { ObjectId } from 'mongodb';
 import pino from 'pino';
 import * as Y from 'yjs';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -162,7 +163,7 @@ describe('working on one workpiece together', () => {
     ).toBe(true);
 
     await first.close();
-    expect(await waitFor(() => gateway.countFor(workpieceId) === 0)).toBe(true);
+    expect(await waitFor(() => gateway.countFor(new ObjectId(workpieceId)) === 0)).toBe(true);
 
     const later = await open(workpieceId, 'carol');
     await later.synced;

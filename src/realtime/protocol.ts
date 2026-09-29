@@ -4,12 +4,9 @@ import * as awarenessProtocol from 'y-protocols/awareness';
 import * as syncProtocol from 'y-protocols/sync';
 import type * as Y from 'yjs';
 
-/**
- * The wire format of Yjs: every message starts with its kind, so a standard client
- * can talk to this service without a line of protocol code of its own.
- */
-export const MESSAGE_SYNC = 0;
-export const MESSAGE_AWARENESS = 1;
+/** The first number of every message, as in y-websocket, so a standard client just works. */
+const MESSAGE_SYNC = 0;
+const MESSAGE_AWARENESS = 1;
 
 /** "This is what I have." Carries a state vector, no content. */
 export function encodeSyncStep1(doc: Y.Doc): Uint8Array {
@@ -27,30 +24,36 @@ export function encodeSyncUpdate(update: Uint8Array): Uint8Array {
   return encoding.toUint8Array(encoder);
 }
 
-export function encodeAwareness(payload: Uint8Array): Uint8Array {
+/** The awareness entries of these clients as one message. */
+export function encodeAwareness(
+  awareness: awarenessProtocol.Awareness,
+  clientIds: number[],
+): Uint8Array {
   const encoder = encoding.createEncoder();
   encoding.writeVarUint(encoder, MESSAGE_AWARENESS);
-  encoding.writeVarUint8Array(encoder, payload);
+  encoding.writeVarUint8Array(
+    encoder,
+    awarenessProtocol.encodeAwarenessUpdate(awareness, clientIds),
+  );
   return encoding.toUint8Array(encoder);
 }
 
-export interface MessageContext {
+/** What an incoming message is applied to, and on whose behalf. */
+interface MessageContext {
   readonly doc: Y.Doc;
   readonly awareness: awarenessProtocol.Awareness;
-  /** Marks where a change came from, so it is not sent back to its sender. */
+  /** Who sent it: the change is stored under them and not sent back to them. */
   readonly origin: unknown;
 }
 
-/**
- * Applies one incoming message and returns an answer when the protocol asks for one.
- * Only applyUpdate and state vectors are touched here: what the bytes mean is the
- * business of the connecting tool, never of this service.
- */
+/** Applies one message and returns the answer if the protocol wants one; the bytes stay opaque. */
 export function handleMessage(context: MessageContext, data: Uint8Array): Uint8Array | undefined {
+  // The first number says which kind of message follows.
   const decoder = decoding.createDecoder(data);
   const kind = decoding.readVarUint(decoder);
 
   if (kind === MESSAGE_SYNC) {
+    // The answer is built as a sync message: step 1 gets step 2 back, the rest gets nothing.
     const encoder = encoding.createEncoder();
     encoding.writeVarUint(encoder, MESSAGE_SYNC);
     syncProtocol.readSyncMessage(decoder, encoder, context.doc, context.origin);
@@ -59,6 +62,7 @@ export function handleMessage(context: MessageContext, data: Uint8Array): Uint8A
     return encoding.length(encoder) > 1 ? encoding.toUint8Array(encoder) : undefined;
   }
 
+  // Awareness is only applied here; passing it on is up to the hub.
   if (kind === MESSAGE_AWARENESS) {
     awarenessProtocol.applyAwarenessUpdate(
       context.awareness,
@@ -67,5 +71,6 @@ export function handleMessage(context: MessageContext, data: Uint8Array): Uint8A
     );
   }
 
+  // Any other kind is ignored.
   return undefined;
 }

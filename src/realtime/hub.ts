@@ -10,8 +10,8 @@ import { workpieceExists } from '../db/collections/workpieces.ts';
 import { recordEvent, type EventRecord } from '../db/collections/events.ts';
 import { newestUpdateId } from '../db/collections/updates.ts';
 import { defined } from '../utils/optional.ts';
-import { enqueue, foldNow, loadWorkingCopy, storeUpdate, type WorkingCopy } from './persistence.ts';
-import { encodeAwareness, encodeSyncUpdate } from './sync.ts';
+import { enqueue, foldNow, loadWorkpiece, storeUpdate, type Stored } from './persistence.ts';
+import { encodeAwareness, encodeSyncUpdate } from './protocol.ts';
 
 /** What the hub needs from a connection, so it does not depend on the transport. */
 export interface Connection {
@@ -19,6 +19,7 @@ export interface Connection {
   send(message: Uint8Array): void;
 }
 
+/** A workpiece while somebody holds it: its Y.Doc, who is present and who is connected. */
 export interface OpenWorkpiece {
   readonly workpieceId: ObjectId;
   readonly doc: Y.Doc;
@@ -26,90 +27,92 @@ export interface OpenWorkpiece {
   readonly connections: Set<Connection>;
 }
 
-export interface Checkpoint {
+/** What a person gives a checkpoint: who sets it, a name and the why. */
+export interface NewCheckpoint {
   readonly createdBy: string;
   readonly label?: string;
   readonly reason?: string;
 }
 
+/** What the gateway and the routes may ask of the hub. */
 export interface WorkpieceHub {
+  /** Adds a connection, loading the workpiece if it is the first. */
   join(workpieceId: ObjectId, connection: Connection): Promise<OpenWorkpiece>;
+  /** Removes a connection and leaves a trace; the last one out closes the workpiece. */
   leave(workpieceId: ObjectId, connection: Connection): Promise<void>;
-  /**
-   * Holds this moment as an event that a person named. Not a technical matter: a
-   * checkpoint says that a state is worth coming back to, and reason is the only
-   * place in the whole model where the why of a change can live.
-   */
-  checkpoint(workpieceId: ObjectId, input: Checkpoint): Promise<EventRecord>;
-  /**
-   * Writes the current state as the shortcut for the next load. Pure bookkeeping:
-   * nothing becomes visible by it and nothing is lost without it.
-   */
+  /** Marks this state as worth coming back to; reason is the only place for the why. */
+  checkpoint(workpieceId: ObjectId, input: NewCheckpoint): Promise<EventRecord>;
+  /** Writes the state as shortcut for the next load; pure bookkeeping, nothing lost without it. */
   fold(workpieceId: ObjectId): Promise<boolean>;
-  count(workpieceId: string): number;
+  /** How many connections hold this workpiece right now. */
+  count(workpieceId: ObjectId): number;
+  /** Lets go of every workpiece, for the shutdown. */
   close(): Promise<void>;
 }
 
-interface Entry {
+/** A workpiece the hub holds: its connections at once, the loaded workpiece once it is there. */
+interface Held {
+  readonly connections: Set<Connection>;
+  readonly loaded: Promise<Loaded>;
+}
+
+/** One loaded workpiece: what is live, what is stored, and which awareness belongs to whom. */
+interface Loaded {
   readonly workpiece: OpenWorkpiece;
   /** The stored side of the same workpiece: its queue and how far it is kept. */
-  readonly copy: WorkingCopy;
-  readonly clientIds: Map<Connection, Set<number>>;
+  readonly stored: Stored;
+  /** The awareness client ids each connection announced, removed again when it leaves. */
+  readonly clientIdsByConnection: Map<Connection, Set<number>>;
+}
+
+/** What an awareness update reports: the client ids added, updated and removed. */
+interface AwarenessChange {
+  readonly added: number[];
+  readonly updated: number[];
+  readonly removed: number[];
 }
 
 export interface HubOptions {
   readonly db: Db;
   readonly logger: Logger;
-  /**
-   * How many changes may pile up before the state is folded again. Only a matter of
-   * loading time, which is why a workpiece that stays open all day still gets folded.
-   */
+  /** Changes that may pile up before folding again; only a matter of loading time. */
   readonly foldEvery?: number;
 }
 
-/**
- * Keeps one Y.Doc per workpiece while somebody has it open, passes every change on to
- * the others and keeps the traces of who was there. How the working copy is loaded,
- * stored and folded lives in persistence.ts.
- */
+/** Keeps one Y.Doc per open workpiece, passes changes on and keeps traces of who was there. */
 export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
   const foldEvery = options.foldEvery ?? 400;
-  const entries = new Map<string, Promise<Entry>>();
-  // Held next to the promise so counting never has to wait for a workpiece to load.
-  const connectionsByKey = new Map<string, Set<Connection>>();
+  // Every held workpiece by its hex key; counting never has to wait for it to load.
+  const heldByKey = new Map<string, Held>();
 
-  async function load(workpieceId: ObjectId, connections: Set<Connection>): Promise<Entry> {
-    const copy = await loadWorkingCopy(options.db, workpieceId);
-    const entry: Entry = {
+  /** Loads the workpiece and wires its Y.Doc and awareness to this hub. */
+  async function load(workpieceId: ObjectId, connections: Set<Connection>): Promise<Loaded> {
+    const { doc, stored } = await loadWorkpiece(options.db, workpieceId);
+    const loaded: Loaded = {
       workpiece: {
         workpieceId,
-        doc: copy.doc,
-        awareness: new awarenessProtocol.Awareness(copy.doc),
+        doc,
+        awareness: new awarenessProtocol.Awareness(doc),
         connections,
       },
-      copy,
-      clientIds: new Map(),
+      stored,
+      clientIdsByConnection: new Map(),
     };
 
     // Attached only now: replaying the stored history must not store it a second time.
-    copy.doc.on('update', (update: Uint8Array, origin: unknown) => {
-      onChange(entry, update, origin);
+    doc.on('update', (update: Uint8Array, origin: unknown) => {
+      onUpdate(loaded, update, origin);
     });
 
-    entry.workpiece.awareness.on(
-      'update',
-      (change: { added: number[]; updated: number[]; removed: number[] }, origin: unknown) => {
-        onAwareness(entry, change, origin);
-      },
-    );
+    // Awareness is passed on like an update, but never stored.
+    loaded.workpiece.awareness.on('update', (change: AwarenessChange, origin: unknown) => {
+      onAwareness(loaded, change, origin);
+    });
 
-    return entry;
+    return loaded;
   }
 
-  /**
-   * Keeping a trace may never break the work it is a trace of. A lost event costs a
-   * line in a history, a thrown one would cost the connection.
-   */
+  /** Writes an event of the service; a failure is only logged, a trace may never break work. */
   async function trace(workpieceId: ObjectId, kind: string, createdBy: string, at?: ObjectId) {
     try {
       await recordEvent(options.db, {
@@ -126,187 +129,180 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
     }
   }
 
+  /** Leaves the trace joined or left and notes the person as seen; neither fails the caller. */
+  async function notePresence(
+    workpieceId: ObjectId,
+    kind: 'joined' | 'left',
+    actor: Actor,
+    at?: ObjectId,
+  ): Promise<void> {
+    await Promise.all([
+      trace(workpieceId, kind, actor.actorId, at),
+      touchActor(options.db, actor).catch((error: unknown) => {
+        options.logger.error({ err: error }, 'could not record the actor');
+      }),
+    ]);
+  }
+
   /** Stores first, distributes second: nobody shall see a change that is nowhere kept. */
-  function onChange(entry: Entry, update: Uint8Array, origin: unknown): void {
+  function onUpdate(loaded: Loaded, update: Uint8Array, origin: unknown): void {
     const from = asConnection(origin);
 
-    void enqueue(entry.copy, async () => {
+    // In the queue, so changes are stored in the order they arrived.
+    void enqueue(loaded.stored, async () => {
       if (from === undefined) {
         throw new Error('a change arrived without a connection to attribute it to');
       }
 
-      await storeUpdate(options.db, entry.copy, update, from.actor.actorId);
-      broadcast(entry.workpiece, encodeSyncUpdate(update), from);
+      await storeUpdate(options.db, loaded.stored, update, from.actor.actorId);
+      broadcast(loaded.workpiece, encodeSyncUpdate(update), from);
 
-      if (entry.copy.sinceFold >= foldEvery) {
-        await foldNow(options.db, entry.copy);
+      // Now and then, so the next load does not replay the whole history.
+      if (loaded.stored.updatesSinceFold >= foldEvery) {
+        await foldNow(options.db, loaded.stored, loaded.workpiece.doc);
       }
     }).catch((error: unknown) => {
       options.logger.error(
-        { error, workpieceId: entry.workpiece.workpieceId.toHexString() },
+        { error, workpieceId: loaded.workpiece.workpieceId.toHexString() },
         'a change could not be stored and was therefore not passed on',
       );
     });
   }
 
-  function onAwareness(
-    entry: Entry,
-    change: { added: number[]; updated: number[]; removed: number[] },
-    origin: unknown,
-  ): void {
+  /** Notes whose awareness ids a connection announced and passes the change to the others. */
+  function onAwareness(loaded: Loaded, change: AwarenessChange, origin: unknown): void {
     const from = asConnection(origin);
     const touched = [...change.added, ...change.updated, ...change.removed];
 
     if (from !== undefined) {
-      const known = entry.clientIds.get(from) ?? new Set<number>();
+      const known = loaded.clientIdsByConnection.get(from) ?? new Set<number>();
       for (const id of [...change.added, ...change.updated]) {
         known.add(id);
       }
-      entry.clientIds.set(from, known);
+      loaded.clientIdsByConnection.set(from, known);
     }
 
-    broadcast(
-      entry.workpiece,
-      encodeAwareness(awarenessProtocol.encodeAwarenessUpdate(entry.workpiece.awareness, touched)),
-      from,
-    );
+    broadcast(loaded.workpiece, encodeAwareness(loaded.workpiece.awareness, touched), from);
   }
 
-  function entryFor(workpieceId: ObjectId): Promise<Entry> {
+  /** Holds a workpiece, loading it if nobody holds it yet. */
+  function hold(workpieceId: ObjectId): Held {
     const key = workpieceId.toHexString();
-    const known = entries.get(key);
+    const known = heldByKey.get(key);
     if (known !== undefined) {
       return known;
     }
 
-    // The promise is stored, not the result: two connections arriving at the same
-    // moment must not each build their own copy of the same workpiece.
+    // The promise is stored, not the result, so two at once do not each load their own copy.
     const connections = new Set<Connection>();
-    const pending = load(workpieceId, connections);
-    connectionsByKey.set(key, connections);
-    entries.set(key, pending);
-    return pending;
+    const held: Held = { connections, loaded: load(workpieceId, connections) };
+    heldByKey.set(key, held);
+    return held;
   }
 
-  /**
-   * Gives the working copy up once the last connection has gone. force is for the
-   * shutdown, where the workpiece goes whether somebody still holds it or not.
-   */
-  async function release(key: string, entry: Entry, force = false): Promise<void> {
-    await entry.copy.queue;
+  /** Folds and frees the workpiece after the last one left; force is for the shutdown. */
+  async function release(key: string, loaded: Loaded, force = false): Promise<void> {
+    // Waits until every queued change is stored.
+    await loaded.stored.queue;
 
-    // The last one out folds, because the state is in memory anyway. A failure here
-    // may not stop the cleanup: every change is stored, so nothing is at stake.
+    // The last one out folds, the state is in memory anyway; a failure costs only load time.
     try {
-      await foldNow(options.db, entry.copy);
+      await foldNow(options.db, loaded.stored, loaded.workpiece.doc);
     } catch (error) {
       options.logger.error(
-        { error, workpieceId: entry.workpiece.workpieceId.toHexString() },
+        { error, workpieceId: loaded.workpiece.workpieceId.toHexString() },
         'could not fold on release, the changes stay and the next load reads them',
       );
     }
 
-    // Somebody may have joined again while this was waiting. They were handed this
-    // very workpiece, so destroying it now would leave them holding a dead copy.
-    if (!force && entry.workpiece.connections.size > 0) {
+    // Somebody may have joined meanwhile and holds this very workpiece, so it has to stay.
+    if (!force && loaded.workpiece.connections.size > 0) {
       return;
     }
 
-    entry.workpiece.awareness.destroy();
-    entry.workpiece.doc.destroy();
-    entries.delete(key);
-    connectionsByKey.delete(key);
+    // Nobody left: free the memory and forget the workpiece.
+    loaded.workpiece.awareness.destroy();
+    loaded.workpiece.doc.destroy();
+    heldByKey.delete(key);
   }
 
   return {
     join: async (workpieceId, connection) => {
       const key = workpieceId.toHexString();
-      const pending = entryFor(workpieceId);
+      const held = hold(workpieceId);
 
       // Added before awaiting, so the count is right the moment the caller asks.
-      connectionsByKey.get(key)?.add(connection);
+      held.connections.add(connection);
 
       try {
-        const workpiece = (await pending).workpiece;
-
-        await Promise.all([
-          trace(workpieceId, 'joined', connection.actor.actorId),
-          touchActor(options.db, connection.actor).catch((error: unknown) => {
-            options.logger.error({ err: error }, 'could not record the actor');
-          }),
-        ]);
-
+        const workpiece = (await held.loaded).workpiece;
+        await notePresence(workpieceId, 'joined', connection.actor);
         return workpiece;
       } catch (error) {
-        entries.delete(key);
-        connectionsByKey.delete(key);
+        // Loading failed: forget it, so the next join tries again.
+        heldByKey.delete(key);
         throw error;
       }
     },
 
     leave: async (workpieceId, connection) => {
       const key = workpieceId.toHexString();
-      const pending = entries.get(key);
-      if (pending === undefined) {
+      const held = heldByKey.get(key);
+      if (held === undefined) {
         return;
       }
 
-      const entry = await pending;
-      entry.workpiece.connections.delete(connection);
+      const loaded = await held.loaded;
+      loaded.workpiece.connections.delete(connection);
 
-      const ids = entry.clientIds.get(connection);
+      // Takes this connection's presence away from the others.
+      const ids = loaded.clientIdsByConnection.get(connection);
       if (ids !== undefined && ids.size > 0) {
-        awarenessProtocol.removeAwarenessStates(entry.workpiece.awareness, [...ids], null);
+        awarenessProtocol.removeAwarenessStates(loaded.workpiece.awareness, [...ids], null);
       }
-      entry.clientIds.delete(connection);
+      loaded.clientIdsByConnection.delete(connection);
 
-      // The position is what makes D6.18 answerable later: everything after it is
-      // what this person was not around for. It says delivered, not read; what a
-      // person actually looked at only the tool can report.
-      await Promise.all([
-        trace(workpieceId, 'left', connection.actor.actorId, entry.copy.lastUpdateId),
-        touchActor(options.db, connection.actor).catch((error: unknown) => {
-          options.logger.error({ err: error }, 'could not record the actor');
-        }),
-      ]);
+      // at: delivered up to here, not read; everything after it this person missed (D6.18).
+      await notePresence(workpieceId, 'left', connection.actor, loaded.stored.lastUpdateId);
 
-      if (entry.workpiece.connections.size === 0) {
-        await release(key, entry);
+      // The last one out closes the workpiece.
+      if (loaded.workpiece.connections.size === 0) {
+        await release(key, loaded);
       }
     },
 
     fold: async (workpieceId) => {
       const key = workpieceId.toHexString();
-      const wasOpen = entries.has(key);
-      const entry = await entryFor(workpieceId);
+      const wasOpen = heldByKey.has(key);
+      const loaded = await hold(workpieceId).loaded;
 
       try {
-        // Queued like a change, so nothing slips between reading the state and
-        // writing it.
-        return await enqueue(entry.copy, () => foldNow(options.db, entry.copy));
+        // Queued like a change, so nothing slips between reading the state and writing it.
+        return await enqueue(loaded.stored, () =>
+          foldNow(options.db, loaded.stored, loaded.workpiece.doc),
+        );
       } finally {
-        if (!wasOpen && entry.workpiece.connections.size === 0) {
-          await release(key, entry);
+        // A workpiece opened only for this goes again.
+        if (!wasOpen && loaded.workpiece.connections.size === 0) {
+          await release(key, loaded);
         }
       }
     },
 
     checkpoint: async (workpieceId, input) => {
-      const pending = entries.get(workpieceId.toHexString());
+      const held = heldByKey.get(workpieceId.toHexString());
       let at: ObjectId | undefined;
 
-      if (pending === undefined) {
-        // Nothing in flight on a workpiece nobody holds, and loading the whole Y.Doc
-        // only to read the newest id would be wasteful.
+      if (held === undefined) {
+        // Nobody holds it, so nothing is in flight: the newest id comes from the database.
         if (!(await workpieceExists(options.db, workpieceId))) {
           throw new Error(`unknown workpiece ${workpieceId.toHexString()}`);
         }
         at = await newestUpdateId(options.db, workpieceId);
       } else {
-        // Queued like a change, so a change still being written lands before the
-        // mark and not behind it.
-        const entry = await pending;
-        at = await enqueue(entry.copy, () => entry.copy.lastUpdateId);
+        // Queued like a change, so one still being written lands before the mark.
+        const loaded = await held.loaded;
+        at = await enqueue(loaded.stored, () => loaded.stored.lastUpdateId);
       }
 
       return recordEvent(options.db, {
@@ -317,15 +313,15 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
       });
     },
 
-    count: (workpieceId) => connectionsByKey.get(workpieceId)?.size ?? 0,
+    count: (workpieceId) => heldByKey.get(workpieceId.toHexString())?.connections.size ?? 0,
 
     close: async () => {
       // Copied first, because releasing removes the entry it is standing on.
-      const open = Array.from(entries);
+      const snapshot = Array.from(heldByKey);
 
-      for (const [key, pending] of open) {
+      for (const [key, held] of snapshot) {
         // eslint-disable-next-line no-await-in-loop
-        await release(key, await pending, true);
+        await release(key, await held.loaded, true);
       }
     },
   };
@@ -344,10 +340,12 @@ function broadcast(
   }
 }
 
+/** The anchor that the events of a workpiece hang on. */
 function anchorOf(workpieceId: ObjectId): Anchor {
   return { kind: 'workpiece', id: workpieceId };
 }
 
+/** The origin of a change as a connection, undefined if it did not come from one. */
 function asConnection(origin: unknown): Connection | undefined {
   if (typeof origin === 'object' && origin !== null && 'actor' in origin && 'send' in origin) {
     return origin as Connection;

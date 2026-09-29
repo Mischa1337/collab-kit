@@ -244,7 +244,7 @@ describe('checkpoint', () => {
       await waitFor(async () => (await readUpdatesSince(storage.db, workpieceId)).length === 1),
     ).toBe(true);
     await alice.close();
-    expect(await waitFor(() => gateway.countFor(workpieceId.toHexString()) === 0)).toBe(true);
+    expect(await waitFor(() => gateway.countFor(workpieceId) === 0)).toBe(true);
 
     const marked = await hub.checkpoint(workpieceId, {
       createdBy: 'carol',
@@ -253,7 +253,7 @@ describe('checkpoint', () => {
 
     const newest = (await readUpdatesSince(storage.db, workpieceId)).at(-1);
     expect(marked.at).toEqual(newest?._id);
-    expect(gateway.countFor(workpieceId.toHexString())).toBe(0);
+    expect(gateway.countFor(workpieceId)).toBe(0);
   });
 
   it('points at nothing on a workpiece that was never changed', async () => {
@@ -294,7 +294,7 @@ describe('checkpoint', () => {
     }
 
     await alice.close();
-    expect(await waitFor(() => gateway.countFor(workpieceId.toHexString()) === 0)).toBe(true);
+    expect(await waitFor(() => gateway.countFor(workpieceId) === 0)).toBe(true);
 
     const bob = await open(workpieceId, 'bob');
     await bob.synced;

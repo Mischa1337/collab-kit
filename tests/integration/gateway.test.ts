@@ -1,6 +1,7 @@
 import type { AddressInfo } from 'node:net';
 
 import jwt from 'jsonwebtoken';
+import { ObjectId } from 'mongodb';
 import pino from 'pino';
 import { WebSocket } from 'ws';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -62,12 +63,12 @@ async function waitForCount(expected: number, timeoutMs = 2000): Promise<number>
   const deadline = Date.now() + timeoutMs;
 
   /* eslint-disable no-await-in-loop */
-  while (gateway.countFor(workpieceId) !== expected && Date.now() < deadline) {
+  while (gateway.countFor(new ObjectId(workpieceId)) !== expected && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   /* eslint-enable no-await-in-loop */
 
-  return gateway.countFor(workpieceId);
+  return gateway.countFor(new ObjectId(workpieceId));
 }
 
 function close(socket: WebSocket): Promise<void> {
@@ -125,7 +126,7 @@ describe('the handshake', () => {
     expect(attempt.ok).toBe(true);
     if (!attempt.ok) return;
 
-    expect(gateway.countFor(workpieceId)).toBe(1);
+    expect(gateway.countFor(new ObjectId(workpieceId))).toBe(1);
     expect(attempt.socket.protocol).toBe('bearer');
 
     await close(attempt.socket);
@@ -178,7 +179,7 @@ describe('the handshake', () => {
     expect(first.ok && second.ok).toBe(true);
     if (!first.ok || !second.ok) return;
 
-    expect(gateway.countFor(workpieceId)).toBe(2);
+    expect(gateway.countFor(new ObjectId(workpieceId))).toBe(2);
 
     await close(first.socket);
     await expect(waitForCount(1)).resolves.toBe(1);
