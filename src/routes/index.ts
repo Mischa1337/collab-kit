@@ -17,6 +17,8 @@ export interface ApiOptions {
   readonly hub: WorkpieceHub;
   readonly checkToken: (token: string) => Actor;
   readonly logger: Logger;
+  /** Called after a route took access away, so open connections are asked again. */
+  readonly recheckAccess: () => Promise<void>;
 }
 
 /** Every route behind requireActor: who acts comes from the token, never from a body. */
@@ -30,8 +32,8 @@ export function createApi(options: ApiOptions): Router {
   );
   api.use(express.json({ limit: '1mb' }));
 
-  api.use(roomRoutes(options.db));
-  api.use(groupRoutes(options.db));
+  api.use(roomRoutes(options.db, options.recheckAccess));
+  api.use(groupRoutes(options.db, options.recheckAccess));
   api.use(workpieceRoutes(options.db, options.hub));
   api.use(eventRoutes(options.db));
   api.use(commentRoutes(options.db));

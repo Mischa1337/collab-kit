@@ -25,11 +25,17 @@ export interface GatewayOptions {
   readonly allowedOrigins?: readonly string[];
   /** Start of the WebSocket address, the workpiece key follows it; '/ws/' when left out. */
   readonly pathPrefix?: string;
+  /** How often every connection is pinged; silent until the next round means gone. 30 s. */
+  readonly heartbeatMs?: number;
+  /** Largest message taken, well below the 16 MiB MongoDB keeps in one document. 8 MiB. */
+  readonly maxMessageBytes?: number;
 }
 
 export interface Gateway {
   /** How many connections currently hold this workpiece open. */
   countFor(workpieceId: ObjectId): number;
+  /** Asks access.ts again for every open connection, after a route took access away. */
+  recheck(): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -42,19 +48,45 @@ interface Admitted {
 /** Takes WebSocket connections; a refusal is a plain HTTP status, not a socket that dies. */
 export function attachGateway(options: GatewayOptions): Gateway {
   const prefix = options.pathPrefix ?? '/ws/';
-  const sockets = new Set<WebSocket>();
 
   // No port of its own: the HTTP server hands every upgrade over.
   const wss = new WebSocketServer({
     noServer: true,
     // Only the marker is echoed back. Echoing the token would put it into logs again.
     handleProtocols: (protocols) => (protocols.has(BEARER) ? BEARER : false),
+    // Anything larger closes with 1009 before it reaches the workpiece.
+    maxPayload: options.maxMessageBytes ?? 8 * 1024 * 1024,
   });
+
+  // Answered since the last round; a closed laptop says no goodbye, and proxies drop silence.
+  const answered = new WeakSet<WebSocket>();
+  const heartbeat = setInterval(() => {
+    for (const ws of wss.clients) {
+      if (!answered.has(ws)) {
+        ws.terminate();
+        continue;
+      }
+      answered.delete(ws);
+      ws.ping();
+    }
+  }, options.heartbeatMs ?? 30_000);
+
+  // Who each connection was let in as, so the question can be asked again later.
+  const admissionOf = new WeakMap<WebSocket, Admitted>();
 
   // Checks every upgrade first, then refuses it with a status or lets ws complete it.
   const onUpgrade = (request: IncomingMessage, socket: Duplex, head: Buffer): void => {
+    // Until ws takes over nobody listens, and a dropped connection must not end the service.
+    const onSocketError = (error: Error): void => {
+      options.logger.warn({ err: error }, 'connection lost during the handshake');
+    };
+    socket.on('error', onSocketError);
+
     void (async () => {
-      const admission = await admit(request, options, prefix);
+      const admission = await admit(request, options, prefix).catch((error: unknown): Refused => {
+        options.logger.error({ err: error }, 'could not check the handshake');
+        return { status: 500, text: 'Internal Server Error', reason: 'check failed' };
+      });
 
       if ('status' in admission) {
         options.logger.info(
@@ -66,23 +98,55 @@ export function attachGateway(options: GatewayOptions): Gateway {
         return;
       }
 
+      socket.off('error', onSocketError);
       wss.handleUpgrade(request, socket, head, (ws) => {
-        void serveConnection(ws, admission, options, sockets);
+        admissionOf.set(ws, admission);
+        answered.add(ws);
+        ws.on('pong', () => answered.add(ws));
+        void serveConnection(ws, admission, options).catch(
+          logFailure(options.logger, 'connection failed'),
+        );
       });
-    })();
+    })().catch(logFailure(options.logger, 'handshake failed'));
   };
 
   options.server.on('upgrade', onUpgrade);
 
   return {
     countFor: (workpieceId) => options.hub.count(workpieceId),
+    // Whoever may no longer open their workpiece goes; the others do not notice.
+    recheck: async () => {
+      await Promise.all(
+        Array.from(wss.clients, async (ws) => {
+          const admitted = admissionOf.get(ws);
+          if (admitted === undefined) {
+            return;
+          }
+
+          try {
+            if (!(await mayOpenWorkpiece(options.db, admitted.actor, admitted.workpieceId))) {
+              options.logger.info(
+                {
+                  workpieceId: admitted.workpieceId.toHexString(),
+                  actorId: admitted.actor.actorId,
+                },
+                'access withdrawn, connection closed',
+              );
+              ws.close(4403, 'access withdrawn');
+            }
+          } catch (error) {
+            options.logger.error({ err: error }, 'could not check access again');
+          }
+        }),
+      );
+    },
     // Takes no new connections, closes the open ones, then lets go of the workpieces.
     close: async () => {
       options.server.off('upgrade', onUpgrade);
-      for (const ws of sockets) {
+      clearInterval(heartbeat);
+      for (const ws of wss.clients) {
         ws.close(1001, 'server shutting down');
       }
-      sockets.clear();
       await new Promise<void>((resolve) => wss.close(() => resolve()));
       await options.hub.close();
     },
@@ -94,8 +158,13 @@ async function serveConnection(
   ws: WebSocket,
   admitted: Admitted,
   options: GatewayOptions,
-  sockets: Set<WebSocket>,
 ): Promise<void> {
+  // Every line this connection writes into the log says which workpiece and who.
+  const log = options.logger.child({
+    workpieceId: admitted.workpieceId.toHexString(),
+    actorId: admitted.actor.actorId,
+  });
+
   // What the hub knows of this socket: who is on it and how to reach them.
   const connection: Connection = {
     actor: admitted.actor,
@@ -104,9 +173,8 @@ async function serveConnection(
         ws.send(message);
       }
     },
+    close: (code, reason) => ws.close(code, reason),
   };
-
-  sockets.add(ws);
 
   // Listeners before loading: a message may come right after the handshake and would be lost.
   const progress: { loaded?: OpenWorkpiece; left: boolean } = { left: false };
@@ -114,12 +182,23 @@ async function serveConnection(
 
   // One message into the workpiece, and back the answer if the protocol asks for one.
   const receive = (workpiece: OpenWorkpiece, data: Uint8Array): void => {
-    const reply = handleMessage(
-      { doc: workpiece.doc, awareness: workpiece.awareness, origin: connection },
-      data,
-    );
-    if (reply !== undefined) {
-      connection.send(reply);
+    // Nothing more from a connection that is already being closed.
+    if (ws.readyState !== ws.OPEN) {
+      return;
+    }
+
+    try {
+      const reply = handleMessage(
+        { doc: workpiece.doc, awareness: workpiece.awareness, origin: connection },
+        data,
+      );
+      if (reply !== undefined) {
+        connection.send(reply);
+      }
+    } catch (error) {
+      // An unusable message ends this connection, never the service.
+      log.warn({ err: error }, 'unusable message, connection closed');
+      ws.close(1007, 'unusable message');
     }
   };
 
@@ -132,11 +211,17 @@ async function serveConnection(
     receive(progress.loaded, bytes);
   });
 
+  // A frame against the rules or a lost socket: ws closes it, and the close listener leaves.
+  ws.on('error', (error) => {
+    log.warn({ err: error }, 'connection error');
+  });
+
   ws.on('close', () => {
     progress.left = true;
-    sockets.delete(ws);
-    void options.hub.leave(admitted.workpieceId, connection);
-    options.logger.info({ workpieceId: admitted.workpieceId.toHexString() }, 'connection closed');
+    void options.hub
+      .leave(admitted.workpieceId, connection)
+      .catch(logFailure(log, 'could not leave the workpiece'));
+    log.info('connection closed');
   });
 
   // Opens the workpiece, loading it from the database if nobody holds it yet.
@@ -144,25 +229,17 @@ async function serveConnection(
   try {
     workpiece = await options.hub.join(admitted.workpieceId, connection);
   } catch (error) {
-    options.logger.error(
-      { error, workpieceId: admitted.workpieceId.toHexString() },
-      'could not open the workpiece',
-    );
+    log.error({ err: error }, 'could not open the workpiece');
     ws.close(1011, 'workpiece could not be opened');
-    sockets.delete(ws);
     return;
   }
 
+  // Gone again while it was loading; the close listener has already left.
   if (progress.left) {
-    // Gone again while the workpiece was still loading.
-    await options.hub.leave(admitted.workpieceId, connection);
     return;
   }
 
-  options.logger.info(
-    { workpieceId: admitted.workpieceId.toHexString(), actorId: admitted.actor.actorId },
-    'connection open',
-  );
+  log.info('connection open');
 
   // Greets with the state vector of the workpiece and with who else is there.
   connection.send(encodeSyncStep1(workpiece.doc));
@@ -237,6 +314,13 @@ function isAllowedOrigin(origin: string | undefined, allowed?: readonly string[]
     return true;
   }
   return origin !== undefined && allowed.includes(origin);
+}
+
+/** A catch for work nobody waits for: a failure is logged instead of ending the process. */
+function logFailure(logger: Logger, message: string): (error: unknown) => void {
+  return (error) => {
+    logger.error({ err: error }, message);
+  };
 }
 
 /** Reads the token from Sec-WebSocket-Protocol, where a browser can put it. */

@@ -14,8 +14,8 @@ export interface Stored {
   lastUpdateId?: ObjectId;
   /** What fold.upToUpdateId holds in the database, as far as this process knows. */
   foldedUpToUpdateId?: ObjectId;
-  /** Updates that have arrived since the last folding. */
-  updatesSinceFold: number;
+  /** Updates stored since a fold was last tried, so a failing fold is not retried each time. */
+  updatesSinceFoldAttempt: number;
 }
 
 /** Rebuilds the workpiece from its folded state plus every change after it. */
@@ -45,7 +45,7 @@ export async function loadWorkpiece(
   const stored: Stored = {
     workpieceId,
     queue: Promise.resolve(),
-    updatesSinceFold: afterFold.length,
+    updatesSinceFoldAttempt: afterFold.length,
     ...defined({
       lastUpdateId: afterFold.at(-1)?._id ?? record.fold?.upToUpdateId,
       foldedUpToUpdateId: record.fold?.upToUpdateId,
@@ -82,7 +82,7 @@ export async function storeUpdate(
 
   // The newest stored change is the cut for the next fold.
   stored.lastUpdateId = record._id;
-  stored.updatesSinceFold += 1;
+  stored.updatesSinceFoldAttempt += 1;
 }
 
 /** Writes the state from memory as the new shortcut; runs in the queue or after it drained. */
@@ -97,6 +97,9 @@ export async function foldNow(db: Db, stored: Stored, doc: Y.Doc): Promise<boole
     return false;
   }
 
+  // Counted from the attempt, so a fold that keeps failing waits as long as the first one did.
+  stored.updatesSinceFoldAttempt = 0;
+
   // May hold changes not stored yet; they lie beyond the cut, and applying twice is harmless.
   const written = await foldState(db, {
     workpieceId: stored.workpieceId,
@@ -105,10 +108,9 @@ export async function foldNow(db: Db, stored: Stored, doc: Y.Doc): Promise<boole
     ...defined({ expected: stored.foldedUpToUpdateId }),
   });
 
-  // Only a fold that was written moves the marks; losing the race to another changes nothing.
+  // Only a fold that was written moves the mark; losing the race to another changes nothing.
   if (written) {
     stored.foldedUpToUpdateId = upToUpdateId;
-    stored.updatesSinceFold = 0;
   }
   return written;
 }

@@ -46,7 +46,7 @@ interface MessageContext {
   readonly origin: unknown;
 }
 
-/** Applies one message and returns the answer if the protocol wants one; the bytes stay opaque. */
+/** Applies one message and answers if the protocol wants it; anything unusable throws. */
 export function handleMessage(context: MessageContext, data: Uint8Array): Uint8Array | undefined {
   // The first number says which kind of message follows.
   const decoder = decoding.createDecoder(data);
@@ -56,7 +56,10 @@ export function handleMessage(context: MessageContext, data: Uint8Array): Uint8A
     // The answer is built as a sync message: step 1 gets step 2 back, the rest gets nothing.
     const encoder = encoding.createEncoder();
     encoding.writeVarUint(encoder, MESSAGE_SYNC);
-    syncProtocol.readSyncMessage(decoder, encoder, context.doc, context.origin);
+    // y-protocols would only print a broken update; thrown, it is handled like any other.
+    syncProtocol.readSyncMessage(decoder, encoder, context.doc, context.origin, (error) => {
+      throw error;
+    });
 
     // Length one means the kind byte alone, so there is nothing to answer.
     return encoding.length(encoder) > 1 ? encoding.toUint8Array(encoder) : undefined;

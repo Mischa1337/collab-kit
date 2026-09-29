@@ -17,6 +17,8 @@ import { encodeAwareness, encodeSyncUpdate } from './protocol.ts';
 export interface Connection {
   readonly actor: Actor;
   send(message: Uint8Array): void;
+  /** Ends the connection; a client that comes back syncs again from the stored state. */
+  close(code: number, reason: string): void;
 }
 
 /** A workpiece while somebody holds it: its Y.Doc, who is present and who is connected. */
@@ -84,6 +86,8 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
   const foldEvery = options.foldEvery ?? 400;
   // Every held workpiece by its hex key; counting never has to wait for it to load.
   const heldByKey = new Map<string, Held>();
+  // Closed for everyone after a change could not be stored; nothing more is done with them.
+  const discarded = new WeakSet<Loaded>();
 
   /** Loads the workpiece and wires its Y.Doc and awareness to this hub. */
   async function load(workpieceId: ObjectId, connections: Set<Connection>): Promise<Loaded> {
@@ -123,7 +127,7 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
       });
     } catch (error) {
       options.logger.error(
-        { error, kind, workpieceId: workpieceId.toHexString() },
+        { err: error, kind, workpieceId: workpieceId.toHexString() },
         'could not keep the trace, the work carries on without it',
       );
     }
@@ -150,20 +154,33 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
 
     // In the queue, so changes are stored in the order they arrived.
     void enqueue(loaded.stored, async () => {
+      // Closed after a failed store: the clients bring their changes back when they return.
+      if (discarded.has(loaded)) {
+        return;
+      }
       if (from === undefined) {
         throw new Error('a change arrived without a connection to attribute it to');
       }
 
-      await storeUpdate(options.db, loaded.stored, update, from.actor.actorId);
+      try {
+        await storeUpdate(options.db, loaded.stored, update, from.actor.actorId);
+      } catch (error) {
+        options.logger.error(
+          { err: error, workpieceId: loaded.workpiece.workpieceId.toHexString() },
+          'a change could not be stored, so everyone is disconnected and the workpiece reloads',
+        );
+        await discard(loaded);
+        return;
+      }
       broadcast(loaded.workpiece, encodeSyncUpdate(update), from);
 
       // Now and then, so the next load does not replay the whole history.
-      if (loaded.stored.updatesSinceFold >= foldEvery) {
-        await foldNow(options.db, loaded.stored, loaded.workpiece.doc);
+      if (loaded.stored.updatesSinceFoldAttempt >= foldEvery) {
+        await tryFold(loaded);
       }
     }).catch((error: unknown) => {
       options.logger.error(
-        { error, workpieceId: loaded.workpiece.workpieceId.toHexString() },
+        { err: error, workpieceId: loaded.workpiece.workpieceId.toHexString() },
         'a change could not be stored and was therefore not passed on',
       );
     });
@@ -200,20 +217,60 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
     return held;
   }
 
+  /** Folds; a failure is only logged, every change is stored and it costs only load time. */
+  async function tryFold(loaded: Loaded): Promise<void> {
+    try {
+      await foldNow(options.db, loaded.stored, loaded.workpiece.doc);
+    } catch (error) {
+      options.logger.error(
+        { err: error, workpieceId: loaded.workpiece.workpieceId.toHexString() },
+        'could not fold, the changes stay and the next load reads them',
+      );
+    }
+  }
+
+  /** Closes it for everyone; reloaded from the database, the clients send back what is missing. */
+  async function discard(loaded: Loaded): Promise<void> {
+    // Passing on what comes after the lost change would leave the others waiting for it.
+    discarded.add(loaded);
+    const key = loaded.workpiece.workpieceId.toHexString();
+    if (heldByKey.get(key)?.connections === loaded.workpiece.connections) {
+      heldByKey.delete(key);
+    }
+
+    // Emptied first, so the leave that each closing connection sends finds nothing to do.
+    const leaving = [...loaded.workpiece.connections];
+    loaded.workpiece.connections.clear();
+    for (const connection of leaving) {
+      connection.close(1011, 'could not store a change');
+    }
+    loaded.workpiece.awareness.destroy();
+    loaded.workpiece.doc.destroy();
+
+    await Promise.all(
+      leaving.map((connection) =>
+        notePresence(
+          loaded.workpiece.workpieceId,
+          'left',
+          connection.actor,
+          loaded.stored.lastUpdateId,
+        ),
+      ),
+    );
+  }
+
   /** Folds and frees the workpiece after the last one left; force is for the shutdown. */
   async function release(key: string, loaded: Loaded, force = false): Promise<void> {
     // Waits until every queued change is stored.
     await loaded.stored.queue;
 
-    // The last one out folds, the state is in memory anyway; a failure costs only load time.
-    try {
-      await foldNow(options.db, loaded.stored, loaded.workpiece.doc);
-    } catch (error) {
-      options.logger.error(
-        { error, workpieceId: loaded.workpiece.workpieceId.toHexString() },
-        'could not fold on release, the changes stay and the next load reads them',
-      );
+    // Already closed and freed; folding it now would store the change that failed.
+    if (discarded.has(loaded)) {
+      return;
     }
+
+    // The last one out folds, the state is in memory anyway.
+    await tryFold(loaded);
 
     // Somebody may have joined meanwhile and holds this very workpiece, so it has to stay.
     if (!force && loaded.workpiece.connections.size > 0) {
@@ -223,7 +280,10 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
     // Nobody left: free the memory and forget the workpiece.
     loaded.workpiece.awareness.destroy();
     loaded.workpiece.doc.destroy();
-    heldByKey.delete(key);
+    // A second release of the same workpiece must not drop a newer one under the same key.
+    if (heldByKey.get(key)?.connections === loaded.workpiece.connections) {
+      heldByKey.delete(key);
+    }
   }
 
   return {
@@ -240,7 +300,9 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
         return workpiece;
       } catch (error) {
         // Loading failed: forget it, so the next join tries again.
-        heldByKey.delete(key);
+        if (heldByKey.get(key) === held) {
+          heldByKey.delete(key);
+        }
         throw error;
       }
     },
@@ -252,8 +314,18 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
         return;
       }
 
-      const loaded = await held.loaded;
-      loaded.workpiece.connections.delete(connection);
+      // A load that failed was reported by join already, so there is nothing to leave.
+      let loaded: Loaded;
+      try {
+        loaded = await held.loaded;
+      } catch {
+        return;
+      }
+
+      // Only a connection that joined leaves, and only once.
+      if (!loaded.workpiece.connections.delete(connection)) {
+        return;
+      }
 
       // Takes this connection's presence away from the others.
       const ids = loaded.clientIdsByConnection.get(connection);

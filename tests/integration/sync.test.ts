@@ -52,8 +52,21 @@ async function bundle(workpieceId: import('mongodb').ObjectId): Promise<void> {
   await addToRoom(storage.db, room._id, { kind: 'group', id: group._id, addedBy: 'alice' });
 }
 
-const open = (workpieceId: string, actor: string) =>
-  connectClient(`ws://127.0.0.1:${port}/ws/${workpieceId}`, ['bearer', tokenOf(actor)]);
+const open = (workpieceId: string, actor: string, doc?: Y.Doc) =>
+  connectClient(`ws://127.0.0.1:${port}/ws/${workpieceId}`, ['bearer', tokenOf(actor)], doc);
+
+/** Makes the database refuse every new change, as it would while it is down, or accept again. */
+async function refuseChanges(refuse: boolean): Promise<void> {
+  if (refuse) {
+    await storage.db.command({
+      collMod: 'updates',
+      validator: { $jsonSchema: { required: ['refused'] } },
+      validationAction: 'error',
+    });
+  } else {
+    await applyDefinitions(storage.db, collectionDefinitions);
+  }
+}
 
 beforeAll(async () => {
   storage = await connect({ uri, database });
@@ -193,5 +206,31 @@ describe('working on one workpiece together', () => {
 
     await alice.close();
     await bob.close();
+  });
+
+  it('closes the workpiece for everyone when a change cannot be stored, and heals', async () => {
+    const workpieceId = await freshWorkpiece();
+    const alice = await open(workpieceId, 'alice');
+    const bob = await open(workpieceId, 'bob');
+    await Promise.all([alice.synced, bob.synced]);
+
+    await refuseChanges(true);
+    alice.doc.getText('t').insert(0, 'im Ausfall');
+    await expect(Promise.all([alice.closed, bob.closed])).resolves.toEqual([1011, 1011]);
+    await refuseChanges(false);
+
+    // Both come back with what they hold, as a client does after losing the connection.
+    const aliceAgain = await open(workpieceId, 'alice', alice.doc);
+    const bobAgain = await open(workpieceId, 'bob', bob.doc);
+    expect(await waitFor(() => bobAgain.doc.getText('t').toString() === 'im Ausfall')).toBe(true);
+
+    const stored = await storage.db
+      .collection('updates')
+      .find({ workpieceId: new ObjectId(workpieceId) })
+      .toArray();
+    expect(stored.map((row) => row['createdBy'])).toEqual(['alice']);
+
+    await aliceAgain.close();
+    await bobAgain.close();
   });
 });

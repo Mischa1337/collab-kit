@@ -32,6 +32,17 @@ describe('readConfig', () => {
     });
   });
 
+  it('takes a message limit below what MongoDB keeps in one document', () => {
+    expect(readConfig({ ...valid, MAX_MESSAGE_BYTES: '1048576' })).toMatchObject({
+      maxMessageBytes: 1_048_576,
+    });
+    for (const raw of ['0', '1.5', 'viel', String(16 * 1024 * 1024)]) {
+      expect(() => readConfig({ ...valid, MAX_MESSAGE_BYTES: raw })).toThrowError(
+        /MAX_MESSAGE_BYTES must be whole bytes from 1 to 15 MiB/,
+      );
+    }
+  });
+
   it('rejects a clock tolerance that is not whole seconds from 0', () => {
     for (const raw of ['-1', '1.5', 'five']) {
       expect(() => readConfig({ ...valid, JWT_CLOCK_TOLERANCE: raw })).toThrowError(

@@ -41,7 +41,14 @@ beforeAll(async () => {
   const hub = createWorkpieceHub({ db: storage.db, logger });
   server = createServer({
     logger,
-    api: createApi({ db: storage.db, hub, checkToken: createTokenCheck({ key: secret }), logger }),
+    api: createApi({
+      db: storage.db,
+      hub,
+      checkToken: createTokenCheck({ key: secret }),
+      logger,
+      // No sockets in these tests, so there is nothing to ask again.
+      recheckAccess: async () => {},
+    }),
   });
 });
 

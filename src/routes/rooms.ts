@@ -15,7 +15,7 @@ import { defined } from '../utils/optional.ts';
 import { actorOf, bodyOf, fail, guard, idOf, requireId, unusableField } from './http.ts';
 
 /** A room bundles: these routes move references, never create or delete what they point at. */
-export function roomRoutes(db: Db): Router {
+export function roomRoutes(db: Db, recheckAccess: () => Promise<void>): Router {
   const routes = Router();
 
   routes.param('id', requireId('room'));
@@ -98,6 +98,8 @@ export function roomRoutes(db: Db): Router {
 
     const id = idOf(request);
     await removeFromRoom(db, id, { ...reference, removedBy: actorOf(request).actorId });
+    // Without the reference, open connections to what it opened would carry on as before.
+    await recheckAccess();
     response.json(await findRoom(db, id));
   });
 

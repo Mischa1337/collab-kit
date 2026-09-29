@@ -1,6 +1,7 @@
 /** Runtime configuration, read once at startup so a bad variable fails right away. */
 import { isTokenAlgorithm, TOKEN_ALGORITHMS, usesSharedSecret } from './auth/token.ts';
 import type { TokenAlgorithm } from './auth/token.ts';
+import { defined } from './utils/optional.ts';
 
 const NODE_ENVS = ['development', 'test', 'production'] as const;
 
@@ -21,7 +22,12 @@ export interface Config {
   readonly actorClaim: string;
   /** Claim that holds the name to show. */
   readonly labelClaim: string;
+  /** Largest WebSocket message; left out, the gateway keeps its own default. */
+  readonly maxMessageBytes?: number;
 }
+
+/** MongoDB keeps at most 16 MiB in one document, and one change is one document. */
+const MAX_MESSAGE_LIMIT = 15 * 1024 * 1024;
 
 /** The example secret from .env.example, refused in production. */
 const PLACEHOLDER_SECRET = 'replace-me-locally';
@@ -64,6 +70,17 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env): Config {
     problems.push(`JWT_CLOCK_TOLERANCE must be whole seconds from 0, got "${toleranceRaw}"`);
   }
 
+  const maxMessageRaw = optionalValue(env, 'MAX_MESSAGE_BYTES');
+  const maxMessageBytes = maxMessageRaw === undefined ? undefined : Number(maxMessageRaw);
+  if (
+    maxMessageBytes !== undefined &&
+    (!Number.isInteger(maxMessageBytes) ||
+      maxMessageBytes < 1 ||
+      maxMessageBytes > MAX_MESSAGE_LIMIT)
+  ) {
+    problems.push(`MAX_MESSAGE_BYTES must be whole bytes from 1 to 15 MiB, got "${maxMessageRaw}"`);
+  }
+
   if (problems.length > 0) {
     throw new Error(`invalid configuration:\n  - ${problems.join('\n  - ')}`);
   }
@@ -81,6 +98,7 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env): Config {
     // The standard claims of RFC 7519 and OpenID Connect, for a tool that follows them.
     actorClaim: optionalValue(env, 'ACTOR_CLAIM') ?? 'sub',
     labelClaim: optionalValue(env, 'LABEL_CLAIM') ?? 'name',
+    ...defined({ maxMessageBytes }),
   };
 }
 

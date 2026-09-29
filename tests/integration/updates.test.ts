@@ -1,7 +1,7 @@
 import type { AddressInfo } from 'node:net';
 
 import jwt from 'jsonwebtoken';
-import { ObjectId } from 'mongodb';
+import { MongoClient, ObjectId } from 'mongodb';
 import pino from 'pino';
 import * as Y from 'yjs';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -15,6 +15,7 @@ import { createWorkpiece, findWorkpieceWithFold } from '../../src/db/collections
 import { collectionDefinitions } from '../../src/db/schemas.ts';
 import { appendUpdate, readUpdatesSince } from '../../src/db/collections/updates.ts';
 import { createWorkpieceHub, type WorkpieceHub } from '../../src/realtime/hub.ts';
+import { foldNow } from '../../src/realtime/persistence.ts';
 import { attachGateway, type Gateway } from '../../src/realtime/gateway.ts';
 import { createServer } from '../../src/routes/server.ts';
 import { connectClient, waitFor } from './yjs-client.ts';
@@ -149,6 +150,24 @@ describe('the stream of updates', () => {
 });
 
 describe('folding', () => {
+  it('waits for as many changes again after a fold that failed', async () => {
+    // Nothing listens on port 9, so the fold fails after the short selection timeout.
+    const unreachable = new MongoClient(
+      'mongodb://127.0.0.1:9/?directConnection=true&serverSelectionTimeoutMS=300',
+    );
+    const stored = {
+      workpieceId: new ObjectId(),
+      queue: Promise.resolve(),
+      lastUpdateId: new ObjectId(),
+      updatesSinceFoldAttempt: 400,
+    };
+
+    await expect(foldNow(unreachable.db('nirgends'), stored, new Y.Doc())).rejects.toThrow();
+    expect(stored.updatesSinceFoldAttempt).toBe(0);
+
+    await unreachable.close();
+  });
+
   it('writes the shortcut when the last one leaves', async () => {
     const workpieceId = await freshWorkpiece();
     const alice = await open(workpieceId, 'alice');
