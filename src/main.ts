@@ -48,6 +48,7 @@ const gateway = attachGateway({
   ...defined({
     maxMessageBytes: config.maxMessageBytes,
     maxAwarenessBytes: config.maxAwarenessBytes,
+    allowedOrigins: config.allowedOrigins,
   }),
 });
 

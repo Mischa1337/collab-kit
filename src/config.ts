@@ -26,7 +26,12 @@ export interface Config {
   readonly maxMessageBytes?: number;
   /** Largest awareness update; left out, the gateway keeps its own default. */
   readonly maxAwarenessBytes?: number;
+  /** Web origins that may open a WebSocket; left out, every origin may. */
+  readonly allowedOrigins?: readonly string[];
 }
+
+/** An origin as a browser sends it: scheme and host, maybe a port, no path. */
+const ORIGIN = /^https?:\/\/[^/\s]+$/;
 
 /** MongoDB keeps at most 16 MiB in one document, and one change is one document. */
 const MAX_MESSAGE_LIMIT = 15 * 1024 * 1024;
@@ -74,6 +79,7 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env): Config {
 
   const maxMessageBytes = optionalBytes(env, 'MAX_MESSAGE_BYTES', problems);
   const maxAwarenessBytes = optionalBytes(env, 'MAX_AWARENESS_BYTES', problems);
+  const allowedOrigins = optionalOrigins(env, problems);
 
   if (problems.length > 0) {
     throw new Error(`invalid configuration:\n  - ${problems.join('\n  - ')}`);
@@ -92,7 +98,7 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env): Config {
     // The standard claims of RFC 7519 and OpenID Connect, for a tool that follows them.
     actorClaim: optionalValue(env, 'ACTOR_CLAIM') ?? 'sub',
     labelClaim: optionalValue(env, 'LABEL_CLAIM') ?? 'name',
-    ...defined({ maxMessageBytes, maxAwarenessBytes }),
+    ...defined({ maxMessageBytes, maxAwarenessBytes, allowedOrigins }),
   };
 }
 
@@ -121,6 +127,23 @@ function optionalBytes(
     problems.push(`${name} must be whole bytes from 1 to 15 MiB, got "${raw}"`);
   }
   return bytes;
+}
+
+/** ALLOWED_ORIGINS as a list, undefined when blank; a malformed origin is a problem. */
+function optionalOrigins(env: NodeJS.ProcessEnv, problems: string[]): string[] | undefined {
+  const origins = (optionalValue(env, 'ALLOWED_ORIGINS') ?? '')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter((origin) => origin !== '');
+
+  // A trailing slash or a path never matches what a browser sends, so it fails at the start.
+  const malformed = origins.filter((origin) => !ORIGIN.test(origin));
+  if (malformed.length > 0) {
+    problems.push(
+      `ALLOWED_ORIGINS must list origins like https://tool.example, got "${malformed.join(', ')}"`,
+    );
+  }
+  return origins.length === 0 ? undefined : origins;
 }
 
 /** Like optionalValue, but records a missing variable as a problem. */

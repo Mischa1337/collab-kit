@@ -14,8 +14,8 @@ import { addToRoom, createRoom } from '../../src/db/collections/rooms.ts';
 import { createWorkpiece, findWorkpieceWithFold } from '../../src/db/collections/workpieces.ts';
 import { collectionDefinitions } from '../../src/db/schemas.ts';
 import { appendUpdate, readUpdatesSince } from '../../src/db/collections/updates.ts';
-import { createWorkpieceHub, type WorkpieceHub } from '../../src/realtime/hub.ts';
-import { foldNow, loadWorkpiece } from '../../src/realtime/persistence.ts';
+import { createWorkpieceHub } from '../../src/realtime/hub.ts';
+import { foldNow, loadWorkpiece, storeUpdate } from '../../src/realtime/persistence.ts';
 import { attachGateway, type Gateway } from '../../src/realtime/gateway.ts';
 import { createServer } from '../../src/routes/server.ts';
 import { connectClient, waitFor } from './yjs-client.ts';
@@ -30,7 +30,6 @@ const database = `collab_kit_updates_${Date.now()}_${Math.random().toString(36).
 const silent = pino({ level: 'silent' });
 
 let storage: Storage;
-let hub: WorkpieceHub;
 let gateway: Gateway;
 let server: ReturnType<typeof createServer>;
 let port: number;
@@ -93,11 +92,10 @@ beforeAll(async () => {
   await applyDefinitions(storage.db, collectionDefinitions);
 
   server = createServer({ logger: silent });
-  hub = createWorkpieceHub({ db: storage.db, logger: silent });
   gateway = attachGateway({
     server,
     db: storage.db,
-    hub,
+    hub: createWorkpieceHub({ db: storage.db, logger: silent }),
     checkToken: createTokenCheck({ key: secret }),
     logger: silent,
   });
@@ -268,29 +266,29 @@ describe('folding', () => {
     expect(folded.getText('t').toString()).toBe('eins zwei');
   });
 
-  it('can be asked for on a workpiece nobody has open and does not keep it open', async () => {
+  it('writes the whole state as the new fold', async () => {
     const workpieceId = await freshWorkpiece();
     await appendUpdate(storage.db, {
       workpieceId,
       bytes: Y.encodeStateAsUpdate(writtenBy('geschlossen')),
       createdBy: 'carol',
     });
+    const { doc, stored } = await loadWorkpiece(storage.db, workpieceId);
 
-    await expect(hub.fold(workpieceId)).resolves.toBe(true);
+    await expect(foldNow(storage.db, stored, doc)).resolves.toBe(true);
 
-    const stored = await findWorkpieceWithFold(storage.db, workpieceId);
+    const record = await findWorkpieceWithFold(storage.db, workpieceId);
     const folded = new Y.Doc();
-    Y.applyUpdate(folded, new Uint8Array(stored!.fold!.state.buffer));
-
+    Y.applyUpdate(folded, new Uint8Array(record!.fold!.state.buffer));
     expect(folded.getText('t').toString()).toBe('geschlossen');
-    expect(gateway.countFor(workpieceId)).toBe(0);
   });
 
   it('does nothing when there is nothing new to fold', async () => {
     const workpieceId = await freshWorkpiece();
 
     // Never a change, so there is no cut to write.
-    await expect(hub.fold(workpieceId)).resolves.toBe(false);
+    const empty = await loadWorkpiece(storage.db, workpieceId);
+    await expect(foldNow(storage.db, empty.stored, empty.doc)).resolves.toBe(false);
 
     await appendUpdate(storage.db, {
       workpieceId,
@@ -298,27 +296,29 @@ describe('folding', () => {
       createdBy: 'alice',
     });
 
-    await expect(hub.fold(workpieceId)).resolves.toBe(true);
-    await expect(hub.fold(workpieceId)).resolves.toBe(false);
+    const { doc, stored } = await loadWorkpiece(storage.db, workpieceId);
+    await expect(foldNow(storage.db, stored, doc)).resolves.toBe(true);
+    await expect(foldNow(storage.db, stored, doc)).resolves.toBe(false);
   });
 
-  it('loses nothing when a change arrives in the same moment', async () => {
+  it('loses nothing and doubles nothing when a change is in memory but not yet stored', async () => {
     const workpieceId = await freshWorkpiece();
-    const alice = await open(workpieceId, 'alice');
-    await alice.synced;
+    await appendUpdate(storage.db, {
+      workpieceId,
+      bytes: Y.encodeStateAsUpdate(writtenBy('vorher')),
+      createdBy: 'alice',
+    });
+    const { doc, stored } = await loadWorkpiece(storage.db, workpieceId);
 
-    alice.doc.getText('t').insert(0, 'vorher');
-    const folding = hub.fold(workpieceId);
-    alice.doc.getText('t').insert(6, ' nachher');
-    await folding;
+    // Applied but not stored yet, as between a message arriving and its turn in the queue.
+    const pending: Uint8Array[] = [];
+    doc.on('update', (update: Uint8Array) => pending.push(update));
+    doc.getText('t').insert(6, ' nachher');
+    await foldNow(storage.db, stored, doc);
+    await storeUpdate(storage.db, stored, pending[0]!, 'alice');
 
-    await alice.close();
-    expect(await waitFor(() => gateway.countFor(workpieceId) === 0)).toBe(true);
-
-    const bob = await open(workpieceId, 'bob');
-    await bob.synced;
-    expect(await waitFor(() => bob.doc.getText('t').toString() === 'vorher nachher')).toBe(true);
-    await bob.close();
+    const reloaded = await loadWorkpiece(storage.db, workpieceId);
+    expect(reloaded.doc.getText('t').toString()).toBe('vorher nachher');
   });
 });
 

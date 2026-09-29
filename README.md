@@ -87,6 +87,13 @@ einen Instanz scheitert an der der anderen. Deshalb:
 Zur Einordnung: 50 000 Tastendrücke ergeben rund 1 MB Änderungen und 250 KB gefalteten Stand
 (`npm run measure`).
 
+### Herkunft der Verbindungen
+
+`ALLOWED_ORIGINS` legt fest, von welchen Webseiten aus ein Browser den Socket öffnen darf, durch
+Komma getrennt und so, wie der Browser sie schickt: `https://tool.example`, ohne Pfad und ohne
+Schrägstrich am Ende. Leer heißt: von überall. Andere Herkunft bekommt 403. Viel Schutz bringt das
+nicht, denn der Token steckt nicht in einem Cookie, eine fremde Seite hat ihn also gar nicht.
+
 ### Uhr
 
 Änderungen werden nach ihrer `_id` geordnet, und die beginnt mit der Uhrzeit in Sekunden. Springt

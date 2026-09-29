@@ -7,7 +7,6 @@ import { WebSocketServer, type WebSocket } from 'ws';
 
 import type { Actor } from '../model/actor.ts';
 import { mayOpenWorkpiece } from '../auth/access.ts';
-import { workpieceExists } from '../db/collections/workpieces.ts';
 import { asObjectId } from '../utils/input.ts';
 import type { Connection, WorkpieceHub, OpenWorkpiece } from './hub.ts';
 import { encodeAwareness, encodeSyncStep1, handleMessage, MessageRefused } from './protocol.ts';
@@ -15,16 +14,17 @@ import { encodeAwareness, encodeSyncStep1, handleMessage, MessageRefused } from 
 /** The client announces two subprotocols: this marker and the token itself. */
 const BEARER = 'bearer';
 
+/** Start of every WebSocket address; the workpiece key follows it. */
+const PATH_PREFIX = '/ws/';
+
 export interface GatewayOptions {
   readonly server: Server;
   readonly db: Db;
   readonly hub: WorkpieceHub;
   readonly checkToken: (token: string) => Actor;
   readonly logger: Logger;
-  /** Left out during development, which lets every origin in. */
+  /** Web origins that may connect, as a browser sends them; left out, every origin may. */
   readonly allowedOrigins?: readonly string[];
-  /** Start of the WebSocket address, the workpiece key follows it; '/ws/' when left out. */
-  readonly pathPrefix?: string;
   /** How often every connection is pinged; silent until the next round means gone. 30 s. */
   readonly heartbeatMs?: number;
   /** Largest message taken, well below the 16 MiB MongoDB keeps in one document. 8 MiB. */
@@ -51,8 +51,6 @@ interface Admitted {
 
 /** Takes WebSocket connections; a refusal is a plain HTTP status, not a socket that dies. */
 export function attachGateway(options: GatewayOptions): Gateway {
-  const prefix = options.pathPrefix ?? '/ws/';
-
   // No port of its own: the HTTP server hands every upgrade over.
   const wss = new WebSocketServer({
     noServer: true,
@@ -87,7 +85,7 @@ export function attachGateway(options: GatewayOptions): Gateway {
     socket.on('error', onSocketError);
 
     void (async () => {
-      const admission = await admit(request, options, prefix).catch((error: unknown): Refused => {
+      const admission = await admit(request, options).catch((error: unknown): Refused => {
         options.logger.error({ err: error }, 'could not check the handshake');
         return { status: 500, text: 'Internal Server Error', reason: 'check failed' };
       });
@@ -288,25 +286,24 @@ interface Refused {
 async function admit(
   request: IncomingMessage,
   options: GatewayOptions,
-  prefix: string,
 ): Promise<Admitted | Refused> {
   if (!isAllowedOrigin(request.headers.origin, options.allowedOrigins)) {
     return { status: 403, text: 'Forbidden', reason: 'origin not allowed' };
   }
 
   const path = request.url ?? '';
-  if (!path.startsWith(prefix)) {
+  if (!path.startsWith(PATH_PREFIX)) {
     return { status: 404, text: 'Not Found', reason: 'unknown path' };
   }
 
-  const workpieceId = asObjectId(path.slice(prefix.length).split('?')[0]);
+  const workpieceId = asObjectId(path.slice(PATH_PREFIX.length).split('?')[0]);
   if (workpieceId === undefined) {
     return { status: 400, text: 'Bad Request', reason: 'malformed workpiece key' };
   }
 
   const token = readToken(request);
   if (token === undefined) {
-    return { status: 401, text: 'Unauthorized', reason: 'no token offered' };
+    return { status: 401, text: 'Unauthorized', reason: 'no token offered beside bearer' };
   }
 
   let actor: Actor;
@@ -316,13 +313,9 @@ async function admit(
     return { status: 401, text: 'Unauthorized', reason: 'token rejected' };
   }
 
-  if (!(await workpieceExists(options.db, workpieceId))) {
-    return { status: 404, text: 'Not Found', reason: 'unknown workpiece' };
-  }
-
+  // Unknown or not allowed gets the same answer, so a handshake does not tell which keys exist.
   if (!(await mayOpenWorkpiece(options.db, actor, workpieceId))) {
-    // The same answer as for an unknown one, so a handshake does not tell which keys exist.
-    return { status: 404, text: 'Not Found', reason: 'not allowed to open' };
+    return { status: 404, text: 'Not Found', reason: 'unknown or not allowed to open' };
   }
 
   return { workpieceId, actor };
@@ -343,15 +336,20 @@ function logFailure(logger: Logger, message: string): (error: unknown) => void {
   };
 }
 
-/** Reads the token from Sec-WebSocket-Protocol, where a browser can put it. */
+/** Reads the token from Sec-WebSocket-Protocol, where a browser can put it, beside bearer. */
 function readToken(request: IncomingMessage): string | undefined {
   const offered = request.headers['sec-websocket-protocol'];
   if (offered === undefined) {
     return undefined;
   }
 
-  return (Array.isArray(offered) ? offered.join(',') : offered)
+  const parts = (Array.isArray(offered) ? offered.join(',') : offered)
     .split(',')
-    .map((part) => part.trim())
-    .find((part) => part !== '' && part !== BEARER);
+    .map((part) => part.trim());
+
+  // Without the marker nothing is echoed back, and the browser drops the connection unexplained.
+  if (!parts.includes(BEARER)) {
+    return undefined;
+  }
+  return parts.find((part) => part !== '' && part !== BEARER);
 }

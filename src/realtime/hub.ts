@@ -46,8 +46,6 @@ export interface WorkpieceHub {
   leave(workpieceId: ObjectId, connection: Connection): Promise<void>;
   /** Marks this state as worth coming back to; reason is the only place for the why. */
   checkpoint(workpieceId: ObjectId, input: NewCheckpoint): Promise<EventRecord>;
-  /** Writes the state as shortcut for the next load; pure bookkeeping, nothing lost without it. */
-  fold(workpieceId: ObjectId): Promise<boolean>;
   /** How many connections hold this workpiece right now. */
   count(workpieceId: ObjectId): number;
   /** Lets go of every workpiece, for the shutdown. */
@@ -375,24 +373,6 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
         await done;
       } finally {
         leaving.delete(done);
-      }
-    },
-
-    fold: async (workpieceId) => {
-      const key = workpieceId.toHexString();
-      const wasOpen = heldByKey.has(key);
-      const loaded = await hold(workpieceId).loaded;
-
-      try {
-        // Queued like a change, so nothing slips between reading the state and writing it.
-        return await enqueue(loaded.stored, () =>
-          foldNow(options.db, loaded.stored, loaded.workpiece.doc),
-        );
-      } finally {
-        // A workpiece opened only for this goes again.
-        if (!wasOpen && loaded.workpiece.connections.size === 0) {
-          await release(key, loaded);
-        }
       }
     },
 

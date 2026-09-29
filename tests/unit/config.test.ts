@@ -52,6 +52,18 @@ describe('readConfig', () => {
     );
   });
 
+  it('reads the allowed origins as a list and refuses one a browser never sends', () => {
+    expect(
+      readConfig({ ...valid, ALLOWED_ORIGINS: 'https://tool.example, http://localhost:5173' }),
+    ).toMatchObject({ allowedOrigins: ['https://tool.example', 'http://localhost:5173'] });
+    expect(readConfig({ ...valid, ALLOWED_ORIGINS: ' , ' })).not.toHaveProperty('allowedOrigins');
+    for (const raw of ['https://tool.example/', 'tool.example', 'https://tool.example/app']) {
+      expect(() => readConfig({ ...valid, ALLOWED_ORIGINS: raw })).toThrowError(
+        /ALLOWED_ORIGINS must list origins like https:\/\/tool.example/,
+      );
+    }
+  });
+
   it('rejects a clock tolerance that is not whole seconds from 0', () => {
     for (const raw of ['-1', '1.5', 'five']) {
       expect(() => readConfig({ ...valid, JWT_CLOCK_TOLERANCE: raw })).toThrowError(

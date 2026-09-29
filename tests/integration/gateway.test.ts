@@ -39,9 +39,14 @@ function tryOpen(
   path: string,
   protocols: string[] = ['bearer', token],
   at = port,
+  origin?: string,
 ): Promise<Attempt> {
   return new Promise((resolve, reject) => {
-    const socket = new WebSocket(`ws://127.0.0.1:${at}${path}`, protocols);
+    const socket = new WebSocket(
+      `ws://127.0.0.1:${at}${path}`,
+      protocols,
+      origin === undefined ? {} : { origin },
+    );
     let settled = false;
 
     socket.on('open', () => {
@@ -175,6 +180,13 @@ describe('the handshake', () => {
 
   it('refuses a handshake that offers no token', async () => {
     await expect(tryOpen(`/ws/${workpieceId}`, ['bearer'])).resolves.toEqual({
+      ok: false,
+      status: 401,
+    });
+  });
+
+  it('refuses a token offered without bearer beside it, which a browser would drop', async () => {
+    await expect(tryOpen(`/ws/${workpieceId}`, [token])).resolves.toEqual({
       ok: false,
       status: 401,
     });
@@ -498,5 +510,43 @@ describe('shutting down', () => {
 
     mute.destroy();
     await new Promise<void>((resolve) => ownServer.close(() => resolve()));
+  });
+});
+
+describe('where a connection comes from', () => {
+  const silent = pino({ level: 'silent' });
+  let guardedServer: ReturnType<typeof createServer>;
+  let guardedGateway: Gateway;
+  let guardedPort: number;
+
+  beforeAll(async () => {
+    guardedServer = createServer({ logger: silent });
+    guardedGateway = attachGateway({
+      server: guardedServer,
+      db: storage.db,
+      hub: createWorkpieceHub({ db: storage.db, logger: silent }),
+      checkToken: createTokenCheck({ key: secret }),
+      logger: silent,
+      allowedOrigins: ['https://tool.example'],
+    });
+    await new Promise<void>((resolve) => guardedServer.listen(0, resolve));
+    guardedPort = (guardedServer.address() as AddressInfo).port;
+  });
+
+  afterAll(async () => {
+    await guardedGateway.close();
+    await new Promise<void>((resolve) => guardedServer.close(() => resolve()));
+  });
+
+  it('lets a listed origin in and refuses any other with 403', async () => {
+    const path = `/ws/${workpieceId}`;
+    const listed = await tryOpen(path, undefined, guardedPort, 'https://tool.example');
+    expect(listed.ok).toBe(true);
+    if (listed.ok) await close(listed.socket);
+
+    await expect(tryOpen(path, undefined, guardedPort, 'https://fremd.example')).resolves.toEqual({
+      ok: false,
+      status: 403,
+    });
   });
 });
