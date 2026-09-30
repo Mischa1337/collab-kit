@@ -320,6 +320,34 @@ describe('folding', () => {
     const reloaded = await loadWorkpiece(storage.db, workpieceId);
     expect(reloaded.doc.getText('t').toString()).toBe('vorher nachher');
   });
+
+  it('lets only one of two folds win, and the loser costs nothing', async () => {
+    const workpieceId = await freshWorkpiece();
+    await appendUpdate(storage.db, {
+      workpieceId,
+      bytes: Y.encodeStateAsUpdate(writtenBy('eins')),
+      createdBy: 'alice',
+    });
+
+    // Two working copies of the same workpiece, as two processes would hold them.
+    const first = await loadWorkpiece(storage.db, workpieceId);
+    const second = await loadWorkpiece(storage.db, workpieceId);
+    const later: Uint8Array[] = [];
+    second.doc.on('update', (update: Uint8Array) => later.push(update));
+    second.doc.getText('t').insert(4, ' zwei');
+    await storeUpdate(storage.db, second.stored, later[0]!, 'bob');
+
+    await expect(foldNow(storage.db, first.stored, first.doc)).resolves.toBe(true);
+    await expect(foldNow(storage.db, second.stored, second.doc)).resolves.toBe(false);
+
+    // The winner's fold stays, the loser's mark does not move, and nothing is lost.
+    const record = await findWorkpieceWithFold(storage.db, workpieceId);
+    expect(record?.fold?.upToUpdateId).toEqual(first.stored.lastUpdateId);
+    expect(second.stored.foldedUpToUpdateId).toBeUndefined();
+
+    const reloaded = await loadWorkpiece(storage.db, workpieceId);
+    expect(reloaded.doc.getText('t').toString()).toBe('eins zwei');
+  });
 });
 
 /** Plays the tool: the service itself never builds a Yjs type. */
