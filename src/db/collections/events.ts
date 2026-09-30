@@ -59,7 +59,8 @@ export const SERVICE_KINDS: ReadonlySet<string> = new Set([
   'reference-added',
   'reference-removed',
   'task-state',
-  'task-assignee',
+  'assignee-added',
+  'assignee-removed',
   'comment-state',
 ]);
 

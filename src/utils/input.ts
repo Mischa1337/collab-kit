@@ -108,8 +108,8 @@ export function asParentId(raw: unknown): ObjectId | null | undefined {
   return raw === 'none' ? null : asObjectId(raw);
 }
 
-/** What asAssignee needs, for the 400 of a route that takes an assignee in its body. */
-export const ASSIGNEE_RULE = 'assignee needs kind actor or group, and an id of that kind';
+/** What asAssignee needs, for the 400 of a route that takes one assignee or a list of them. */
+export const ASSIGNEE_RULE = 'an assignee needs kind actor or group and an id of that kind';
 
 /** A person by actor key as the token gives it, a group by its ObjectId; nothing else. */
 export function asAssignee(raw: unknown): Assignee | undefined {
@@ -125,6 +125,16 @@ export function asAssignee(raw: unknown): Assignee | undefined {
     return id === undefined ? undefined : { kind, id };
   }
   return undefined;
+}
+
+/** A list of assignees as asAssignee reads each; one entry that does not fit spoils the list. */
+export function asAssignees(raw: unknown): Assignee[] | undefined {
+  if (!Array.isArray(raw)) {
+    return undefined;
+  }
+
+  const assignees = raw.map((entry: unknown) => asAssignee(entry));
+  return assignees.every((entry): entry is Assignee => entry !== undefined) ? assignees : undefined;
 }
 
 /** The key the tool gives a place: text kept as it is, not blank. A query can send nothing else. */

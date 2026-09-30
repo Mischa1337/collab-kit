@@ -9,10 +9,11 @@ import {
   maySetTaskState,
 } from '../auth/access.ts';
 import {
-  assignTask,
+  addAssignee,
   createTask,
   findTask,
   readTasks,
+  removeAssignee,
   setTaskState,
   type TaskQuery,
 } from '../db/collections/tasks.ts';
@@ -22,6 +23,7 @@ import {
   asAnchor,
   asAnchorQuery,
   asAssignee,
+  asAssignees,
   asNumber,
   asObject,
   asObjectId,
@@ -37,7 +39,7 @@ export function taskRoutes(db: Db): Router {
 
   routes.param('id', requireId('task'));
 
-  // Seen by its creator, its assignee and whoever sees its anchor or parent; 404 hides it too.
+  // Seen by its creator, its assignees and whoever sees its anchor or parent; 404 hides it too.
   const seeing = guard((actor, id) => maySee(db, actor, { kind: 'task', id }), 404, 'unknown task');
   // Behind seeing, so 403 tells only whoever already sees the task; today all three agree.
   const moving = guard(
@@ -58,7 +60,7 @@ export function taskRoutes(db: Db): Router {
     const state = asText(body['state']);
     const anchor = asAnchor(body['anchor']);
     const parentId = asObjectId(body['parentId']);
-    const assignee = asAssignee(body['assignee']);
+    const assignees = asAssignees(body['assignees']);
     const order = asNumber(body['order']);
     const detail = asObject(body['detail']);
 
@@ -71,7 +73,10 @@ export function taskRoutes(db: Db): Router {
     if (state === undefined) {
       return fail(response, 400, 'state is missing');
     }
-    const unusable = unusableField(body, { anchor, parentId, assignee, order, detail });
+    if (body['assignees'] !== undefined && assignees === undefined) {
+      return fail(response, 400, `assignees must be a list; ${ASSIGNEE_RULE}`);
+    }
+    const unusable = unusableField(body, { anchor, parentId, order, detail });
     if (unusable !== undefined) {
       return fail(response, 400, `${unusable} is unusable`);
     }
@@ -85,7 +90,10 @@ export function taskRoutes(db: Db): Router {
     if (parentId !== undefined && !(await maySee(db, actor, { kind: 'task', id: parentId }))) {
       return fail(response, 404, 'unknown parent');
     }
-    if (assignee !== undefined && !(await mayAssignTo(db, actor, assignee))) {
+    const assignable = await Promise.all(
+      (assignees ?? []).map((assignee) => mayAssignTo(db, actor, assignee)),
+    );
+    if (!assignable.every(Boolean)) {
       return fail(response, 404, 'unknown assignee');
     }
 
@@ -95,7 +103,7 @@ export function taskRoutes(db: Db): Router {
         title,
         state,
         createdBy: actor.actorId,
-        ...defined({ anchor, parentId, assignee, order, detail }),
+        ...defined({ anchor, parentId, assignees, order, detail }),
       }),
     );
   });
@@ -167,10 +175,10 @@ export function taskRoutes(db: Db): Router {
     );
   });
 
-  /** Hands the task on; who gave it to whom and why land in the events of the task. */
-  routes.put('/tasks/:id/assignee', seeing, assigning, async (request, response) => {
+  /** Gives the task to one more person or group; who gave it to whom and why land in its events. */
+  routes.post('/tasks/:id/assignees', seeing, assigning, async (request, response) => {
     const body = bodyOf(request);
-    const assignee = asAssignee(body['assignee']);
+    const assignee = asAssignee(body);
     const reason = asText(body['reason']);
 
     if (assignee === undefined) {
@@ -185,13 +193,38 @@ export function taskRoutes(db: Db): Router {
       return fail(response, 404, 'unknown assignee');
     }
 
-    response.json(
-      await assignTask(db, idOf(request), {
-        assignee,
-        changedBy: actor.actorId,
-        ...defined({ reason }),
-      }),
-    );
+    const id = idOf(request);
+    const added = await addAssignee(db, id, {
+      assignee,
+      changedBy: actor.actorId,
+      ...defined({ reason }),
+    });
+
+    // 200 if it was already there: giving it twice is no error, it just changes nothing.
+    response.status(added ? 201 : 200).json(await findTask(db, id));
+  });
+
+  // In the query and not the body: a body on DELETE may get lost on the way.
+  routes.delete('/tasks/:id/assignees', seeing, assigning, async (request, response) => {
+    const assignee = asAssignee(request.query);
+    const reason = asText(request.query['reason']);
+
+    if (assignee === undefined) {
+      return fail(response, 400, ASSIGNEE_RULE);
+    }
+    const unusable = unusableField(request.query, { reason });
+    if (unusable !== undefined) {
+      return fail(response, 400, `${unusable} is unusable`);
+    }
+
+    // No mayAssignTo, as in rooms: taking an entry off hands nothing out.
+    const id = idOf(request);
+    await removeAssignee(db, id, {
+      assignee,
+      changedBy: actorOf(request).actorId,
+      ...defined({ reason }),
+    });
+    response.json(await findTask(db, id));
   });
 
   /** Where a client finds its work: tasks given to this token or to one of its groups. */

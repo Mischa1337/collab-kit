@@ -6,11 +6,13 @@ import { connect, type Storage } from '../../src/db/client.ts';
 import { readEvents } from '../../src/db/collections/events.ts';
 import { collectionDefinitions } from '../../src/db/schemas.ts';
 import {
-  assignTask,
+  addAssignee,
   createTask,
   findTask,
   readTasks,
+  removeAssignee,
   setTaskState,
+  tasksDefinition,
   TOP,
   type TaskRecord,
 } from '../../src/db/collections/tasks.ts';
@@ -55,7 +57,7 @@ describe('creating a task', () => {
       title: 'Kundenteil modellieren',
       state: 'offen',
     });
-    expect(created.assignee).toBeUndefined();
+    expect(created.assignees).toEqual([]);
     expect(created.anchor).toBeUndefined();
     expect(created.parentId).toBeUndefined();
   });
@@ -70,14 +72,36 @@ describe('creating a task', () => {
     expect(stored?.anchor).toEqual({ kind: 'workpiece', id: workpieceId, unit: 'statement-3' });
   });
 
-  it('goes to a group just as well as to a person', async () => {
+  it('goes to persons and groups side by side, each of them once', async () => {
     const groupId = new ObjectId();
-    const created = await plain({ assignee: { kind: 'group', id: groupId } });
-
-    expect((await findTask(storage.db, created._id))?.assignee).toEqual({
-      kind: 'group',
-      id: groupId,
+    const created = await plain({
+      assignees: [
+        { kind: 'group', id: groupId },
+        { kind: 'actor', id: 'bob' },
+        { kind: 'group', id: new ObjectId(groupId.toHexString()) },
+      ],
     });
+
+    expect((await findTask(storage.db, created._id))?.assignees).toEqual([
+      { kind: 'group', id: groupId },
+      { kind: 'actor', id: 'bob' },
+    ]);
+  });
+
+  it('wants the list in the schema, even when empty, and takes both kinds in it', async () => {
+    // The shared definitions only warn while developing, so the strict one gets a place of its own.
+    await applyDefinitions(storage.db, [{ ...tasksDefinition, name: 'tasks_strict' }]);
+    const strict = storage.db.collection('tasks_strict');
+    const mixed = await plain({
+      assignees: [
+        { kind: 'actor', id: 'bob' },
+        { kind: 'group', id: new ObjectId() },
+      ],
+    });
+    const { assignees: _left, ...without } = await plain();
+
+    await expect(strict.insertOne(mixed)).resolves.toBeTruthy();
+    await expect(strict.insertOne(without)).rejects.toThrowError(/Document failed validation/);
   });
 
   it('keeps the detail of the tool untouched', async () => {
@@ -170,40 +194,45 @@ describe('changing the state', () => {
 });
 
 describe('assigning', () => {
-  it('sets the assignee and keeps who gave it to whom', async () => {
+  it('adds an assignee once and keeps who gave it to whom and why', async () => {
     const task = await plain();
-    const groupId = new ObjectId();
+    const group = { kind: 'group' as const, id: new ObjectId() };
 
-    const after = await assignTask(storage.db, task._id, {
-      assignee: { kind: 'group', id: groupId },
-      changedBy: 'alice',
+    const given = { assignee: group, changedBy: 'alice', reason: 'kennen das Kapitel' };
+    await expect(addAssignee(storage.db, task._id, given)).resolves.toBe(true);
+    await expect(addAssignee(storage.db, task._id, given)).resolves.toBe(false);
+
+    expect((await findTask(storage.db, task._id))?.assignees).toEqual([group]);
+
+    // Only the first changed something, so only the first left a trace.
+    const history = await historyOf(task);
+    expect(history).toHaveLength(1);
+    expect(history[0]).toMatchObject({
+      kind: 'assignee-added',
+      createdBy: 'alice',
+      reason: 'kennen das Kapitel',
+      detail: group,
     });
-
-    expect(after.assignee).toEqual({ kind: 'group', id: groupId });
-
-    const [event] = await historyOf(task);
-    expect(event).toMatchObject({ kind: 'task-assignee', createdBy: 'alice' });
-    expect(event?.detail?.['to']).toEqual({ kind: 'group', id: groupId });
   });
 
-  it('can hand a task on and the handover stays readable', async () => {
-    const task = await plain({ assignee: { kind: 'actor', id: 'alice' } });
+  it('takes one off and leaves the others where they are', async () => {
+    const alice = { kind: 'actor' as const, id: 'alice' };
+    const bob = { kind: 'actor' as const, id: 'bob' };
+    const carol = { kind: 'actor' as const, id: 'carol' };
+    const task = await plain({ assignees: [alice, bob] });
 
-    await assignTask(storage.db, task._id, {
-      assignee: { kind: 'actor', id: 'bob' },
-      changedBy: 'alice',
-    });
-    await assignTask(storage.db, task._id, {
-      assignee: { kind: 'actor', id: 'carol' },
-      changedBy: 'bob',
-    });
+    await addAssignee(storage.db, task._id, { assignee: carol, changedBy: 'alice' });
+    const taken = { assignee: bob, changedBy: 'carol' };
+    await expect(removeAssignee(storage.db, task._id, taken)).resolves.toBe(true);
+    await expect(removeAssignee(storage.db, task._id, taken)).resolves.toBe(false);
+
+    expect((await findTask(storage.db, task._id))?.assignees).toEqual([alice, carol]);
 
     const history = await historyOf(task);
-    expect(history.map((event) => event.createdBy)).toEqual(['bob', 'alice']);
-    expect((await findTask(storage.db, task._id))?.assignee).toEqual({
-      kind: 'actor',
-      id: 'carol',
-    });
+    expect(history.map((event) => [event.kind, event.createdBy])).toEqual([
+      ['assignee-removed', 'carol'],
+      ['assignee-added', 'alice'],
+    ]);
   });
 });
 
@@ -212,8 +241,12 @@ describe('reading tasks back', () => {
     const groupId = new ObjectId();
     const assignee = { kind: 'group' as const, id: groupId };
 
-    await plain({ assignee, title: 'eins' });
-    await plain({ assignee, title: 'zwei', state: 'fertig' });
+    await plain({ assignees: [assignee], title: 'eins' });
+    await plain({
+      assignees: [{ kind: 'actor', id: 'bob' }, assignee],
+      title: 'zwei',
+      state: 'fertig',
+    });
     await plain({ title: 'ohne' });
 
     await expect(readTasks(storage.db, { assignees: [assignee] })).resolves.toHaveLength(2);
@@ -227,12 +260,13 @@ describe('reading tasks back', () => {
     const person = { kind: 'actor' as const, id: `p-${groupId.toHexString()}` };
     const group = { kind: 'group' as const, id: groupId };
 
-    await plain({ assignee: person, title: 'selbst' });
-    await plain({ assignee: group, title: 'Gruppe' });
-    await plain({ assignee: { kind: 'group', id: new ObjectId() }, title: 'fremd' });
+    await plain({ assignees: [person], title: 'selbst' });
+    await plain({ assignees: [group], title: 'Gruppe' });
+    await plain({ assignees: [person, group], title: 'beide' });
+    await plain({ assignees: [{ kind: 'group', id: new ObjectId() }], title: 'fremd' });
 
     const mine = await readTasks(storage.db, { assignees: [person, group] });
-    expect(mine.map((task) => task.title)).toEqual(['selbst', 'Gruppe']);
+    expect(mine.map((task) => task.title)).toEqual(['selbst', 'Gruppe', 'beide']);
   });
 
   it('tells the kinds apart', async () => {
