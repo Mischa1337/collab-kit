@@ -1,12 +1,11 @@
 name: Publish container image
 
-# The tag trigger is switched off until a Dockerfile exists, otherwise the first
-# release tag would fail. Uncomment the push block to switch it back on.
+# Runs on every pushed release tag (vX.Y.Z); by hand only with a tag selected.
 on:
   workflow_dispatch:
-  # push:
-  #   tags:
-  #     - 'v*.*.*'
+  push:
+    tags:
+      - 'v*.*.*'
 
 permissions:
   contents: read
