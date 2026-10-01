@@ -1,0 +1,260 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: collab-kit
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: collab-kit-config
+  namespace: collab-kit
+data:
+  MONGODB_DB: collab_kit
+  # Any other variable from .env.example goes here as well; a missing one keeps its default.
+  ALLOWED_ORIGINS: ''
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongo
+  namespace: collab-kit
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: collab-kit
+    app.kubernetes.io/component: mongo
+  ports:
+    - name: mongodb
+      port: 27017
+      targetPort: mongodb
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mongo
+  namespace: collab-kit
+spec:
+  serviceName: mongo
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: collab-kit
+      app.kubernetes.io/component: mongo
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: collab-kit
+        app.kubernetes.io/component: mongo
+    spec:
+      initContainers:
+        # A replica set with a password needs a key file that only mongod may read.
+        # A secret volume cannot set the owner, so the key is copied with owner and mode.
+        - name: keyfile
+          image: mongo:4.4.29
+          command:
+            ['install', '-m', '400', '-o', '999', '-g', '999', '/secret/keyfile', '/keyfile/']
+          volumeMounts:
+            - name: secret
+              mountPath: /secret
+              readOnly: true
+            - name: keyfile
+              mountPath: /keyfile
+      containers:
+        - name: mongo
+          # MongoDB 5.0+ requires AVX on x86_64, which the k3s nodes do not expose.
+          # 4.4 is also the oldest server the mongodb driver 7 supports.
+          image: mongo:4.4.29
+          imagePullPolicy: IfNotPresent
+          # The service needs transactions, and those need a replica set.
+          args: ['--replSet', 'rs0', '--bind_ip_all', '--keyFile', '/keyfile/keyfile']
+          ports:
+            - name: mongodb
+              containerPort: 27017
+          env:
+            - name: MONGO_INITDB_ROOT_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: collab-kit-secrets
+                  key: DB_USER
+            - name: MONGO_INITDB_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: collab-kit-secrets
+                  key: DB_PASSWORD
+          readinessProbe:
+            # Initiates the replica set on first start and reports ready once it is primary.
+            exec:
+              command:
+                - sh
+                - -c
+                - >-
+                  mongo --quiet --authenticationDatabase admin
+                  -u "$MONGO_INITDB_ROOT_USERNAME" -p "$MONGO_INITDB_ROOT_PASSWORD"
+                  --eval "rs.status().ok || rs.initiate({ _id: 'rs0', members: [{ _id: 0, host: 'localhost:27017' }] });
+                  db.isMaster().ismaster" | grep -q true
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: mongodb
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
+          volumeMounts:
+            - name: mongo-data
+              mountPath: /data/db
+            - name: keyfile
+              mountPath: /keyfile
+              readOnly: true
+      volumes:
+        - name: secret
+          secret:
+            secretName: collab-kit-secrets
+            items:
+              - key: MONGO_KEYFILE
+                path: keyfile
+        - name: keyfile
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: mongo-data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        storageClassName: local-path
+        resources:
+          requests:
+            storage: 5Gi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api
+  namespace: collab-kit
+spec:
+  selector:
+    app.kubernetes.io/name: collab-kit
+    app.kubernetes.io/component: api
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: collab-kit
+spec:
+  replicas: 1
+  # Open workpieces live in the memory of one process, so two pods must never run at once:
+  # the old one stops before the new one starts.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: collab-kit
+      app.kubernetes.io/component: api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: collab-kit
+        app.kubernetes.io/component: api
+    spec:
+      containers:
+        - name: api
+          image: ghcr.io/mischa1337/collab-kit:latest
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 3000
+          env:
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: collab-kit-secrets
+                  key: DB_USER
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: collab-kit-secrets
+                  key: DB_PASSWORD
+            # Kubernetes expands the two previously declared variables here. The replica set
+            # knows itself as localhost, so the driver must not follow it: directConnection.
+            - name: MONGODB_URI
+              value: mongodb://$(DB_USER):$(DB_PASSWORD)@mongo:27017/?authSource=admin&replicaSet=rs0&directConnection=true
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: collab-kit-secrets
+                  key: JWT_SECRET
+          envFrom:
+            - configMapRef:
+                name: collab-kit-config
+          # The service listens only once the database is ready, so one route serves all three.
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            failureThreshold: 30
+            periodSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: strip-prefix
+  namespace: collab-kit
+spec:
+  stripPrefix:
+    prefixes:
+      - /collab-kit
+
+---
+# HTTP and WebSocket share the path: /collab-kit/ws/<workpiece> reaches the service as /ws/<workpiece>.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: collab-kit
+  namespace: collab-kit
+  annotations:
+    traefik.ingress.kubernetes.io/router.middlewares: collab-kit-strip-prefix@kubernetescrd
+spec:
+  ingressClassName: traefik
+  rules:
+    - http:
+        paths:
+          - path: /collab-kit
+            pathType: Prefix
+            backend:
+              service:
+                name: api
+                port:
+                  number: 3000
