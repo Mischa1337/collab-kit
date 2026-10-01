@@ -37,8 +37,8 @@ export type KeyLookup = (kid: string | undefined) => Promise<KeyObject>;
 export interface TokenOptions {
   /** The shared secret for an HS algorithm, the tool's public key as PEM, or a lookup into its key set. */
   readonly key: string | KeyLookup;
-  /** Pinned per instance, `HS256` unless the issuing tool signs otherwise. */
-  readonly algorithm?: TokenAlgorithm;
+  /** Pinned per instance; the configuration holds the only default. */
+  readonly algorithm: TokenAlgorithm;
   /** Seconds of clock difference tolerated between the issuing tool and this service. */
   readonly clockToleranceSeconds?: number;
   /** Claim that holds the actor key, `sub` unless the issuing tool puts it elsewhere. */
@@ -61,7 +61,7 @@ export class TokenRejected extends Error {
 
 /** Returns the check; algorithm and claims are fixed per instance, never read from a token. */
 export function createTokenCheck(options: TokenOptions): (token: string) => Promise<Actor> {
-  const algorithm = options.algorithm ?? 'HS256';
+  const algorithm = options.algorithm;
   const actorClaim = options.actorClaim ?? 'sub';
   const labelClaim = options.labelClaim ?? 'name';
 

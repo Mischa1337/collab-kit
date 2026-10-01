@@ -17,7 +17,7 @@ handelt. Eingestellt wird das pro Instanz in der `.env` (Vorlage: `.env.example`
 
 | Variable              | Vorgabe | Bedeutung                                                                                                    |
 | --------------------- | ------- | ------------------------------------------------------------------------------------------------------------ |
-| `JWT_ALGORITHM`       | `HS256` | Verfahren, mit dem das Werkzeug signiert: `HS256/384/512`, `RS256/384/512`, `PS256/384/512`, `ES256/384/512` |
+| `JWT_ALGORITHM`       | `RS256` | Verfahren, mit dem das Werkzeug signiert: `HS256/384/512`, `RS256/384/512`, `PS256/384/512`, `ES256/384/512` |
 | `JWT_SECRET`          | keine   | Gemeinsames Geheimnis mit dem Werkzeug. Pflicht bei `HS…`                                                    |
 | `JWT_PUBLIC_KEY`      | keine   | Öffentlicher Schlüssel des Werkzeugs als PEM. Bei `RS…`, `PS…` und `ES…` dies oder `JWT_JWKS_URI`            |
 | `JWT_JWKS_URI`        | keine   | Adresse, unter der das Werkzeug seine öffentlichen Schlüssel als JWKS veröffentlicht                         |
@@ -35,7 +35,6 @@ Bei einem Schlüsselpaar bekommt der Dienst nur den öffentlichen Schlüssel, Ze
 werden als `\n` geschrieben:
 
 ```sh
-JWT_ALGORITHM=RS256
 JWT_PUBLIC_KEY="-----BEGIN PUBLIC KEY-----\nMIIBIjANBg...\n-----END PUBLIC KEY-----"
 ```
 
@@ -48,10 +47,16 @@ Signiert ein Aussteller Token für mehrere Anwendungen mit demselben Schlüssel,
 `aud` dazu. Sonst gilt auch ein Token, das für eine andere Anwendung ausgestellt wurde:
 
 ```sh
-JWT_ALGORITHM=RS256
 JWT_JWKS_URI=https://fbs.example/oauth2/jwks
 JWT_ISSUER=https://fbs.example
 JWT_AUDIENCE=fbs-web-shell
+```
+
+Für selbst signierte Testtoken genügt ein gemeinsames Geheimnis:
+
+```sh
+JWT_ALGORITHM=HS256
+JWT_SECRET=ein-langes-zufaelliges-geheimnis
 ```
 
 ### Token mitschicken

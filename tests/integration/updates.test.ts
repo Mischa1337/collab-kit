@@ -96,7 +96,7 @@ beforeAll(async () => {
     server,
     db: storage.db,
     hub: createWorkpieceHub({ db: storage.db, logger: silent }),
-    checkToken: createTokenCheck({ key: secret }),
+    checkToken: createTokenCheck({ key: secret, algorithm: 'HS256' }),
     logger: silent,
   });
 
