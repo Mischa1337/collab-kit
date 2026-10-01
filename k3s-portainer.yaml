@@ -147,7 +147,7 @@ spec:
     app.kubernetes.io/component: api
   ports:
     - name: http
-      port: 3000
+      port: 24202
       targetPort: http
 
 ---
@@ -178,7 +178,7 @@ spec:
           imagePullPolicy: Always
           ports:
             - name: http
-              containerPort: 3000
+              containerPort: 24202
           env:
             - name: DB_USER
               valueFrom:
@@ -257,4 +257,4 @@ spec:
               service:
                 name: api
                 port:
-                  number: 3000
+                  number: 24202

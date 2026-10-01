@@ -48,7 +48,7 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env): Config {
     problems.push(`NODE_ENV must be one of ${NODE_ENVS.join(', ')}, got "${nodeEnv}"`);
   }
 
-  const portRaw = env['PORT']?.trim() ?? '3000';
+  const portRaw = env['PORT']?.trim() ?? '24202';
   const port = Number(portRaw);
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     problems.push(`PORT must be a port number, got "${portRaw}"`);

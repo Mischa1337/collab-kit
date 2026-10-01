@@ -14,7 +14,7 @@ describe('readConfig', () => {
 
     expect(config).toEqual({
       nodeEnv: 'development',
-      port: 3000,
+      port: 24202,
       logLevel: 'info',
       mongoUri: valid.MONGODB_URI,
       mongoDb: valid.MONGODB_DB,
