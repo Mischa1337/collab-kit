@@ -139,7 +139,7 @@ beforeAll(async () => {
     server,
     db: storage.db,
     hub: createWorkpieceHub({ db: storage.db, logger: pino({ level: 'silent' }) }),
-    checkToken: createTokenCheck({ key: secret }),
+    checkToken: createTokenCheck({ key: secret, algorithm: 'HS256' }),
     logger: pino({ level: 'silent' }),
     maxMessageBytes: 64 * 1024,
   });
@@ -295,7 +295,7 @@ describe('when the database cannot be reached', () => {
       server: offlineServer,
       db,
       hub: createWorkpieceHub({ db, logger: silent }),
-      checkToken: createTokenCheck({ key: secret }),
+      checkToken: createTokenCheck({ key: secret, algorithm: 'HS256' }),
       logger: silent,
     });
     await new Promise<void>((resolve) => offlineServer.listen(0, resolve));
@@ -341,7 +341,7 @@ describe('the heartbeat', () => {
       server: beatingServer,
       db: storage.db,
       hub: createWorkpieceHub({ db: storage.db, logger: silent }),
-      checkToken: createTokenCheck({ key: secret }),
+      checkToken: createTokenCheck({ key: secret, algorithm: 'HS256' }),
       logger: silent,
       heartbeatMs: 100,
     });
@@ -388,7 +388,7 @@ describe('when access is taken away', () => {
       api: createApi({
         db: storage.db,
         hub,
-        checkToken: createTokenCheck({ key: secret }),
+        checkToken: createTokenCheck({ key: secret, algorithm: 'HS256' }),
         logger: silent,
         recheckAccess: () => apiGateway.recheck(),
       }),
@@ -397,7 +397,7 @@ describe('when access is taken away', () => {
       server: apiServer,
       db: storage.db,
       hub,
-      checkToken: createTokenCheck({ key: secret }),
+      checkToken: createTokenCheck({ key: secret, algorithm: 'HS256' }),
       logger: silent,
     });
     await new Promise<void>((resolve) => apiServer.listen(0, resolve));
@@ -492,7 +492,7 @@ describe('shutting down', () => {
       server: ownServer,
       db: storage.db,
       hub: createWorkpieceHub({ db: storage.db, logger: silent }),
-      checkToken: createTokenCheck({ key: secret }),
+      checkToken: createTokenCheck({ key: secret, algorithm: 'HS256' }),
       logger: silent,
       shutdownGraceMs: 200,
     });
@@ -525,7 +525,7 @@ describe('where a connection comes from', () => {
       server: guardedServer,
       db: storage.db,
       hub: createWorkpieceHub({ db: storage.db, logger: silent }),
-      checkToken: createTokenCheck({ key: secret }),
+      checkToken: createTokenCheck({ key: secret, algorithm: 'HS256' }),
       logger: silent,
       allowedOrigins: ['https://tool.example'],
     });

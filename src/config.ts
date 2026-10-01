@@ -61,7 +61,8 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const mongoUri = requireValue(env, 'MONGODB_URI', problems);
   const mongoDb = requireValue(env, 'MONGODB_DB', problems);
 
-  const jwtAlgorithm = optionalValue(env, 'JWT_ALGORITHM') ?? 'HS256';
+  // RS256 is what OpenID Connect requires and nearly every identity provider signs with.
+  const jwtAlgorithm = optionalValue(env, 'JWT_ALGORITHM') ?? 'RS256';
   if (!isTokenAlgorithm(jwtAlgorithm)) {
     problems.push(
       `JWT_ALGORITHM must be one of ${TOKEN_ALGORITHMS.join(', ')}, got "${jwtAlgorithm}"`,

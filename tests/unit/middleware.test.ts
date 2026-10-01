@@ -9,9 +9,13 @@ import { createTokenCheck } from '../../src/auth/token.ts';
 const secret = 'geheimnis-des-werkzeugs';
 
 const app = express();
-app.get('/probe', requireActor(createTokenCheck({ key: secret })), (req, res) => {
-  res.json(req.actor);
-});
+app.get(
+  '/probe',
+  requireActor(createTokenCheck({ key: secret, algorithm: 'HS256' })),
+  (req, res) => {
+    res.json(req.actor);
+  },
+);
 
 const token = jwt.sign({ sub: 'u-8134', name: 'Alice Muster' }, secret, { expiresIn: '15m' });
 
@@ -49,7 +53,9 @@ describe('requireActor', () => {
     const logging = express();
     logging.get(
       '/probe',
-      requireActor(createTokenCheck({ key: secret }), (error) => reasons.push(error)),
+      requireActor(createTokenCheck({ key: secret, algorithm: 'HS256' }), (error) =>
+        reasons.push(error),
+      ),
       (req, res) => res.json(req.actor),
     );
 

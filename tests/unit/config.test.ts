@@ -2,11 +2,12 @@ import { describe, expect, it } from 'vitest';
 
 import { readConfig } from '../../src/config.ts';
 
-const valid = {
+const database = {
   MONGODB_URI: 'mongodb://localhost:27017/?replicaSet=rs0',
   MONGODB_DB: 'collab_kit',
-  JWT_SECRET: 'local-secret',
 };
+const jwksUri = 'https://tool.example/oauth2/jwks';
+const valid = { ...database, JWT_JWKS_URI: jwksUri };
 
 describe('readConfig', () => {
   it('fills in the defaults for the optional variables', () => {
@@ -18,8 +19,8 @@ describe('readConfig', () => {
       logLevel: 'info',
       mongoUri: valid.MONGODB_URI,
       mongoDb: valid.MONGODB_DB,
-      jwtAlgorithm: 'HS256',
-      jwtKey: { fixed: valid.JWT_SECRET },
+      jwtAlgorithm: 'RS256',
+      jwtKey: { jwksUri },
       jwtClockTolerance: 5,
       actorClaim: 'sub',
       labelClaim: 'name',
@@ -72,50 +73,47 @@ describe('readConfig', () => {
     }
   });
 
-  it('takes the public key instead of the secret for an asymmetric algorithm', () => {
-    const config = readConfig({ ...valid, JWT_ALGORITHM: 'RS256', JWT_PUBLIC_KEY: 'pem' });
+  it('takes a fixed public key instead of the key set', () => {
+    const config = readConfig({ ...database, JWT_PUBLIC_KEY: 'pem' });
 
     expect(config).toMatchObject({ jwtAlgorithm: 'RS256', jwtKey: { fixed: 'pem' } });
   });
 
-  it('takes the address of the key set instead of a fixed public key', () => {
-    const config = readConfig({
-      ...valid,
-      JWT_ALGORITHM: 'RS256',
-      JWT_JWKS_URI: 'https://fbs.example/oauth2/jwks',
-    });
+  it('takes the shared secret once an HS algorithm is chosen', () => {
+    const config = readConfig({ ...database, JWT_ALGORITHM: 'HS256', JWT_SECRET: 'local-secret' });
 
-    expect(config).toMatchObject({ jwtKey: { jwksUri: 'https://fbs.example/oauth2/jwks' } });
+    expect(config).toMatchObject({ jwtAlgorithm: 'HS256', jwtKey: { fixed: 'local-secret' } });
   });
 
-  it('requires JWT_PUBLIC_KEY or JWT_JWKS_URI for an asymmetric algorithm', () => {
-    expect(() => readConfig({ ...valid, JWT_ALGORITHM: 'ES256' })).toThrowError(
-      /JWT_PUBLIC_KEY or JWT_JWKS_URI is missing/,
+  it('requires JWT_SECRET for an HS algorithm', () => {
+    expect(() => readConfig({ ...database, JWT_ALGORITHM: 'HS512' })).toThrowError(
+      /JWT_SECRET is missing/,
     );
   });
 
+  it('requires JWT_PUBLIC_KEY or JWT_JWKS_URI by default and for every asymmetric algorithm', () => {
+    for (const env of [database, { ...database, JWT_ALGORITHM: 'ES256' }]) {
+      expect(() => readConfig(env)).toThrowError(/JWT_PUBLIC_KEY or JWT_JWKS_URI is missing/);
+    }
+  });
+
   it('refuses a fixed public key and a key set together', () => {
-    expect(() =>
-      readConfig({
-        ...valid,
-        JWT_ALGORITHM: 'RS256',
-        JWT_PUBLIC_KEY: 'pem',
-        JWT_JWKS_URI: 'https://fbs.example/oauth2/jwks',
-      }),
-    ).toThrowError(/set either JWT_PUBLIC_KEY or JWT_JWKS_URI, not both/);
+    expect(() => readConfig({ ...valid, JWT_PUBLIC_KEY: 'pem' })).toThrowError(
+      /set either JWT_PUBLIC_KEY or JWT_JWKS_URI, not both/,
+    );
   });
 
   it('refuses a key set for an HS algorithm, whose secret is never published', () => {
     expect(() =>
-      readConfig({ ...valid, JWT_JWKS_URI: 'https://fbs.example/oauth2/jwks' }),
+      readConfig({ ...valid, JWT_ALGORITHM: 'HS256', JWT_SECRET: 'local-secret' }),
     ).toThrowError(/JWT_JWKS_URI needs an RS, PS or ES algorithm, JWT_ALGORITHM is HS256/);
   });
 
   it('refuses a key set address that is no http or https address', () => {
-    for (const raw of ['fbs.example/oauth2/jwks', 'ftp://fbs.example/jwks', 'https://']) {
-      expect(() =>
-        readConfig({ ...valid, JWT_ALGORITHM: 'RS256', JWT_JWKS_URI: raw }),
-      ).toThrowError(/JWT_JWKS_URI must be an http or https address/);
+    for (const raw of ['tool.example/oauth2/jwks', 'ftp://tool.example/jwks', 'https://']) {
+      expect(() => readConfig({ ...database, JWT_JWKS_URI: raw })).toThrowError(
+        /JWT_JWKS_URI must be an http or https address/,
+      );
     }
   });
 
@@ -159,7 +157,7 @@ describe('readConfig', () => {
 
   it('reports every missing variable at once instead of the first one', () => {
     expect(() => readConfig({})).toThrowError(
-      /MONGODB_URI is missing[\s\S]*MONGODB_DB is missing[\s\S]*JWT_SECRET is missing/,
+      /MONGODB_URI is missing[\s\S]*MONGODB_DB is missing[\s\S]*JWT_PUBLIC_KEY or JWT_JWKS_URI/,
     );
   });
 
@@ -175,7 +173,12 @@ describe('readConfig', () => {
 
   it('rejects the example secret in production', () => {
     expect(() =>
-      readConfig({ ...valid, NODE_ENV: 'production', JWT_SECRET: 'replace-me-locally' }),
+      readConfig({
+        ...database,
+        NODE_ENV: 'production',
+        JWT_ALGORITHM: 'HS256',
+        JWT_SECRET: 'replace-me-locally',
+      }),
     ).toThrowError(/JWT_SECRET still holds the example placeholder/);
   });
 });

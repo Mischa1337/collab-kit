@@ -52,7 +52,6 @@ jobs:
         env:
           MONGODB_URI: mongodb://localhost:24203/?replicaSet=rs0&directConnection=true
           MONGODB_DB: collab_kit_test
-          JWT_SECRET: ci-secret
 
       - if: always()
         run: docker compose down -v

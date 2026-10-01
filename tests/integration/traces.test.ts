@@ -87,7 +87,7 @@ beforeAll(async () => {
     server,
     db: storage.db,
     hub,
-    checkToken: createTokenCheck({ key: secret }),
+    checkToken: createTokenCheck({ key: secret, algorithm: 'HS256' }),
     logger: silent,
   });
 
@@ -257,7 +257,7 @@ describe('presence', () => {
       server: ownServer,
       db: storage.db,
       hub: createWorkpieceHub({ db: storage.db, logger: silent }),
-      checkToken: createTokenCheck({ key: secret }),
+      checkToken: createTokenCheck({ key: secret, algorithm: 'HS256' }),
       logger: silent,
     });
     await new Promise<void>((resolve) => ownServer.listen(0, resolve));

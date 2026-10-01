@@ -13,13 +13,14 @@ data:
   MONGODB_DB: collab_kit
   # Any other variable from .env.example goes here as well; a missing one keeps its default.
   ALLOWED_ORIGINS: ''
-  # Tokens of the feedback system: RS256 against its published key set, JWT_SECRET is unused.
-  # JWT_ALGORITHM: RS256
-  # JWT_JWKS_URI: https://<feedback-system>/oauth2/jwks
-  # JWT_ISSUER: <OIDC_ISSUER of the feedback system>
-  # JWT_AUDIENCE: <client id the tokens are issued to>
-  # ACTOR_CLAIM: id
-  # LABEL_CLAIM: name
+  # Tokens of the feedback system: RS256 against the key set it publishes, no shared secret.
+  JWT_ALGORITHM: RS256
+  JWT_JWKS_URI: https://feedback.mni.thm.de/oauth2/jwks
+  JWT_ISSUER: https://feedback.mni.thm.de
+  # Client id the tokens are issued to, read off a real token; blank means not checked.
+  JWT_AUDIENCE: ''
+  ACTOR_CLAIM: id
+  LABEL_CLAIM: name
 
 ---
 apiVersion: v1
@@ -201,14 +202,6 @@ spec:
             # knows itself as localhost, so the driver must not follow it: directConnection.
             - name: MONGODB_URI
               value: mongodb://$(DB_USER):$(DB_PASSWORD)@mongo:27017/?authSource=admin&replicaSet=rs0&directConnection=true
-            # Needed only for an HS algorithm; with JWT_JWKS_URI the secret may lack the key.
-            # If an HS algorithm finds none, the service names JWT_SECRET as missing at start.
-            - name: JWT_SECRET
-              valueFrom:
-                secretKeyRef:
-                  name: collab-kit-secrets
-                  key: JWT_SECRET
-                  optional: true
           envFrom:
             - configMapRef:
                 name: collab-kit-config

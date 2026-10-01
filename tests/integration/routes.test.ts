@@ -45,7 +45,7 @@ beforeAll(async () => {
     api: createApi({
       db: storage.db,
       hub,
-      checkToken: createTokenCheck({ key: secret }),
+      checkToken: createTokenCheck({ key: secret, algorithm: 'HS256' }),
       logger,
       // No sockets in these tests, so there is nothing to ask again.
       recheckAccess: async () => {},

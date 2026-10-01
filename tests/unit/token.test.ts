@@ -7,7 +7,7 @@ import { loadKeySet } from '../../src/auth/jwks.ts';
 import { createTokenCheck } from '../../src/auth/token.ts';
 
 const secret = 'geheimnis-des-werkzeugs';
-const check = createTokenCheck({ key: secret });
+const check = createTokenCheck({ key: secret, algorithm: 'HS256' });
 
 function sign(payload: object, options: jwt.SignOptions = {}): string {
   return jwt.sign(payload, secret, { algorithm: 'HS256', ...options });
@@ -52,7 +52,7 @@ describe('createTokenCheck', () => {
   });
 
   it('forgives nothing once the tolerance is set to 0', async () => {
-    const strict = createTokenCheck({ key: secret, clockToleranceSeconds: 0 });
+    const strict = createTokenCheck({ key: secret, algorithm: 'HS256', clockToleranceSeconds: 0 });
 
     await expect(strict(sign({ sub: 'u-8134' }, { expiresIn: '-1s' }))).rejects.toThrowError(
       'token rejected',
@@ -87,7 +87,12 @@ describe('createTokenCheck', () => {
 });
 
 describe('createTokenCheck with claims set for the instance', () => {
-  const custom = createTokenCheck({ key: secret, actorClaim: 'uid', labelClaim: 'displayName' });
+  const custom = createTokenCheck({
+    key: secret,
+    algorithm: 'HS256',
+    actorClaim: 'uid',
+    labelClaim: 'displayName',
+  });
 
   it('takes key and name from the set claims and ignores sub', async () => {
     const token = sign(
@@ -176,6 +181,7 @@ describe('createTokenCheck with the algorithm set for the instance', () => {
 describe('createTokenCheck with issuer and audience set for the instance', () => {
   const bound = createTokenCheck({
     key: secret,
+    algorithm: 'HS256',
     issuer: 'https://fbs.example',
     audience: ['fbs-web-shell', 'fbs-test-client'],
   });
