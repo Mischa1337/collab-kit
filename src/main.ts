@@ -1,5 +1,6 @@
 import pino from 'pino';
 import { readConfig } from './config.ts';
+import { loadKeySet } from './auth/jwks.ts';
 import { createTokenCheck } from './auth/token.ts';
 import { applyDefinitions } from './db/apply.ts';
 import { connect } from './db/client.ts';
@@ -18,12 +19,18 @@ const storage = await connect({ uri: config.mongoUri, database: config.mongoDb }
 await applyDefinitions(storage.db, collectionDefinitions);
 log.info({ database: config.mongoDb, collections: collectionDefinitions.length }, 'database ready');
 
+// Keys come from the set the issuing tool publishes, loaded now, or from the one fixed key.
+const tokenKey =
+  'jwksUri' in config.jwtKey
+    ? await loadKeySet({ uri: config.jwtKey.jwksUri, algorithm: config.jwtAlgorithm, logger: log })
+    : config.jwtKey.fixed;
 const checkToken = createTokenCheck({
-  key: config.jwtKey,
+  key: tokenKey,
   algorithm: config.jwtAlgorithm,
   clockToleranceSeconds: config.jwtClockTolerance,
   actorClaim: config.actorClaim,
   labelClaim: config.labelClaim,
+  ...defined({ issuer: config.jwtIssuer, audience: config.jwtAudience }),
 });
 // Keeps the open workpieces in memory for real-time work.
 const hub = createWorkpieceHub({ db: storage.db, logger: log });

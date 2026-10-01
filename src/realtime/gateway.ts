@@ -22,7 +22,7 @@ export interface GatewayOptions {
   readonly server: Server;
   readonly db: Db;
   readonly hub: WorkpieceHub;
-  readonly checkToken: (token: string) => Actor;
+  readonly checkToken: (token: string) => Promise<Actor>;
   readonly logger: Logger;
   /** Web origins that may connect, as a browser sends them; left out, every origin may. */
   readonly allowedOrigins?: readonly string[];
@@ -309,7 +309,7 @@ async function admit(
 
   let actor: Actor;
   try {
-    actor = options.checkToken(token);
+    actor = await options.checkToken(token);
   } catch {
     return { status: 401, text: 'Unauthorized', reason: 'token rejected' };
   }

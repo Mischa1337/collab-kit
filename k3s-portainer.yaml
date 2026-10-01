@@ -13,6 +13,13 @@ data:
   MONGODB_DB: collab_kit
   # Any other variable from .env.example goes here as well; a missing one keeps its default.
   ALLOWED_ORIGINS: ''
+  # Tokens of the feedback system: RS256 against its published key set, JWT_SECRET is unused.
+  # JWT_ALGORITHM: RS256
+  # JWT_JWKS_URI: https://<feedback-system>/oauth2/jwks
+  # JWT_ISSUER: <OIDC_ISSUER of the feedback system>
+  # JWT_AUDIENCE: <client id the tokens are issued to>
+  # ACTOR_CLAIM: id
+  # LABEL_CLAIM: name
 
 ---
 apiVersion: v1
@@ -147,7 +154,7 @@ spec:
     app.kubernetes.io/component: api
   ports:
     - name: http
-      port: 3000
+      port: 24202
       targetPort: http
 
 ---
@@ -178,7 +185,7 @@ spec:
           imagePullPolicy: Always
           ports:
             - name: http
-              containerPort: 3000
+              containerPort: 24202
           env:
             - name: DB_USER
               valueFrom:
@@ -257,4 +264,4 @@ spec:
               service:
                 name: api
                 port:
-                  number: 3000
+                  number: 24202

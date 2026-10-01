@@ -15,7 +15,7 @@ import { taskRoutes } from './tasks.ts';
 export interface ApiOptions {
   readonly db: Db;
   readonly hub: WorkpieceHub;
-  readonly checkToken: (token: string) => Actor;
+  readonly checkToken: (token: string) => Promise<Actor>;
   readonly logger: Logger;
   /** Called after a route took access away, so open connections are asked again. */
   readonly recheckAccess: () => Promise<void>;

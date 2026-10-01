@@ -14,8 +14,12 @@ export interface Config {
   readonly mongoUri: string;
   readonly mongoDb: string;
   readonly jwtAlgorithm: TokenAlgorithm;
-  /** JWT_SECRET for an HS algorithm, JWT_PUBLIC_KEY for any other. */
-  readonly jwtKey: string;
+  /** JWT_SECRET for an HS algorithm; for any other JWT_PUBLIC_KEY, or JWT_JWKS_URI to fetch the keys. */
+  readonly jwtKey: { readonly fixed: string } | { readonly jwksUri: string };
+  /** Required `iss`; left out, every issuer passes. */
+  readonly jwtIssuer?: string;
+  /** Accepted `aud` values, one must match; left out, every audience passes. */
+  readonly jwtAudience?: readonly string[];
   /** Seconds an expired token is still accepted, to absorb clock drift between the machines. */
   readonly jwtClockTolerance: number;
   /** Claim that holds the actor key. Set per instance, never per request. */
@@ -48,7 +52,7 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env): Config {
     problems.push(`NODE_ENV must be one of ${NODE_ENVS.join(', ')}, got "${nodeEnv}"`);
   }
 
-  const portRaw = env['PORT']?.trim() ?? '3000';
+  const portRaw = env['PORT']?.trim() ?? '24202';
   const port = Number(portRaw);
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     problems.push(`PORT must be a port number, got "${portRaw}"`);
@@ -64,11 +68,11 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env): Config {
     );
   }
 
-  const jwtKeyName = usesSharedSecret(jwtAlgorithm) ? 'JWT_SECRET' : 'JWT_PUBLIC_KEY';
-  const jwtKey = requireValue(env, jwtKeyName, problems);
+  const jwtKey = readTokenKey(env, jwtAlgorithm, problems);
 
-  if (nodeEnv === 'production' && jwtKey === PLACEHOLDER_SECRET) {
-    problems.push(`${jwtKeyName} still holds the example placeholder`);
+  if (nodeEnv === 'production' && 'fixed' in jwtKey && jwtKey.fixed === PLACEHOLDER_SECRET) {
+    const name = usesSharedSecret(jwtAlgorithm) ? 'JWT_SECRET' : 'JWT_PUBLIC_KEY';
+    problems.push(`${name} still holds the example placeholder`);
   }
 
   const toleranceRaw = optionalValue(env, 'JWT_CLOCK_TOLERANCE') ?? '5';
@@ -80,6 +84,8 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const maxMessageBytes = optionalBytes(env, 'MAX_MESSAGE_BYTES', problems);
   const maxAwarenessBytes = optionalBytes(env, 'MAX_AWARENESS_BYTES', problems);
   const allowedOrigins = optionalOrigins(env, problems);
+  const jwtIssuer = optionalValue(env, 'JWT_ISSUER');
+  const jwtAudience = optionalList(env, 'JWT_AUDIENCE');
 
   if (problems.length > 0) {
     throw new Error(`invalid configuration:\n  - ${problems.join('\n  - ')}`);
@@ -98,7 +104,7 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env): Config {
     // The standard claims of RFC 7519 and OpenID Connect, for a tool that follows them.
     actorClaim: optionalValue(env, 'ACTOR_CLAIM') ?? 'sub',
     labelClaim: optionalValue(env, 'LABEL_CLAIM') ?? 'name',
-    ...defined({ maxMessageBytes, maxAwarenessBytes, allowedOrigins }),
+    ...defined({ jwtIssuer, jwtAudience, maxMessageBytes, maxAwarenessBytes, allowedOrigins }),
   };
 }
 
@@ -110,6 +116,39 @@ function isNodeEnv(value: string): value is NodeEnv {
 function optionalValue(env: NodeJS.ProcessEnv, name: string): string | undefined {
   const value = env[name]?.trim();
   return value === '' ? undefined : value;
+}
+
+/** Where the token keys come from: one fixed key, or the key set the issuing tool publishes. */
+function readTokenKey(
+  env: NodeJS.ProcessEnv,
+  algorithm: string,
+  problems: string[],
+): Config['jwtKey'] {
+  const jwksUri = optionalValue(env, 'JWT_JWKS_URI');
+
+  if (usesSharedSecret(algorithm)) {
+    // A shared secret is never published, so there is no key set to fetch it from.
+    if (jwksUri !== undefined) {
+      problems.push(`JWT_JWKS_URI needs an RS, PS or ES algorithm, JWT_ALGORITHM is ${algorithm}`);
+    }
+    return { fixed: requireValue(env, 'JWT_SECRET', problems) };
+  }
+
+  const publicKey = optionalValue(env, 'JWT_PUBLIC_KEY');
+  if (jwksUri === undefined) {
+    if (publicKey === undefined) {
+      problems.push('JWT_PUBLIC_KEY or JWT_JWKS_URI is missing');
+    }
+    return { fixed: publicKey ?? '' };
+  }
+
+  if (publicKey !== undefined) {
+    problems.push('set either JWT_PUBLIC_KEY or JWT_JWKS_URI, not both');
+  }
+  if (!/^https?:\/\//.test(jwksUri) || !URL.canParse(jwksUri)) {
+    problems.push(`JWT_JWKS_URI must be an http or https address, got "${jwksUri}"`);
+  }
+  return { jwksUri };
 }
 
 /** A size in whole bytes up to 15 MiB, undefined when not set; anything else is a problem. */
@@ -129,21 +168,27 @@ function optionalBytes(
   return bytes;
 }
 
+/** A comma-separated variable as a list, undefined when it holds no entry. */
+function optionalList(env: NodeJS.ProcessEnv, name: string): string[] | undefined {
+  const entries = (optionalValue(env, name) ?? '')
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry !== '');
+  return entries.length === 0 ? undefined : entries;
+}
+
 /** ALLOWED_ORIGINS as a list, undefined when blank; a malformed origin is a problem. */
 function optionalOrigins(env: NodeJS.ProcessEnv, problems: string[]): string[] | undefined {
-  const origins = (optionalValue(env, 'ALLOWED_ORIGINS') ?? '')
-    .split(',')
-    .map((origin) => origin.trim())
-    .filter((origin) => origin !== '');
+  const origins = optionalList(env, 'ALLOWED_ORIGINS');
 
   // A trailing slash or a path never matches what a browser sends, so it fails at the start.
-  const malformed = origins.filter((origin) => !ORIGIN.test(origin));
+  const malformed = (origins ?? []).filter((origin) => !ORIGIN.test(origin));
   if (malformed.length > 0) {
     problems.push(
       `ALLOWED_ORIGINS must list origins like https://tool.example, got "${malformed.join(', ')}"`,
     );
   }
-  return origins.length === 0 ? undefined : origins;
+  return origins;
 }
 
 /** Like optionalValue, but records a missing variable as a problem. */

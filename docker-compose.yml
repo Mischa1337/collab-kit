@@ -6,7 +6,7 @@ services:
     container_name: collab-kit-mongo
     command: ['mongod', '--replSet', 'rs0', '--bind_ip_all']
     ports:
-      - '27017:27017'
+      - '127.0.0.1:24203:27017'
     volumes:
       - mongo-data:/data/db
     healthcheck:
