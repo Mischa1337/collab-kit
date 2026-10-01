@@ -8,6 +8,7 @@ import { createWorkpieceHub } from './realtime/hub.ts';
 import { attachGateway } from './realtime/gateway.ts';
 import { createApi } from './routes/index.ts';
 import { createServer } from './routes/server.ts';
+import { defined } from './utils/optional.ts';
 
 const config = readConfig();
 const log = pino({ level: config.logLevel });
@@ -28,10 +29,29 @@ const checkToken = createTokenCheck({
 const hub = createWorkpieceHub({ db: storage.db, logger: log });
 const server = createServer({
   logger: log,
-  api: createApi({ db: storage.db, hub, checkToken, logger: log }),
+  api: createApi({
+    db: storage.db,
+    hub,
+    checkToken,
+    logger: log,
+    // The gateway is attached below; it needs this server, and these routes need it.
+    recheckAccess: () => gateway.recheck(),
+  }),
+  ...defined({ allowedOrigins: config.allowedOrigins }),
 });
 // WebSockets share the port of the HTTP server.
-const gateway = attachGateway({ server, db: storage.db, hub, checkToken, logger: log });
+const gateway = attachGateway({
+  server,
+  db: storage.db,
+  hub,
+  checkToken,
+  logger: log,
+  ...defined({
+    maxMessageBytes: config.maxMessageBytes,
+    maxAwarenessBytes: config.maxAwarenessBytes,
+    allowedOrigins: config.allowedOrigins,
+  }),
+});
 
 server.listen(config.port, () => {
   log.info({ port: config.port }, 'listening');

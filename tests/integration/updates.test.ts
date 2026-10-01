@@ -1,7 +1,7 @@
 import type { AddressInfo } from 'node:net';
 
 import jwt from 'jsonwebtoken';
-import { ObjectId } from 'mongodb';
+import { MongoClient, ObjectId } from 'mongodb';
 import pino from 'pino';
 import * as Y from 'yjs';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -14,7 +14,8 @@ import { addToRoom, createRoom } from '../../src/db/collections/rooms.ts';
 import { createWorkpiece, findWorkpieceWithFold } from '../../src/db/collections/workpieces.ts';
 import { collectionDefinitions } from '../../src/db/schemas.ts';
 import { appendUpdate, readUpdatesSince } from '../../src/db/collections/updates.ts';
-import { createWorkpieceHub, type WorkpieceHub } from '../../src/realtime/hub.ts';
+import { createWorkpieceHub } from '../../src/realtime/hub.ts';
+import { foldNow, loadWorkpiece, storeUpdate } from '../../src/realtime/persistence.ts';
 import { attachGateway, type Gateway } from '../../src/realtime/gateway.ts';
 import { createServer } from '../../src/routes/server.ts';
 import { connectClient, waitFor } from './yjs-client.ts';
@@ -29,7 +30,6 @@ const database = `collab_kit_updates_${Date.now()}_${Math.random().toString(36).
 const silent = pino({ level: 'silent' });
 
 let storage: Storage;
-let hub: WorkpieceHub;
 let gateway: Gateway;
 let server: ReturnType<typeof createServer>;
 let port: number;
@@ -92,11 +92,10 @@ beforeAll(async () => {
   await applyDefinitions(storage.db, collectionDefinitions);
 
   server = createServer({ logger: silent });
-  hub = createWorkpieceHub({ db: storage.db, logger: silent });
   gateway = attachGateway({
     server,
     db: storage.db,
-    hub,
+    hub: createWorkpieceHub({ db: storage.db, logger: silent }),
     checkToken: createTokenCheck({ key: secret }),
     logger: silent,
   });
@@ -148,7 +147,40 @@ describe('the stream of updates', () => {
   });
 });
 
+describe('loading', () => {
+  it('names the stored change that cannot be applied, so it can be found', async () => {
+    const workpieceId = await freshWorkpiece();
+    const broken = await appendUpdate(storage.db, {
+      workpieceId,
+      bytes: new Uint8Array([1, 2, 3]),
+      createdBy: 'alice',
+    });
+
+    await expect(loadWorkpiece(storage.db, workpieceId)).rejects.toThrowError(
+      `update ${broken._id.toHexString()} cannot be applied`,
+    );
+  });
+});
+
 describe('folding', () => {
+  it('waits for as many changes again after a fold that failed', async () => {
+    // Nothing listens on port 9, so the fold fails after the short selection timeout.
+    const unreachable = new MongoClient(
+      'mongodb://127.0.0.1:9/?directConnection=true&serverSelectionTimeoutMS=300',
+    );
+    const stored = {
+      workpieceId: new ObjectId(),
+      queue: Promise.resolve(),
+      lastUpdateId: new ObjectId(),
+      updatesSinceFoldAttempt: 400,
+    };
+
+    await expect(foldNow(unreachable.db('nirgends'), stored, new Y.Doc())).rejects.toThrow();
+    expect(stored.updatesSinceFoldAttempt).toBe(0);
+
+    await unreachable.close();
+  });
+
   it('writes the shortcut when the last one leaves', async () => {
     const workpieceId = await freshWorkpiece();
     const alice = await open(workpieceId, 'alice');
@@ -234,29 +266,29 @@ describe('folding', () => {
     expect(folded.getText('t').toString()).toBe('eins zwei');
   });
 
-  it('can be asked for on a workpiece nobody has open and does not keep it open', async () => {
+  it('writes the whole state as the new fold', async () => {
     const workpieceId = await freshWorkpiece();
     await appendUpdate(storage.db, {
       workpieceId,
       bytes: Y.encodeStateAsUpdate(writtenBy('geschlossen')),
       createdBy: 'carol',
     });
+    const { doc, stored } = await loadWorkpiece(storage.db, workpieceId);
 
-    await expect(hub.fold(workpieceId)).resolves.toBe(true);
+    await expect(foldNow(storage.db, stored, doc)).resolves.toBe(true);
 
-    const stored = await findWorkpieceWithFold(storage.db, workpieceId);
+    const record = await findWorkpieceWithFold(storage.db, workpieceId);
     const folded = new Y.Doc();
-    Y.applyUpdate(folded, new Uint8Array(stored!.fold!.state.buffer));
-
+    Y.applyUpdate(folded, new Uint8Array(record!.fold!.state.buffer));
     expect(folded.getText('t').toString()).toBe('geschlossen');
-    expect(gateway.countFor(workpieceId.toHexString())).toBe(0);
   });
 
   it('does nothing when there is nothing new to fold', async () => {
     const workpieceId = await freshWorkpiece();
 
     // Never a change, so there is no cut to write.
-    await expect(hub.fold(workpieceId)).resolves.toBe(false);
+    const empty = await loadWorkpiece(storage.db, workpieceId);
+    await expect(foldNow(storage.db, empty.stored, empty.doc)).resolves.toBe(false);
 
     await appendUpdate(storage.db, {
       workpieceId,
@@ -264,27 +296,57 @@ describe('folding', () => {
       createdBy: 'alice',
     });
 
-    await expect(hub.fold(workpieceId)).resolves.toBe(true);
-    await expect(hub.fold(workpieceId)).resolves.toBe(false);
+    const { doc, stored } = await loadWorkpiece(storage.db, workpieceId);
+    await expect(foldNow(storage.db, stored, doc)).resolves.toBe(true);
+    await expect(foldNow(storage.db, stored, doc)).resolves.toBe(false);
   });
 
-  it('loses nothing when a change arrives in the same moment', async () => {
+  it('loses nothing and doubles nothing when a change is in memory but not yet stored', async () => {
     const workpieceId = await freshWorkpiece();
-    const alice = await open(workpieceId, 'alice');
-    await alice.synced;
+    await appendUpdate(storage.db, {
+      workpieceId,
+      bytes: Y.encodeStateAsUpdate(writtenBy('vorher')),
+      createdBy: 'alice',
+    });
+    const { doc, stored } = await loadWorkpiece(storage.db, workpieceId);
 
-    alice.doc.getText('t').insert(0, 'vorher');
-    const folding = hub.fold(workpieceId);
-    alice.doc.getText('t').insert(6, ' nachher');
-    await folding;
+    // Applied but not stored yet, as between a message arriving and its turn in the queue.
+    const pending: Uint8Array[] = [];
+    doc.on('update', (update: Uint8Array) => pending.push(update));
+    doc.getText('t').insert(6, ' nachher');
+    await foldNow(storage.db, stored, doc);
+    await storeUpdate(storage.db, stored, pending[0]!, 'alice');
 
-    await alice.close();
-    expect(await waitFor(() => gateway.countFor(workpieceId.toHexString()) === 0)).toBe(true);
+    const reloaded = await loadWorkpiece(storage.db, workpieceId);
+    expect(reloaded.doc.getText('t').toString()).toBe('vorher nachher');
+  });
 
-    const bob = await open(workpieceId, 'bob');
-    await bob.synced;
-    expect(await waitFor(() => bob.doc.getText('t').toString() === 'vorher nachher')).toBe(true);
-    await bob.close();
+  it('lets only one of two folds win, and the loser costs nothing', async () => {
+    const workpieceId = await freshWorkpiece();
+    await appendUpdate(storage.db, {
+      workpieceId,
+      bytes: Y.encodeStateAsUpdate(writtenBy('eins')),
+      createdBy: 'alice',
+    });
+
+    // Two working copies of the same workpiece, as two processes would hold them.
+    const first = await loadWorkpiece(storage.db, workpieceId);
+    const second = await loadWorkpiece(storage.db, workpieceId);
+    const later: Uint8Array[] = [];
+    second.doc.on('update', (update: Uint8Array) => later.push(update));
+    second.doc.getText('t').insert(4, ' zwei');
+    await storeUpdate(storage.db, second.stored, later[0]!, 'bob');
+
+    await expect(foldNow(storage.db, first.stored, first.doc)).resolves.toBe(true);
+    await expect(foldNow(storage.db, second.stored, second.doc)).resolves.toBe(false);
+
+    // The winner's fold stays, the loser's mark does not move, and nothing is lost.
+    const record = await findWorkpieceWithFold(storage.db, workpieceId);
+    expect(record?.fold?.upToUpdateId).toEqual(first.stored.lastUpdateId);
+    expect(second.stored.foldedUpToUpdateId).toBeUndefined();
+
+    const reloaded = await loadWorkpiece(storage.db, workpieceId);
+    expect(reloaded.doc.getText('t').toString()).toBe('eins zwei');
   });
 });
 

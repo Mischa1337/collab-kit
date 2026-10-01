@@ -1,16 +1,19 @@
 # collab-kit
 
-## Setup
+Ein Backend-Dienst ohne eigene Oberfläche, der Werkzeuge für Einzelne gemeinsam nutzbar macht. Er
+unterstützt beide Arten der Zusammenarbeit: **kollaborativ**, wenn mehrere gleichzeitig am selben
+Werkstück arbeiten, und **kooperativ**, wenn Arbeit in Aufgaben zerlegt, zugewiesen und wieder
+zusammengeführt wird.
 
-### Token des anbindenden Werkzeugs
+Der Dienst ist inhaltsblind. Er kennt kein Fachgebiet und kein Dateiformat, beides bringt das
+anbindende Werkzeug mit. Personen führt er nicht selbst, er liest sie aus dem signierten Token des
+Werkzeugs. Jedes Werkzeug bekommt eine eigene Instanz. Echtzeit läuft über Yjs und WebSocket,
+gespeichert wird in MongoDB.
 
-Der Dienst stellt keine Tokens aus. Er prüft das JWT, das das anbindende Werkzeug ausstellt,
-und liest daraus, wer handelt. Wie das Token aufgebaut ist, wird pro Instanz in der `.env`
-eingestellt, nie pro Anfrage. Die Vorlage ist `.env.example`:
+## Token
 
-```sh
-cp .env.example .env
-```
+Der Dienst stellt keine Token aus. Er prüft das JWT des anbindenden Werkzeugs und liest daraus, wer
+handelt. Eingestellt wird das pro Instanz in der `.env` (Vorlage: `.env.example`), nie pro Anfrage.
 
 | Variable              | Vorgabe | Bedeutung                                                                                                    |
 | --------------------- | ------- | ------------------------------------------------------------------------------------------------------------ |
@@ -21,43 +24,59 @@ cp .env.example .env
 | `LABEL_CLAIM`         | `name`  | Claim mit dem Anzeigenamen. Darf im Token fehlen                                                             |
 | `JWT_CLOCK_TOLERANCE` | `5`     | Sekunden, die ein abgelaufenes Token noch gilt, um Uhrenabweichungen auszugleichen. `0` heißt streng         |
 
-Ein leerer Wert gilt als nicht gesetzt, dann greift die Vorgabe. Ein ungültiger Wert oder ein
-fehlender Schlüssel verhindert den Start, die Ursache steht in der Fehlermeldung.
+Ein leerer Wert gilt als nicht gesetzt. Ein ungültiger Wert oder ein fehlender Schlüssel verhindert
+den Start, die Ursache steht in der Fehlermeldung. Wie lange ein Token gilt, entscheidet das
+Werkzeug über `exp`.
 
-**Werkzeug nach Standard** (RFC 7519, OpenID Connect): Nur `JWT_SECRET` setzen.
-
-**Werkzeug mit eigenen Claims**, zum Beispiel Kennung in `uid` und Name in `displayName`:
-
-```sh
-ACTOR_CLAIM=uid
-LABEL_CLAIM=displayName
-```
-
-**Werkzeug mit Schlüsselpaar**: Der Dienst bekommt nur den öffentlichen Schlüssel, der private
-bleibt beim Werkzeug. Zeilenumbrüche im PEM werden in doppelten Anführungszeichen als `\n`
-geschrieben. `JWT_SECRET` wird dann nicht gebraucht.
+Bei einem Schlüsselpaar bekommt der Dienst nur den öffentlichen Schlüssel, Zeilenumbrüche im PEM
+werden als `\n` geschrieben:
 
 ```sh
 JWT_ALGORITHM=RS256
 JWT_PUBLIC_KEY="-----BEGIN PUBLIC KEY-----\nMIIBIjANBg...\n-----END PUBLIC KEY-----"
 ```
 
-Wie lange ein Token gilt, entscheidet das Werkzeug über `exp`. Der Dienst gleicht dabei nur
-Uhrenabweichungen bis `JWT_CLOCK_TOLERANCE` aus. Diese Toleranz legt der Betreiber fest, nie
-der Client.
-
-#### Token mitschicken
+### Token mitschicken
 
 - HTTP: Header `Authorization: Bearer <token>`
 - WebSocket: als Subprotokolle `['bearer', <token>]`
 
 Jede Ablehnung beantwortet der Dienst gleich mit `401`. Den Grund schreibt er nur ins Log.
 
-#### Token zum Ausprobieren
+## Betrieb und Grenzen
 
-```sh
-npm run token -- alice "Alice Muster" 15m
-```
+### Genau ein Prozess
 
-Das Skript übernimmt `JWT_ALGORITHM`, `ACTOR_CLAIM` und `LABEL_CLAIM` aus der `.env`. Es kann nur
-`HS…`-Tokens erzeugen, denn für die anderen Verfahren fehlt dem Dienst der private Schlüssel.
+Der Dienst hält jedes geöffnete Werkstück im Speicher seines Prozesses. Zwei Instanzen gegen
+dieselbe Datenbank sehen sich nicht live und stören sich beim Falten. Deshalb:
+
+- immer genau eine Instanz,
+- beim Update erst die alte stoppen, dann die neue starten,
+- beim Stoppen wartet der Dienst höchstens 5 s auf jeden Client. Die Frist, die die Plattform zum
+  Beenden gibt, sollte darüber liegen (Docker: 10 s).
+
+### Größen
+
+| Variable              | Vorgabe | Bedeutung                                                                                                                      |
+| --------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `MAX_MESSAGE_BYTES`   | 8 MiB   | Größte Nachricht eines Clients, höchstens 15 MiB, weil MongoDB eine Änderung in einem Dokument bis 16 MiB ablegt. Größer: 1009 |
+| `MAX_AWARENESS_BYTES` | 64 KiB  | Größter Awareness-Eintrag (Cursor, Auswahl, Name). Er geht alle 15 s an alle. Größer: 1009                                     |
+
+Zur Einordnung: 50 000 Tastendrücke ergeben rund 1 MB Änderungen und 250 KB gefalteten Stand.
+
+### Herkunft der Verbindungen
+
+`ALLOWED_ORIGINS` listet die Webseiten, von denen aus ein Browser den Socket öffnen und die Routen
+aufrufen darf: durch Komma getrennt, ohne Pfad und ohne `/` am Ende, etwa `https://tool.example`.
+Leer heißt: von überall. Andere Herkunft bekommt am Socket `403` und bei den Routen keine
+CORS-Header.
+
+### Bekannte Grenzen
+
+- **Uhr:** Änderungen sind nach der Zeit in ihrer `_id` geordnet. Die Serveruhr sollte deshalb über
+  NTP nachgeführt werden, statt zu springen.
+- **Nicht anwendbare Änderung:** Lässt sich eine gespeicherte Änderung nicht anwenden, etwa nach
+  einem Eingriff von Hand in die Datenbank, öffnet das Werkstück nicht mehr. Das Log nennt die
+  `_id` der Zeile. Sie zu löschen verliert diese Änderung und alles, was darauf aufbaut.
+- **Urheber:** Als Urheber einer Änderung gilt, wessen Verbindung sie liefert. Nur wenn das
+  Speichern scheitert und nachgeliefert wird, kann eine Änderung unter fremdem Namen stehen.

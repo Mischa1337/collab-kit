@@ -101,17 +101,19 @@ export async function maySee(db: Db, actor: Actor, target: Reference): Promise<b
   return true;
 }
 
-/** A task is seen by its creator, its assignee, and whoever may see its anchor or its parent. */
+/** A task is seen by its creator, its assignees, and whoever may see its anchor or its parent. */
 async function maySeeTask(db: Db, actor: Actor, task: TaskRecord): Promise<boolean> {
-  const { assignee } = task;
+  const { assignees } = task;
 
   if (task.createdBy === actor.actorId) {
     return true;
   }
-  if (assignee?.kind === 'actor' && assignee.id === actor.actorId) {
+  if (assignees.some((entry) => entry.kind === 'actor' && entry.id === actor.actorId)) {
     return true;
   }
-  if (assignee?.kind === 'group' && (await isMemberOfAny(db, [assignee.id], actor.actorId))) {
+  // One query for all groups on the task; none at all asks nothing.
+  const groupIds = assignees.filter((entry) => entry.kind === 'group').map((entry) => entry.id);
+  if (await isMemberOfAny(db, groupIds, actor.actorId)) {
     return true;
   }
   if (task.anchor !== undefined && (await maySee(db, actor, task.anchor))) {
@@ -135,12 +137,12 @@ export async function maySetTaskState(db: Db, actor: Actor, taskId: ObjectId): P
   return maySee(db, actor, { kind: 'task', id: taskId });
 }
 
-/** Provisional: whoever may see a task hands it on, so a group can take up one left lying. */
+/** Provisional: whoever may see a task gives and takes it, so a group can take one left lying. */
 export async function mayAssignTask(db: Db, actor: Actor, taskId: ObjectId): Promise<boolean> {
   return maySee(db, actor, { kind: 'task', id: taskId });
 }
 
-/** Any actor key, as the service cannot know them; a group only if the actor may see it. */
+/** Asked for each entry: any actor key, as the service cannot know them; a group only if seen. */
 export async function mayAssignTo(db: Db, actor: Actor, assignee: Assignee): Promise<boolean> {
   return assignee.kind === 'actor' || maySee(db, actor, assignee);
 }

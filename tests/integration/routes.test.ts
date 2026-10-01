@@ -3,6 +3,7 @@ import { ObjectId } from 'mongodb';
 import pino from 'pino';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import * as Y from 'yjs';
 
 import { createTokenCheck } from '../../src/auth/token.ts';
 import { applyDefinitions } from '../../src/db/apply.ts';
@@ -41,7 +42,14 @@ beforeAll(async () => {
   const hub = createWorkpieceHub({ db: storage.db, logger });
   server = createServer({
     logger,
-    api: createApi({ db: storage.db, hub, checkToken: createTokenCheck({ key: secret }), logger }),
+    api: createApi({
+      db: storage.db,
+      hub,
+      checkToken: createTokenCheck({ key: secret }),
+      logger,
+      // No sockets in these tests, so there is nothing to ask again.
+      recheckAccess: async () => {},
+    }),
   });
 });
 
@@ -592,6 +600,92 @@ describe('the history of a workpiece', () => {
     expect(await sizes({ limit: '2' })).toEqual([3, 5]);
     expect(await sizes({ since: second._id.toHexString(), limit: '2' })).toEqual([7]);
   });
+
+  /** Types the words one after another and stores each keystroke's change as bob. */
+  async function typed(workpieceId: string, words: string[]): Promise<ObjectId[]> {
+    const writer = new Y.Doc();
+    const captured: Uint8Array[] = [];
+    writer.on('update', (update: Uint8Array) => captured.push(update));
+    for (const word of words) {
+      writer.getText('t').insert(writer.getText('t').length, word);
+    }
+
+    const ids: ObjectId[] = [];
+    for (const bytes of captured) {
+      // eslint-disable-next-line no-await-in-loop
+      const stored = await appendUpdate(storage.db, {
+        workpieceId: new ObjectId(workpieceId),
+        bytes,
+        createdBy: 'bob',
+      });
+      ids.push(stored._id);
+    }
+    return ids;
+  }
+
+  /** The state a route hands out, read back into a doc, and the change it says it reaches. */
+  async function stateOf(workpieceId: string, token: string, query: Record<string, string> = {}) {
+    const answer = await request(server)
+      .get(`/workpieces/${workpieceId}/state`)
+      .query(query)
+      .set(as(token))
+      .buffer(true)
+      .parse((response, done) => {
+        const chunks: Buffer[] = [];
+        response.on('data', (chunk: Buffer) => chunks.push(chunk));
+        response.on('end', () => done(null, Buffer.concat(chunks)));
+      });
+
+    const doc = new Y.Doc();
+    if (answer.status === 200) {
+      Y.applyUpdate(doc, new Uint8Array(answer.body as Buffer));
+    }
+    return {
+      status: answer.status,
+      type: answer.type,
+      text: doc.getText('t').toString(),
+      upTo: answer.headers['x-up-to-update-id'],
+    };
+  }
+
+  it('hands out the state after a change, or the newest one', async () => {
+    const { workpieceId } = await setUp();
+    const [, second, third] = await typed(workpieceId, ['eins', ' zwei', ' drei']);
+
+    const earlier = await stateOf(workpieceId, bob, { at: second!.toHexString() });
+    expect(earlier).toEqual({
+      status: 200,
+      type: 'application/octet-stream',
+      text: 'eins zwei',
+      upTo: second!.toHexString(),
+    });
+
+    const newest = await stateOf(workpieceId, bob);
+    expect(newest).toMatchObject({ text: 'eins zwei drei', upTo: third!.toHexString() });
+  });
+
+  it('refuses a point that is no change of this workpiece', async () => {
+    const { workpieceId } = await setUp();
+    await typed(workpieceId, ['eins']);
+    const elsewhere = (await setUp()).workpieceId;
+    const [foreign] = await typed(elsewhere, ['anderswo']);
+
+    expect((await stateOf(workpieceId, bob, { at: 'kaputt' })).status).toBe(400);
+    expect((await stateOf(workpieceId, bob, { at: foreign!.toHexString() })).status).toBe(404);
+  });
+
+  it('lets whoever sees the workpiece read its state and history, and nobody else', async () => {
+    // alice made it and sees it, but it lies in no room, so nobody may open it.
+    const loose = await request(server).post('/workpieces').set(as(alice)).send({ name: 'Allein' });
+    const workpieceId = loose.body._id as string;
+    await typed(workpieceId, ['Abgabe']);
+
+    expect(await stateOf(workpieceId, alice)).toMatchObject({ status: 200, text: 'Abgabe' });
+    expect(
+      (await request(server).get(`/workpieces/${workpieceId}/updates`).set(as(alice))).status,
+    ).toBe(200);
+    expect((await stateOf(workpieceId, bob)).status).toBe(404);
+  });
 });
 
 describe('a workpiece as a thing', () => {
@@ -806,18 +900,24 @@ describe('who may see a task', () => {
   });
 
   it('shows a task without anchor to its creator and to whom it belongs', async () => {
-    const reading = await task({ assignee: { kind: 'actor', id: 'carol' } });
+    const reading = await task({ assignees: [{ kind: 'actor', id: 'carol' }] });
 
     expect((await traces(reading._id, tokenFor('dora'))).status).toBe(200);
     expect((await traces(reading._id, tokenFor('carol'))).status).toBe(200);
     expect((await traces(reading._id, bob)).status).toBe(404);
   });
 
-  it('shows a task given to a group to its members', async () => {
+  it('shows a task given to a person and a group to both of them', async () => {
     const { groupId } = await setUp();
-    const shared = await task({ assignee: { kind: 'group', id: new ObjectId(groupId) } });
+    const shared = await task({
+      assignees: [
+        { kind: 'actor', id: 'erin' },
+        { kind: 'group', id: new ObjectId(groupId) },
+      ],
+    });
 
     expect((await traces(shared._id, bob)).status).toBe(200);
+    expect((await traces(shared._id, tokenFor('erin'))).status).toBe(200);
     expect((await traces(shared._id, tokenFor('carol'))).status).toBe(404);
   });
 });
@@ -836,7 +936,7 @@ describe('work to be done', () => {
   it('takes the creator from the token and shows the task to whom it is given', async () => {
     const planned = await plan(alice, {
       title: 'Kapitel 3 lesen',
-      assignee: { kind: 'actor', id: 'bob' },
+      assignees: [{ kind: 'actor', id: 'bob' }],
       createdBy: 'mallory',
     });
     expect(planned.status).toBe(201);
@@ -857,8 +957,8 @@ describe('work to be done', () => {
   it('lists for a member what went to their group, narrowed by state', async () => {
     const { groupId } = await setUp();
     const group = { kind: 'group', id: groupId };
-    await plan(alice, { title: 'Gruppe offen', assignee: group });
-    await plan(alice, { title: 'Gruppe fertig', assignee: group, state: 'fertig' });
+    await plan(alice, { title: 'Gruppe offen', assignees: [group] });
+    await plan(alice, { title: 'Gruppe fertig', assignees: [group], state: 'fertig' });
 
     expect(await titles(bob, '/me/tasks')).toEqual(
       expect.arrayContaining(['Gruppe offen', 'Gruppe fertig']),
@@ -881,24 +981,32 @@ describe('work to be done', () => {
     );
   });
 
-  it('gives a task only to a group the actor may see', async () => {
+  it('gives a task only to groups the actor may see, every one of them', async () => {
     const { groupId } = await setUp();
-    const task = { title: 'x', assignee: { kind: 'group', id: groupId } };
+    const task = {
+      title: 'x',
+      assignees: [
+        { kind: 'actor', id: 'carol' },
+        { kind: 'group', id: groupId },
+      ],
+    };
 
     expect((await plan(tokenFor('carol'), task)).status).toBe(404);
     expect((await plan(bob, task)).status).toBe(201);
   });
 
   it('reads a person as the token does and a group by its key, nothing else', async () => {
-    const given = (assignee: unknown) => plan(alice, { title: 'x', assignee });
+    const given = (assignees: unknown) => plan(alice, { title: 'x', assignees });
+    const bobs = { kind: 'actor', id: 'bob' };
 
-    expect((await given({ kind: 'actor', id: { $ne: null } })).status).toBe(400);
-    expect((await given({ kind: 'group', id: 'lehrende' })).status).toBe(400);
-    expect((await given({ kind: 'team', id: 'lehrende' })).status).toBe(400);
-    expect((await given({ kind: 'actor', id: 42 })).body.assignee).toEqual({
-      kind: 'actor',
-      id: '42',
-    });
+    expect((await given([{ kind: 'actor', id: { $ne: null } }])).status).toBe(400);
+    expect((await given([{ kind: 'group', id: 'lehrende' }])).status).toBe(400);
+    expect((await given([bobs, { kind: 'team', id: 'lehrende' }])).status).toBe(400);
+    expect((await given(bobs)).status).toBe(400);
+    expect((await given([{ kind: 'actor', id: 42 }])).body.assignees).toEqual([
+      { kind: 'actor', id: '42' },
+    ]);
+    expect((await given([bobs, bobs])).body.assignees).toEqual([bobs]);
   });
 
   it('refuses a task without its text, and an optional field it cannot use', async () => {
@@ -919,7 +1027,10 @@ describe('work to be done', () => {
     await plan(alice, {
       title: 'Teil',
       anchor: onWorkpiece(workpieceId, 'statement-3'),
-      assignee: { kind: 'actor', id: 'bob' },
+      assignees: [
+        { kind: 'actor', id: 'carol' },
+        { kind: 'actor', id: 'bob' },
+      ],
     });
 
     expect(await titles(bob, '/tasks', at)).toEqual(['Modell', 'Teil', 'erster']);
@@ -950,25 +1061,29 @@ describe('work to be done', () => {
     ).toBe(400);
   });
 
-  it('moves the state and hands the task on, and keeps who and why', async () => {
-    const { workpieceId } = await setUp();
+  it('moves the state, gives and takes the task, and keeps who and why', async () => {
+    const { workpieceId, groupId } = await setUp();
     const planned = await plan(alice, {
       kind: 'review',
       title: 'Entwurf begutachten',
       anchor: onWorkpiece(workpieceId),
     });
     const id = planned.body._id as string;
+    const carol = { kind: 'actor', id: 'carol' };
+    const group = { kind: 'group', id: groupId };
     const mark = (token: string, change: object) =>
       request(server).patch(`/tasks/${id}`).set(as(token)).send(change);
-    const hand = (token: string, change: object) =>
-      request(server).put(`/tasks/${id}/assignee`).set(as(token)).send(change);
+    const give = (token: string, entry: object) =>
+      request(server).post(`/tasks/${id}/assignees`).set(as(token)).send(entry);
+    const take = (token: string, entry: Record<string, string>) =>
+      request(server).delete(`/tasks/${id}/assignees`).query(entry).set(as(token));
 
     expect((await mark(bob, { state: 'in Arbeit' })).body.state).toBe('in Arbeit');
-    const handed = await hand(bob, {
-      assignee: { kind: 'actor', id: 'carol' },
-      reason: 'kennt sich aus',
-    });
-    expect(handed.body.assignee).toEqual({ kind: 'actor', id: 'carol' });
+    const given = await give(bob, { ...carol, reason: 'kennt sich aus' });
+    expect(given.status).toBe(201);
+    expect(given.body.assignees).toEqual([carol]);
+    expect((await give(bob, carol)).status).toBe(200);
+    expect((await give(bob, group)).body.assignees).toEqual([carol, group]);
 
     // carol sees it now because it is hers, not through the room.
     expect(
@@ -978,6 +1093,10 @@ describe('work to be done', () => {
           .set(as(tokenFor('carol')))
       ).status,
     ).toBe(200);
+
+    const taken = await take(alice, { ...group, reason: 'reicht allein' });
+    expect(taken.status).toBe(200);
+    expect(taken.body.assignees).toEqual([carol]);
 
     const traces = await request(server)
       .get('/events')
@@ -989,15 +1108,24 @@ describe('work to be done', () => {
         event.createdBy,
       ]),
     ).toEqual([
-      ['task-assignee', 'bob'],
+      ['assignee-removed', 'alice'],
+      ['assignee-added', 'bob'],
+      ['assignee-added', 'bob'],
       ['task-state', 'bob'],
     ]);
+    expect(traces.body[0]).toMatchObject({ reason: 'reicht allein', detail: group });
+    expect(traces.body[2]).toMatchObject({ reason: 'kennt sich aus', detail: carol });
 
     const dora = tokenFor('dora');
+    const hidden = { kind: 'group', id: new ObjectId().toHexString() };
     expect((await mark(dora, { state: 'fertig' })).status).toBe(404);
-    expect((await hand(dora, { assignee: { kind: 'actor', id: 'dora' } })).status).toBe(404);
+    expect((await give(dora, { kind: 'actor', id: 'dora' })).status).toBe(404);
+    expect((await take(dora, carol)).status).toBe(404);
+    expect((await give(bob, hidden)).status).toBe(404);
     expect((await mark(bob, {})).status).toBe(400);
-    expect((await hand(bob, {})).status).toBe(400);
+    expect((await give(bob, {})).status).toBe(400);
+    expect((await take(bob, { kind: 'group', id: 'lehrende' })).status).toBe(400);
+    expect((await give(bob, { ...carol, reason: 42 })).status).toBe(400);
     expect((await mark(bob, { state: 'fertig', reason: 42 })).status).toBe(400);
   });
 });

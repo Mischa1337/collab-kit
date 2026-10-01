@@ -62,6 +62,32 @@ export async function readUpdatesSince(
     .toArray();
 }
 
+/** Changes up to and including the given one, oldest first; the chain to an earlier state. */
+export async function readUpdatesUntil(
+  db: Db,
+  workpieceId: ObjectId,
+  until: ObjectId,
+): Promise<UpdateRecord[]> {
+  return db
+    .collection<UpdateRecord>('updates')
+    .find({ workpieceId, _id: { $lte: until } })
+    .sort({ _id: 1 })
+    .toArray();
+}
+
+/** Whether the change belongs to this workpiece, so a point from outside can be trusted. */
+export async function isUpdateOf(
+  db: Db,
+  workpieceId: ObjectId,
+  updateId: ObjectId,
+): Promise<boolean> {
+  const found = await db
+    .collection<UpdateRecord>('updates')
+    .findOne({ _id: updateId, workpieceId }, { projection: { _id: 1 } });
+
+  return found !== null;
+}
+
 /** One change as the service tells of it: who, when and how many bytes, never the bytes. */
 export interface UpdateSummary {
   _id: ObjectId;

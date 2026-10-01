@@ -3,7 +3,7 @@ import { ObjectId, type Db, type Document, type Filter } from 'mongodb';
 import { anchorSchema, anchoredAt, type Anchor, type AnchorQuery } from '../../model/anchor.ts';
 import { defined, matchOptional } from '../../utils/optional.ts';
 import type { CollectionDefinition } from '../apply.ts';
-import { changeWithEvent } from './events.ts';
+import { changeWithEvent, writeWithEvents, type NewEvent } from './events.ts';
 
 /** Who a task is assigned to: a person by actor key, or a group; a change cannot hold one. */
 export type Assignee = { kind: 'actor'; id: string } | { kind: 'group'; id: ObjectId };
@@ -17,7 +17,8 @@ export interface TaskRecord {
   /** What it is about. With a unit it is the cut of a subtask. */
   anchor?: Anchor;
   parentId?: ObjectId;
-  assignee?: Assignee;
+  /** Persons and groups side by side; who gave or took them, and when, is in events. */
+  assignees: Assignee[];
   /** Order among siblings, D9.3. The tool decides the numbers. */
   order?: number;
   /** Free, the service never reads it. */
@@ -30,7 +31,7 @@ export const tasksDefinition: CollectionDefinition = {
   name: 'tasks',
   schema: {
     bsonType: 'object',
-    required: ['kind', 'title', 'state', 'createdAt', 'createdBy'],
+    required: ['kind', 'title', 'state', 'assignees', 'createdAt', 'createdBy'],
     properties: {
       kind: { bsonType: 'string', description: 'task, review, revision, approval, ...' },
       title: { bsonType: 'string' },
@@ -40,13 +41,17 @@ export const tasksDefinition: CollectionDefinition = {
       },
       anchor: anchorSchema,
       parentId: { bsonType: 'objectId', description: 'makes it a subtask' },
-      assignee: {
-        bsonType: 'object',
-        required: ['kind', 'id'],
-        oneOf: [
-          { properties: { kind: { enum: ['actor'] }, id: { bsonType: 'string' } } },
-          { properties: { kind: { enum: ['group'] }, id: { bsonType: 'objectId' } } },
-        ],
+      assignees: {
+        bsonType: 'array',
+        description: 'persons and groups side by side, empty when nobody has it yet',
+        items: {
+          bsonType: 'object',
+          required: ['kind', 'id'],
+          oneOf: [
+            { properties: { kind: { enum: ['actor'] }, id: { bsonType: 'string' } } },
+            { properties: { kind: { enum: ['group'] }, id: { bsonType: 'objectId' } } },
+          ],
+        },
       },
       order: { bsonType: 'number', description: 'order among siblings, D9.3' },
       detail: { bsonType: 'object', description: 'free, the service never reads it' },
@@ -55,7 +60,7 @@ export const tasksDefinition: CollectionDefinition = {
     },
   },
   indexes: [
-    { key: { 'assignee.id': 1, state: 1 }, name: 'assignee_state' },
+    { key: { 'assignees.id': 1, state: 1 }, name: 'assignees_state' },
     { key: { 'anchor.id': 1 }, name: 'anchor_id' },
     { key: { parentId: 1, order: 1 }, name: 'parent_order' },
   ],
@@ -69,7 +74,8 @@ export interface NewTask {
   readonly createdBy: string;
   readonly anchor?: Anchor;
   readonly parentId?: ObjectId;
-  readonly assignee?: Assignee;
+  /** Given all at the moment it is created; each one counts once. */
+  readonly assignees?: readonly Assignee[];
   readonly order?: number;
   readonly detail?: Document;
 }
@@ -80,12 +86,12 @@ export async function createTask(db: Db, input: NewTask, now = new Date()): Prom
     kind: input.kind,
     title: input.title,
     state: input.state,
+    assignees: distinct(input.assignees ?? []),
     createdAt: now,
     createdBy: input.createdBy,
     ...defined({
       anchor: input.anchor,
       parentId: input.parentId,
-      assignee: input.assignee,
       order: input.order,
       detail: input.detail,
     }),
@@ -99,11 +105,11 @@ export async function findTask(db: Db, id: ObjectId): Promise<TaskRecord | null>
   return db.collection<TaskRecord>('tasks').findOne({ _id: id });
 }
 
-/** Both changing operations go the same way: field and trace, or neither. */
+/** Field and trace, or neither. */
 async function changeTask(
   db: Db,
   taskId: ObjectId,
-  change: Partial<Pick<TaskRecord, 'state' | 'assignee'>>,
+  change: Partial<Pick<TaskRecord, 'state'>>,
   event: { kind: string; createdBy: string; reason?: string; detail: Document },
   now: Date,
 ): Promise<TaskRecord> {
@@ -156,25 +162,52 @@ export async function setTaskState(
 export interface Assignment {
   readonly assignee: Assignee;
   readonly changedBy: string;
+  /** Why it was given or taken, D6.6. */
   readonly reason?: string;
 }
 
-export async function assignTask(
+/** Gives the task to one more person or group if new and records it; answers whether it was new. */
+export async function addAssignee(
   db: Db,
   taskId: ObjectId,
   input: Assignment,
   now = new Date(),
-): Promise<TaskRecord> {
-  return changeTask(
+): Promise<boolean> {
+  return writeWithEvents(
     db,
-    taskId,
-    { assignee: input.assignee },
-    {
-      kind: 'task-assignee',
-      createdBy: input.changedBy,
-      detail: { to: input.assignee },
-      ...defined({ reason: input.reason }),
+    async (session) => {
+      const result = await db
+        .collection<TaskRecord>('tasks')
+        .updateOne(
+          { _id: taskId, assignees: { $not: { $elemMatch: input.assignee } } },
+          { $push: { assignees: input.assignee } },
+          { session },
+        );
+
+      return result.modifiedCount === 1;
     },
+    [assigneeEvent('assignee-added', taskId, input)],
+    now,
+  );
+}
+
+/** Takes one person or group off the task and records it; answers whether it was there. */
+export async function removeAssignee(
+  db: Db,
+  taskId: ObjectId,
+  input: Assignment,
+  now = new Date(),
+): Promise<boolean> {
+  return writeWithEvents(
+    db,
+    async (session) => {
+      const result = await db
+        .collection<TaskRecord>('tasks')
+        .updateOne({ _id: taskId }, { $pull: { assignees: input.assignee } }, { session });
+
+      return result.modifiedCount === 1;
+    },
+    [assigneeEvent('assignee-removed', taskId, input)],
     now,
   );
 }
@@ -197,12 +230,12 @@ export async function readTasks(db: Db, query: TaskQuery = {}): Promise<TaskReco
   const filter: Document = {
     ...(query.anchor === undefined ? {} : anchoredAt(query.anchor)),
     ...defined({ kind: query.kind, state: query.state }),
+    // $elemMatch, so kind and id come from the same entry and not from two different ones.
     ...(query.assignees === undefined
       ? {}
       : {
           $or: query.assignees.map((assignee) => ({
-            'assignee.kind': assignee.kind,
-            'assignee.id': assignee.id,
+            assignees: { $elemMatch: { kind: assignee.kind, id: assignee.id } },
           })),
         }),
     ...matchOptional('parentId', query.parentId),
@@ -213,4 +246,21 @@ export async function readTasks(db: Db, query: TaskQuery = {}): Promise<TaskReco
     .find(filter as Filter<TaskRecord>)
     .sort({ order: 1, _id: 1 })
     .toArray();
+}
+
+/** Each assignee once, the first place kept; kind and id together make one. */
+function distinct(assignees: readonly Assignee[]): Assignee[] {
+  const seen = new Map(assignees.map((entry) => [`${entry.kind}:${String(entry.id)}`, entry]));
+  return [...seen.values()];
+}
+
+/** The trace of a change to who has the task, anchored at the task. */
+function assigneeEvent(kind: string, taskId: ObjectId, input: Assignment): NewEvent {
+  return {
+    kind,
+    createdBy: input.changedBy,
+    anchor: { kind: 'task', id: taskId },
+    detail: { ...input.assignee },
+    ...defined({ reason: input.reason }),
+  };
 }

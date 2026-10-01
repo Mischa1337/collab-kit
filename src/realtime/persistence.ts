@@ -1,72 +1,99 @@
-import type { Db, ObjectId } from 'mongodb';
+import type { Binary, Db, ObjectId } from 'mongodb';
 import * as Y from 'yjs';
 
 import { findWorkpieceWithFold, foldState } from '../db/collections/workpieces.ts';
-import { appendUpdate, readUpdatesSince } from '../db/collections/updates.ts';
+import { appendUpdate, readUpdatesSince, readUpdatesUntil } from '../db/collections/updates.ts';
 import { defined } from '../utils/optional.ts';
 
-/**
- * A workpiece in memory and how far it is kept. The truth stays in the database: this
- * is only the working copy, and everything written for it runs through one queue.
- */
-export interface WorkingCopy {
+/** How far a workpiece is stored, and the queue its writes run through. */
+export interface Stored {
   readonly workpieceId: ObjectId;
-  readonly doc: Y.Doc;
   /** Writes run one after another, so the stored order matches the order of arrival. */
   queue: Promise<void>;
   /** The newest update written for this workpiece, the cut for the next folding. */
   lastUpdateId?: ObjectId;
   /** What fold.upToUpdateId holds in the database, as far as this process knows. */
   foldedUpToUpdateId?: ObjectId;
-  /** Updates that have arrived since the last folding. */
-  sinceFold: number;
+  /** Updates stored since a fold was last tried, so a failing fold is not retried each time. */
+  updatesSinceFoldAttempt: number;
 }
 
-/**
- * Rebuilds the working copy from the folded state plus every change after it. Nothing
- * listens to the Y.Doc yet, so replaying the history does not store it a second time.
- */
-export async function loadWorkingCopy(db: Db, workpieceId: ObjectId): Promise<WorkingCopy> {
+/** Rebuilds the workpiece from its folded state plus every change after it. */
+export async function loadWorkpiece(
+  db: Db,
+  workpieceId: ObjectId,
+): Promise<{ readonly doc: Y.Doc; readonly stored: Stored }> {
   const record = await findWorkpieceWithFold(db, workpieceId);
 
   if (record === null) {
     throw new Error(`unknown workpiece ${workpieceId.toHexString()}`);
   }
 
+  // Starts from the folded state, if there is one.
   const doc = new Y.Doc();
   if (record.fold !== undefined) {
-    Y.applyUpdate(doc, new Uint8Array(record.fold.state.buffer));
+    applyStored(doc, record.fold.state, `the fold of workpiece ${workpieceId.toHexString()}`);
   }
 
-  // Everything the shortcut does not cover yet. A workpiece that was never folded
-  // starts from nothing and reads its whole history, which is just as correct.
-  const pending = await readUpdatesSince(db, workpieceId, record.fold?.upToUpdateId);
-  for (const row of pending) {
-    Y.applyUpdate(doc, new Uint8Array(row.bytes.buffer));
+  // Then every change the fold does not cover; never folded means the whole history.
+  const afterFold = await readUpdatesSince(db, workpieceId, record.fold?.upToUpdateId);
+  for (const row of afterFold) {
+    applyStored(doc, row.bytes, `update ${row._id.toHexString()}`);
   }
 
-  return {
+  // How far it is stored: the newest change, and how far the fold reaches.
+  const stored: Stored = {
     workpieceId,
-    doc,
     queue: Promise.resolve(),
-    sinceFold: pending.length,
+    updatesSinceFoldAttempt: afterFold.length,
     ...defined({
-      lastUpdateId: pending.at(-1)?._id ?? record.fold?.upToUpdateId,
+      lastUpdateId: afterFold.at(-1)?._id ?? record.fold?.upToUpdateId,
       foldedUpToUpdateId: record.fold?.upToUpdateId,
     }),
   };
+
+  return { doc, stored };
 }
 
-/**
- * Runs work behind everything queued before it and hands back its result. A failure
- * reaches whoever queued the work and never holds up what is queued after it.
- */
-export function enqueue<T>(
-  copy: Pick<WorkingCopy, 'queue'>,
-  work: () => T | Promise<T>,
-): Promise<T> {
-  const run = copy.queue.then(work);
-  copy.queue = run.then(
+/** A stored state as one Yjs update: as it stood after the change at, or the newest one. */
+export async function readStateAt(
+  db: Db,
+  workpieceId: ObjectId,
+  at?: ObjectId,
+): Promise<{ readonly state: Uint8Array; readonly upToUpdateId?: ObjectId }> {
+  // The newest comes the way a workpiece loads, from the fold plus what came after it.
+  if (at === undefined) {
+    const { doc, stored } = await loadWorkpiece(db, workpieceId);
+    const state = Y.encodeStateAsUpdate(doc);
+    doc.destroy();
+    return { state, ...defined({ upToUpdateId: stored.lastUpdateId }) };
+  }
+
+  // The fold is mostly newer than the point asked for, so the chain is replayed from its start.
+  const doc = new Y.Doc();
+  for (const row of await readUpdatesUntil(db, workpieceId, at)) {
+    applyStored(doc, row.bytes, `update ${row._id.toHexString()}`);
+  }
+  const state = Y.encodeStateAsUpdate(doc);
+  doc.destroy();
+  return { state, upToUpdateId: at };
+}
+
+/** Applies stored bytes; what does not apply names itself, so the row can be found. */
+function applyStored(doc: Y.Doc, bytes: Binary, what: string): void {
+  try {
+    Y.applyUpdate(doc, new Uint8Array(bytes.buffer));
+  } catch (error) {
+    throw new Error(`${what} cannot be applied`, { cause: error });
+  }
+}
+
+/** Runs work after everything queued before it; a failure reaches only whoever queued it. */
+export function enqueue<T>(stored: Pick<Stored, 'queue'>, work: () => T | Promise<T>): Promise<T> {
+  // Chained behind the last work, whatever became of it.
+  const run = stored.queue.then(work);
+  // The queue itself never fails, so one failure does not hold up the rest.
+  stored.queue = run.then(
     () => undefined,
     () => undefined,
   );
@@ -76,48 +103,47 @@ export function enqueue<T>(
 /** Keeps one change and counts it towards the next folding. Runs inside the queue. */
 export async function storeUpdate(
   db: Db,
-  copy: WorkingCopy,
+  stored: Stored,
   update: Uint8Array,
   createdBy: string,
 ): Promise<void> {
   const record = await appendUpdate(db, {
-    workpieceId: copy.workpieceId,
+    workpieceId: stored.workpieceId,
     bytes: update,
     createdBy,
   });
 
-  copy.lastUpdateId = record._id;
-  copy.sinceFold += 1;
+  // The newest stored change is the cut for the next fold.
+  stored.lastUpdateId = record._id;
+  stored.updatesSinceFoldAttempt += 1;
 }
 
-/**
- * Takes the state from memory and writes it as the new shortcut. Runs inside the
- * queue or after it has drained, so everything up to lastUpdateId has been stored and
- * is contained in it.
- *
- * A change that arrives while this runs lands behind the cut and is applied on top
- * at the next load. Applying it twice is harmless in Yjs.
- */
-export async function foldNow(db: Db, copy: WorkingCopy): Promise<boolean> {
-  const upToUpdateId = copy.lastUpdateId;
+/** Writes the state from memory as the new shortcut; runs in the queue or after it drained. */
+export async function foldNow(db: Db, stored: Stored, doc: Y.Doc): Promise<boolean> {
+  const upToUpdateId = stored.lastUpdateId;
 
+  // Nothing stored yet, or nothing new since the last fold.
   if (upToUpdateId === undefined) {
     return false;
   }
-  if (copy.foldedUpToUpdateId !== undefined && upToUpdateId.equals(copy.foldedUpToUpdateId)) {
+  if (stored.foldedUpToUpdateId !== undefined && upToUpdateId.equals(stored.foldedUpToUpdateId)) {
     return false;
   }
 
+  // Counted from the attempt, so a fold that keeps failing waits as long as the first one did.
+  stored.updatesSinceFoldAttempt = 0;
+
+  // May hold changes not stored yet; they lie beyond the cut, and applying twice is harmless.
   const written = await foldState(db, {
-    workpieceId: copy.workpieceId,
-    state: Y.encodeStateAsUpdate(copy.doc),
+    workpieceId: stored.workpieceId,
+    state: Y.encodeStateAsUpdate(doc),
     upToUpdateId,
-    ...defined({ expected: copy.foldedUpToUpdateId }),
+    ...defined({ expected: stored.foldedUpToUpdateId }),
   });
 
+  // Only a fold that was written moves the mark; losing the race to another changes nothing.
   if (written) {
-    copy.foldedUpToUpdateId = upToUpdateId;
-    copy.sinceFold = 0;
+    stored.foldedUpToUpdateId = upToUpdateId;
   }
   return written;
 }

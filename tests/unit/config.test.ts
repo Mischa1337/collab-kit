@@ -32,6 +32,38 @@ describe('readConfig', () => {
     });
   });
 
+  it('takes a message limit below what MongoDB keeps in one document', () => {
+    expect(readConfig({ ...valid, MAX_MESSAGE_BYTES: '1048576' })).toMatchObject({
+      maxMessageBytes: 1_048_576,
+    });
+    for (const raw of ['0', '1.5', 'viel', String(16 * 1024 * 1024)]) {
+      expect(() => readConfig({ ...valid, MAX_MESSAGE_BYTES: raw })).toThrowError(
+        /MAX_MESSAGE_BYTES must be whole bytes from 1 to 15 MiB/,
+      );
+    }
+  });
+
+  it('takes an awareness limit by the same rule', () => {
+    expect(readConfig({ ...valid, MAX_AWARENESS_BYTES: '4096' })).toMatchObject({
+      maxAwarenessBytes: 4096,
+    });
+    expect(() => readConfig({ ...valid, MAX_AWARENESS_BYTES: '-1' })).toThrowError(
+      /MAX_AWARENESS_BYTES must be whole bytes from 1 to 15 MiB/,
+    );
+  });
+
+  it('reads the allowed origins as a list and refuses one a browser never sends', () => {
+    expect(
+      readConfig({ ...valid, ALLOWED_ORIGINS: 'https://tool.example, http://localhost:5173' }),
+    ).toMatchObject({ allowedOrigins: ['https://tool.example', 'http://localhost:5173'] });
+    expect(readConfig({ ...valid, ALLOWED_ORIGINS: ' , ' })).not.toHaveProperty('allowedOrigins');
+    for (const raw of ['https://tool.example/', 'tool.example', 'https://tool.example/app']) {
+      expect(() => readConfig({ ...valid, ALLOWED_ORIGINS: raw })).toThrowError(
+        /ALLOWED_ORIGINS must list origins like https:\/\/tool.example/,
+      );
+    }
+  });
+
   it('rejects a clock tolerance that is not whole seconds from 0', () => {
     for (const raw of ['-1', '1.5', 'five']) {
       expect(() => readConfig({ ...valid, JWT_CLOCK_TOLERANCE: raw })).toThrowError(

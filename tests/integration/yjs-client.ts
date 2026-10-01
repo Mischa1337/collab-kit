@@ -15,12 +15,21 @@ export interface TestClient {
   readonly doc: Y.Doc;
   /** Resolves once the service has sent everything this client was missing. */
   readonly synced: Promise<void>;
+  /** Resolves with the code the connection was closed with, by either side. */
+  readonly closed: Promise<number>;
   close(): Promise<void>;
 }
 
-export function connectClient(url: string, protocols: string[]): Promise<TestClient> {
-  const doc = new Y.Doc();
+/** Pass the doc of an earlier client to come back with everything it holds. */
+export function connectClient(
+  url: string,
+  protocols: string[],
+  doc = new Y.Doc(),
+): Promise<TestClient> {
   const socket = new WebSocket(url, protocols);
+  const closed = new Promise<number>((resolve) => {
+    socket.on('close', (code) => resolve(code));
+  });
 
   let markSynced!: () => void;
   const synced = new Promise<void>((resolve) => {
@@ -72,6 +81,7 @@ export function connectClient(url: string, protocols: string[]): Promise<TestCli
       resolve({
         doc,
         synced,
+        closed,
         close: () =>
           new Promise<void>((done) => {
             socket.on('close', () => done());

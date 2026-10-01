@@ -15,7 +15,7 @@ import { defined } from '../utils/optional.ts';
 import { actorOf, bodyOf, fail, guard, idOf, requireId, unusableField } from './http.ts';
 
 /** A group is a set of actors; what it stands for, a role say, lives in settings, unread. */
-export function groupRoutes(db: Db): Router {
+export function groupRoutes(db: Db, recheckAccess: () => Promise<void>): Router {
   const routes = Router();
 
   routes.param('id', requireId('group'));
@@ -105,6 +105,8 @@ export function groupRoutes(db: Db): Router {
 
     const id = idOf(request);
     await removeMember(db, id, { actorId, removedBy: actorOf(request).actorId });
+    // An open connection of the removed actor would otherwise carry on as before.
+    await recheckAccess();
     response.json(await findGroup(db, id));
   });
 
