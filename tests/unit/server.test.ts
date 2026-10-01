@@ -1,3 +1,5 @@
+import type { Server } from 'node:http';
+
 import express, { Router } from 'express';
 import pino from 'pino';
 import request from 'supertest';
@@ -95,5 +97,66 @@ describe('createServer', () => {
     const response = await request(server).get('/health');
 
     expect(response.headers['x-powered-by']).toBeUndefined();
+  });
+});
+
+/** What a browser asks before it sends a token to another origin. */
+function preflight(target: Server, origin: string) {
+  return request(target)
+    .options('/things')
+    .set('Origin', origin)
+    .set('Access-Control-Request-Method', 'GET')
+    .set('Access-Control-Request-Headers', 'authorization');
+}
+
+describe('cross-origin calls', () => {
+  const TOOL = 'https://tool.example';
+  // Stands in for requireActor: whatever reaches it without a token is turned away.
+  const api = Router();
+  api.use((incoming, response, next) => {
+    if (incoming.get('authorization') === undefined) {
+      response.status(401).json({ error: 'unauthorized' });
+      return;
+    }
+    next();
+  });
+  api.get('/things', (_request, response) => {
+    response.json({});
+  });
+  const listed = createServer({ logger: silent, api, allowedOrigins: [TOOL] });
+
+  it('answers the preflight of a listed origin without asking for a token', async () => {
+    const response = await preflight(listed, TOOL);
+
+    expect(response.status).toBe(204);
+    expect(response.headers['access-control-allow-origin']).toBe(TOOL);
+    expect(response.headers['access-control-allow-headers']).toContain('Authorization');
+  });
+
+  it('gives an origin off the list no headers', async () => {
+    const response = await preflight(listed, 'https://elsewhere.example');
+
+    expect(response.status).toBe(401);
+    expect(response.headers['access-control-allow-origin']).toBeUndefined();
+  });
+
+  it('lets a listed origin read the answer and the update header', async () => {
+    const response = await request(listed)
+      .get('/things')
+      .set('Origin', TOOL)
+      .set('Authorization', 'Bearer x');
+
+    expect(response.status).toBe(200);
+    expect(response.headers['access-control-allow-origin']).toBe(TOOL);
+    expect(response.headers['access-control-expose-headers']).toBe('X-Up-To-Update-Id');
+    expect(response.headers['vary']).toContain('Origin');
+  });
+
+  it('lets every origin in without a list', async () => {
+    const open = createServer({ logger: silent, api });
+    const response = await preflight(open, 'https://elsewhere.example');
+
+    expect(response.status).toBe(204);
+    expect(response.headers['access-control-allow-origin']).toBe('https://elsewhere.example');
   });
 });

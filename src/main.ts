@@ -37,6 +37,7 @@ const server = createServer({
     // The gateway is attached below; it needs this server, and these routes need it.
     recheckAccess: () => gateway.recheck(),
   }),
+  ...defined({ allowedOrigins: config.allowedOrigins }),
 });
 // WebSockets share the port of the HTTP server.
 const gateway = attachGateway({

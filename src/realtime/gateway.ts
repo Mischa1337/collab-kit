@@ -8,6 +8,7 @@ import { WebSocketServer, type WebSocket } from 'ws';
 import type { Actor } from '../model/actor.ts';
 import { mayOpenWorkpiece } from '../auth/access.ts';
 import { asObjectId } from '../utils/input.ts';
+import { isAllowedOrigin } from '../utils/origin.ts';
 import type { Connection, WorkpieceHub, OpenWorkpiece } from './hub.ts';
 import { encodeAwareness, encodeSyncStep1, handleMessage, MessageRefused } from './protocol.ts';
 
@@ -319,14 +320,6 @@ async function admit(
   }
 
   return { workpieceId, actor };
-}
-
-/** Without a list every origin passes, with one only those on it. */
-function isAllowedOrigin(origin: string | undefined, allowed?: readonly string[]): boolean {
-  if (allowed === undefined) {
-    return true;
-  }
-  return origin !== undefined && allowed.includes(origin);
 }
 
 /** A catch for work nobody waits for: a failure is logged instead of ending the process. */

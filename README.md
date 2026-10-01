@@ -89,10 +89,13 @@ Zur Einordnung: 50 000 Tastendrücke ergeben rund 1 MB Änderungen und 250 KB ge
 
 ### Herkunft der Verbindungen
 
-`ALLOWED_ORIGINS` legt fest, von welchen Webseiten aus ein Browser den Socket öffnen darf, durch
-Komma getrennt und so, wie der Browser sie schickt: `https://tool.example`, ohne Pfad und ohne
-Schrägstrich am Ende. Leer heißt: von überall. Andere Herkunft bekommt 403. Viel Schutz bringt das
-nicht, denn der Token steckt nicht in einem Cookie, eine fremde Seite hat ihn also gar nicht.
+`ALLOWED_ORIGINS` legt fest, von welchen Webseiten aus ein Browser den Socket öffnen und die
+Routen aufrufen darf, durch Komma getrennt und so, wie der Browser sie schickt:
+`https://tool.example`, ohne Pfad und ohne Schrägstrich am Ende. Leer heißt: von überall. Beim
+Socket bekommt andere Herkunft 403. Bei den Routen bekommt sie keine CORS-Header, der Browser gibt
+ihr die Antwort also nicht heraus. Liegt das Werkzeug unter derselben Origin wie der Dienst, spielt
+CORS keine Rolle. Viel Schutz bringt die Liste nicht, denn der Token steckt nicht in einem Cookie,
+eine fremde Seite hat ihn also gar nicht.
 
 ### Uhr
 

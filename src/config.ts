@@ -26,7 +26,7 @@ export interface Config {
   readonly maxMessageBytes?: number;
   /** Largest awareness update; left out, the gateway keeps its own default. */
   readonly maxAwarenessBytes?: number;
-  /** Web origins that may open a WebSocket; left out, every origin may. */
+  /** Web origins that may open a WebSocket or call the routes; left out, every origin may. */
   readonly allowedOrigins?: readonly string[];
 }
 
