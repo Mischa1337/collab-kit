@@ -51,3 +51,6 @@ literatur-quellen/
 literatur-quellen*.zip
 **/literatur-quellen*.zip
 *.pdf
+
+# Lokale Hilfsskripte (Token, Seed, Lasttest), nicht Teil eines Release
+scripts/

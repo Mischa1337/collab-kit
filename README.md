@@ -53,15 +53,6 @@ der Client.
 
 Jede Ablehnung beantwortet der Dienst gleich mit `401`. Den Grund schreibt er nur ins Log.
 
-#### Token zum Ausprobieren
-
-```sh
-npm run token -- alice "Alice Muster" 15m
-```
-
-Das Skript übernimmt `JWT_ALGORITHM`, `ACTOR_CLAIM` und `LABEL_CLAIM` aus der `.env`. Es kann nur
-`HS…`-Tokens erzeugen, denn für die anderen Verfahren fehlt dem Dienst der private Schlüssel.
-
 ## Betrieb und Grenzen
 
 ### Genau ein Prozess
@@ -84,8 +75,7 @@ einen Instanz scheitert an der der anderen. Deshalb:
 | `MAX_MESSAGE_BYTES`   | 8 MiB   | Größte Nachricht eines Clients, höchstens 15 MiB, weil MongoDB eine Änderung in einem Dokument bis 16 MiB ablegt. Größer: 1009 |
 | `MAX_AWARENESS_BYTES` | 64 KiB  | Größter Awareness-Eintrag (Cursor, Auswahl, Name). Er geht alle 15 s an alle. Größer: 1009                                     |
 
-Zur Einordnung: 50 000 Tastendrücke ergeben rund 1 MB Änderungen und 250 KB gefalteten Stand
-(`npm run measure`).
+Zur Einordnung: 50 000 Tastendrücke ergeben rund 1 MB Änderungen und 250 KB gefalteten Stand.
 
 ### Herkunft der Verbindungen
 
