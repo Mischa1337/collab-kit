@@ -201,11 +201,14 @@ spec:
             # knows itself as localhost, so the driver must not follow it: directConnection.
             - name: MONGODB_URI
               value: mongodb://$(DB_USER):$(DB_PASSWORD)@mongo:27017/?authSource=admin&replicaSet=rs0&directConnection=true
+            # Needed only for an HS algorithm; with JWT_JWKS_URI the secret may lack the key.
+            # If an HS algorithm finds none, the service names JWT_SECRET as missing at start.
             - name: JWT_SECRET
               valueFrom:
                 secretKeyRef:
                   name: collab-kit-secrets
                   key: JWT_SECRET
+                  optional: true
           envFrom:
             - configMapRef:
                 name: collab-kit-config
