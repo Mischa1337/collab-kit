@@ -19,7 +19,7 @@ describe('readConfig', () => {
       mongoUri: valid.MONGODB_URI,
       mongoDb: valid.MONGODB_DB,
       jwtAlgorithm: 'HS256',
-      jwtKey: valid.JWT_SECRET,
+      jwtKey: { fixed: valid.JWT_SECRET },
       jwtClockTolerance: 5,
       actorClaim: 'sub',
       labelClaim: 'name',
@@ -75,13 +75,68 @@ describe('readConfig', () => {
   it('takes the public key instead of the secret for an asymmetric algorithm', () => {
     const config = readConfig({ ...valid, JWT_ALGORITHM: 'RS256', JWT_PUBLIC_KEY: 'pem' });
 
-    expect(config).toMatchObject({ jwtAlgorithm: 'RS256', jwtKey: 'pem' });
+    expect(config).toMatchObject({ jwtAlgorithm: 'RS256', jwtKey: { fixed: 'pem' } });
   });
 
-  it('requires JWT_PUBLIC_KEY for an asymmetric algorithm', () => {
+  it('takes the address of the key set instead of a fixed public key', () => {
+    const config = readConfig({
+      ...valid,
+      JWT_ALGORITHM: 'RS256',
+      JWT_JWKS_URI: 'https://fbs.example/oauth2/jwks',
+    });
+
+    expect(config).toMatchObject({ jwtKey: { jwksUri: 'https://fbs.example/oauth2/jwks' } });
+  });
+
+  it('requires JWT_PUBLIC_KEY or JWT_JWKS_URI for an asymmetric algorithm', () => {
     expect(() => readConfig({ ...valid, JWT_ALGORITHM: 'ES256' })).toThrowError(
-      /JWT_PUBLIC_KEY is missing/,
+      /JWT_PUBLIC_KEY or JWT_JWKS_URI is missing/,
     );
+  });
+
+  it('refuses a fixed public key and a key set together', () => {
+    expect(() =>
+      readConfig({
+        ...valid,
+        JWT_ALGORITHM: 'RS256',
+        JWT_PUBLIC_KEY: 'pem',
+        JWT_JWKS_URI: 'https://fbs.example/oauth2/jwks',
+      }),
+    ).toThrowError(/set either JWT_PUBLIC_KEY or JWT_JWKS_URI, not both/);
+  });
+
+  it('refuses a key set for an HS algorithm, whose secret is never published', () => {
+    expect(() =>
+      readConfig({ ...valid, JWT_JWKS_URI: 'https://fbs.example/oauth2/jwks' }),
+    ).toThrowError(/JWT_JWKS_URI needs an RS, PS or ES algorithm, JWT_ALGORITHM is HS256/);
+  });
+
+  it('refuses a key set address that is no http or https address', () => {
+    for (const raw of ['fbs.example/oauth2/jwks', 'ftp://fbs.example/jwks', 'https://']) {
+      expect(() =>
+        readConfig({ ...valid, JWT_ALGORITHM: 'RS256', JWT_JWKS_URI: raw }),
+      ).toThrowError(/JWT_JWKS_URI must be an http or https address/);
+    }
+  });
+
+  it('reads the expected issuer and the list of expected audiences', () => {
+    const config = readConfig({
+      ...valid,
+      JWT_ISSUER: ' https://fbs.example ',
+      JWT_AUDIENCE: 'fbs-web-shell, fbs-test-client',
+    });
+
+    expect(config).toMatchObject({
+      jwtIssuer: 'https://fbs.example',
+      jwtAudience: ['fbs-web-shell', 'fbs-test-client'],
+    });
+  });
+
+  it('treats blank issuer and audience as not set', () => {
+    const config = readConfig({ ...valid, JWT_ISSUER: ' ', JWT_AUDIENCE: ' , ' });
+
+    expect(config).not.toHaveProperty('jwtIssuer');
+    expect(config).not.toHaveProperty('jwtAudience');
   });
 
   it('rejects an unknown algorithm, none included', () => {

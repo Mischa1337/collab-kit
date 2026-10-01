@@ -19,7 +19,10 @@ handelt. Eingestellt wird das pro Instanz in der `.env` (Vorlage: `.env.example`
 | --------------------- | ------- | ------------------------------------------------------------------------------------------------------------ |
 | `JWT_ALGORITHM`       | `HS256` | Verfahren, mit dem das Werkzeug signiert: `HS256/384/512`, `RS256/384/512`, `PS256/384/512`, `ES256/384/512` |
 | `JWT_SECRET`          | keine   | Gemeinsames Geheimnis mit dem Werkzeug. Pflicht bei `HS…`                                                    |
-| `JWT_PUBLIC_KEY`      | keine   | Öffentlicher Schlüssel des Werkzeugs als PEM. Pflicht bei `RS…`, `PS…` und `ES…`                             |
+| `JWT_PUBLIC_KEY`      | keine   | Öffentlicher Schlüssel des Werkzeugs als PEM. Bei `RS…`, `PS…` und `ES…` dies oder `JWT_JWKS_URI`            |
+| `JWT_JWKS_URI`        | keine   | Adresse, unter der das Werkzeug seine öffentlichen Schlüssel als JWKS veröffentlicht                         |
+| `JWT_ISSUER`          | keine   | Erwarteter Aussteller `iss`. Leer heißt: nicht geprüft                                                       |
+| `JWT_AUDIENCE`        | keine   | Erwartete Empfänger `aud`, durch Komma getrennt, einer muss passen. Leer heißt: nicht geprüft                |
 | `ACTOR_CLAIM`         | `sub`   | Claim mit der Kennung der Person, Text oder Zahl. Eindeutig und dauerhaft, keine E-Mail, kein Benutzername   |
 | `LABEL_CLAIM`         | `name`  | Claim mit dem Anzeigenamen. Darf im Token fehlen                                                             |
 | `JWT_CLOCK_TOLERANCE` | `5`     | Sekunden, die ein abgelaufenes Token noch gilt, um Uhrenabweichungen auszugleichen. `0` heißt streng         |
@@ -34,6 +37,21 @@ werden als `\n` geschrieben:
 ```sh
 JWT_ALGORITHM=RS256
 JWT_PUBLIC_KEY="-----BEGIN PUBLIC KEY-----\nMIIBIjANBg...\n-----END PUBLIC KEY-----"
+```
+
+Veröffentlicht das Werkzeug seine Schlüssel als JWKS, holt der Dienst sie selbst. Er lädt sie beim
+Start, ein nicht erreichbarer Aussteller verhindert den Start. Später lädt er neu, wenn ein Token
+einen unbekannten `kid` nennt oder die Schlüssel älter als zehn Minuten sind, höchstens einmal pro
+Minute. Fällt der Aussteller dabei aus, gelten die bekannten Schlüssel weiter.
+
+Signiert ein Aussteller Token für mehrere Anwendungen mit demselben Schlüssel, gehören `iss` und
+`aud` dazu. Sonst gilt auch ein Token, das für eine andere Anwendung ausgestellt wurde:
+
+```sh
+JWT_ALGORITHM=RS256
+JWT_JWKS_URI=https://fbs.example/oauth2/jwks
+JWT_ISSUER=https://fbs.example
+JWT_AUDIENCE=fbs-web-shell
 ```
 
 ### Token mitschicken

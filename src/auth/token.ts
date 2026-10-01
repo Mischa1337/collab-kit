@@ -1,7 +1,8 @@
-import { createPublicKey, createSecretKey } from 'node:crypto';
+import { createPublicKey, createSecretKey, type KeyObject } from 'node:crypto';
 import jwt from 'jsonwebtoken';
 import type { Actor } from '../model/actor.ts';
 import { asActorId } from '../utils/input.ts';
+import { defined } from '../utils/optional.ts';
 
 /** Every algorithm a docking tool may sign with. `none` is left out on purpose. */
 export const TOKEN_ALGORITHMS = [
@@ -30,9 +31,12 @@ export function usesSharedSecret(algorithm: string): boolean {
   return algorithm.startsWith('HS');
 }
 
+/** Finds the key a token names by the kid in its header. */
+export type KeyLookup = (kid: string | undefined) => Promise<KeyObject>;
+
 export interface TokenOptions {
-  /** The shared secret for an HS algorithm, the tool's public key as PEM for any other. */
-  readonly key: string;
+  /** The shared secret for an HS algorithm, the tool's public key as PEM, or a lookup into its key set. */
+  readonly key: string | KeyLookup;
   /** Pinned per instance, `HS256` unless the issuing tool signs otherwise. */
   readonly algorithm?: TokenAlgorithm;
   /** Seconds of clock difference tolerated between the issuing tool and this service. */
@@ -41,6 +45,10 @@ export interface TokenOptions {
   readonly actorClaim?: string;
   /** Claim that holds the name to show, `name` unless the issuing tool puts it elsewhere. */
   readonly labelClaim?: string;
+  /** Required `iss`; left out, every issuer passes. */
+  readonly issuer?: string;
+  /** Accepted `aud` values, one must match; left out or empty, every audience passes. */
+  readonly audience?: readonly string[];
 }
 
 /** One message for every rejection, the reason stays in `cause` for the log only. */
@@ -52,24 +60,31 @@ export class TokenRejected extends Error {
 }
 
 /** Returns the check; algorithm and claims are fixed per instance, never read from a token. */
-export function createTokenCheck(options: TokenOptions): (token: string) => Actor {
+export function createTokenCheck(options: TokenOptions): (token: string) => Promise<Actor> {
   const algorithm = options.algorithm ?? 'HS256';
   const actorClaim = options.actorClaim ?? 'sub';
   const labelClaim = options.labelClaim ?? 'name';
 
-  // Read once, so a broken key stops the start instead of failing every request.
-  const key = usesSharedSecret(algorithm)
-    ? createSecretKey(Buffer.from(options.key))
-    : createPublicKey(options.key);
+  // A fixed key is read once, so a broken one stops the start instead of failing every request.
+  const lookup = typeof options.key === 'function' ? options.key : fixedKey(options.key, algorithm);
 
-  return (token: string): Actor => {
+  const verifyOptions: jwt.VerifyOptions = {
+    // Pinned on purpose. Without it a forged header could pick another algorithm.
+    algorithms: [algorithm],
+    clockTolerance: options.clockToleranceSeconds ?? 5,
+    ...defined({ issuer: options.issuer, audience: audienceOption(options.audience) }),
+  };
+
+  return async (token: string): Promise<Actor> => {
     let payload: unknown;
     try {
-      payload = jwt.verify(token, key, {
-        // Pinned on purpose. Without it a forged header could pick another algorithm.
-        algorithms: [algorithm],
-        clockTolerance: options.clockToleranceSeconds ?? 5,
-      });
+      const header = readHeader(token);
+      // Refused before any key is looked up, so a foreign algorithm never makes the set reload.
+      if (header.alg !== algorithm) {
+        throw new Error(`token is signed with ${header.alg}`);
+      }
+      const key = await lookup(header.kid);
+      payload = jwt.verify(token, key, verifyOptions);
     } catch (cause) {
       throw new TokenRejected(cause);
     }
@@ -87,4 +102,29 @@ export function createTokenCheck(options: TokenOptions): (token: string) => Acto
     const name = claims[labelClaim];
     return typeof name === 'string' && name.trim() !== '' ? { actorId, label: name } : { actorId };
   };
+}
+
+/** One key for every token: the secret for an HS algorithm, the public key for any other. */
+function fixedKey(key: string, algorithm: TokenAlgorithm): KeyLookup {
+  const fixed = usesSharedSecret(algorithm)
+    ? createSecretKey(Buffer.from(key))
+    : createPublicKey(key);
+  return () => Promise.resolve(fixed);
+}
+
+/** The header, read without any check, only to learn which algorithm and key the token names. */
+function readHeader(token: string): jwt.JwtHeader {
+  const decoded = jwt.decode(token, { complete: true });
+  if (decoded === null) {
+    throw new Error('token is malformed');
+  }
+  return decoded.header;
+}
+
+/** jsonwebtoken wants a list with at least one entry; an empty one means no check. */
+function audienceOption(
+  audience: readonly string[] | undefined,
+): [string, ...string[]] | undefined {
+  const [first, ...rest] = audience ?? [];
+  return first === undefined ? undefined : [first, ...rest];
 }
