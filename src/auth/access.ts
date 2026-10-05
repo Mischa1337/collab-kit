@@ -233,10 +233,11 @@ async function maySeeTask(db: Db, actor: Actor, task: TaskRecord): Promise<boole
   if (await may(db, actor, 'see', { kind: 'task', id: task._id })) {
     return true;
   }
-  // Through maySee, so whom the anchor or parent task is given to sees this one too.
-  if (task.anchor !== undefined && (await maySee(db, actor, task.anchor))) {
-    return true;
+  // A subtask on its own anchor needs that seen, so the parent opens no hidden thing.
+  if (task.anchor !== undefined) {
+    return maySee(db, actor, task.anchor);
   }
+  // Through maySee, so whom the parent task is given to sees this one too.
   return task.parentId !== undefined && maySee(db, actor, { kind: 'task', id: task.parentId });
 }
 

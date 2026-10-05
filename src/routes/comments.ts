@@ -21,6 +21,7 @@ import {
   asParentId,
   asText,
 } from '../utils/input.ts';
+import type { Reference } from '../model/anchor.ts';
 import { defined } from '../utils/optional.ts';
 import { actorOf, bodyOf, fail, guard, idOf, requireId, unusableField } from './http.ts';
 
@@ -67,6 +68,11 @@ export function commentRoutes(db: Db, decisions: readonly string[]): Router {
     }
     if (parentId !== undefined && !(await maySee(db, actor, { kind: 'comment', id: parentId }))) {
       return fail(response, 404, 'unknown parent');
+    }
+    // A conversation is about one thing: an answer may move to another unit, never elsewhere.
+    const parent = parentId === undefined ? null : await findComment(db, parentId);
+    if (parent !== null && !sameThing(parent.anchor, anchor)) {
+      return fail(response, 400, 'an answer hangs on the same thing as the comment it answers');
     }
     // Saying something takes speak where it hangs, a first state that is a decision decide too.
     const places = [anchor, ...(parentId === undefined ? [] : [{ kind: 'comment', id: parentId }])];
@@ -192,4 +198,9 @@ export function commentRoutes(db: Db, decisions: readonly string[]): Router {
   });
 
   return routes;
+}
+
+/** Whether two references name the same thing, whatever unit inside it they point at. */
+function sameThing(one: Reference, other: Reference): boolean {
+  return one.kind === other.kind && String(one.id) === String(other.id);
 }

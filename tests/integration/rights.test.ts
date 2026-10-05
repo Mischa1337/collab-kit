@@ -582,3 +582,50 @@ describe('changing and deleting comments', () => {
     expect((await remove(bob, id)).status).toBe(404);
   });
 });
+
+describe('answers and subtasks stay with what they are about', () => {
+  it('keeps an answer on the thing of its comment, at any unit of it', async () => {
+    const { team, at, roomId, workpieceId } = await course();
+    await grant(team, at, ['see', 'speak']);
+    const other = await workpieceIn(roomId);
+    const say = (anchor: object, parentId?: string) =>
+      request(server)
+        .post('/comments')
+        .set(as(alice))
+        .send({
+          kind: 'comment',
+          anchor,
+          body: {},
+          ...(parentId === undefined ? {} : { parentId }),
+        });
+
+    const first = await say({ kind: 'workpiece', id: workpieceId, unit: 'e1' });
+    const id = first.body._id as string;
+
+    expect((await say({ kind: 'workpiece', id: workpieceId, unit: 'e2' }, id)).status).toBe(201);
+    expect((await say({ kind: 'workpiece', id: workpieceId }, id)).status).toBe(201);
+    expect((await say({ kind: 'workpiece', id: other }, id)).status).toBe(400);
+    expect((await say(at, id)).status).toBe(400);
+  });
+
+  it('shows a subtask on a hidden thing not to whom only its parent is given', async () => {
+    const { workpieceId } = await course();
+    const plan = (task: object) =>
+      request(server)
+        .post('/tasks')
+        .set(as(dozent))
+        .send({ kind: 'task', title: 'Teil', state: 'open', ...task });
+    const parent = await plan({ assignees: [{ kind: 'actor', id: 'gina' }] });
+    const parentId = parent.body._id as string;
+    const hidden = await plan({ parentId, anchor: { kind: 'workpiece', id: workpieceId } });
+    const plain = await plan({ parentId });
+    const show = (id: string) =>
+      request(server)
+        .get(`/tasks/${id}`)
+        .set(as(tokenFor('gina')));
+
+    expect((await show(parentId)).status).toBe(200);
+    expect((await show(plain.body._id as string)).status).toBe(200);
+    expect((await show(hidden.body._id as string)).status).toBe(404);
+  });
+});
