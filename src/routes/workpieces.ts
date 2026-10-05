@@ -1,7 +1,8 @@
 import { Router } from 'express';
 import type { Db } from 'mongodb';
 
-import { mayOpenWorkpiece, maySee, maySeeWorkpiece } from '../auth/access.ts';
+import { may, mayOpenWorkpiece, maySee } from '../auth/access.ts';
+import { addToRoom } from '../db/collections/rooms.ts';
 import { createWorkpiece, findWorkpiece } from '../db/collections/workpieces.ts';
 import { isUpdateOf, summarizeUpdatesSince } from '../db/collections/updates.ts';
 import type { WorkpieceHub } from '../realtime/hub.ts';
@@ -17,7 +18,7 @@ export function workpieceRoutes(db: Db, hub: WorkpieceHub): Router {
   routes.param('id', requireId('workpiece'));
 
   const opening = guard((actor, id) => mayOpenWorkpiece(db, actor, id), 404, 'unknown workpiece');
-  // Reading what is there, the history as the state: whoever sees it, its creator included.
+  // Reading what is there, the history as the state: whoever sees it.
   const seeing = guard(
     (actor, id) => maySee(db, actor, { kind: 'workpiece', id }),
     404,
@@ -33,25 +34,39 @@ export function workpieceRoutes(db: Db, hub: WorkpieceHub): Router {
     }
 
     const contract = asObject(body['contract']);
-    const unusable = unusableField(body, { contract });
+    const roomId = asObjectId(body['roomId']);
+    const unusable = unusableField(body, { contract, roomId });
     if (unusable !== undefined) {
       return fail(response, 400, `${unusable} is unusable`);
     }
 
+    // In a room it takes manage there; outside every room it lies in nothing, so manage everywhere.
+    const actor = actorOf(request);
+    const room = roomId === undefined ? undefined : { kind: 'room', id: roomId };
+    if (room !== undefined && !(await maySee(db, actor, room))) {
+      return fail(response, 404, 'unknown room');
+    }
+    if (!(await may(db, actor, 'manage', room))) {
+      return fail(response, 403, 'not allowed to create a workpiece here');
+    }
+
     const workpiece = await createWorkpiece(db, {
       name,
-      createdBy: actorOf(request).actorId,
+      createdBy: actor.actorId,
       ...defined({ contract }),
     });
+    if (roomId !== undefined) {
+      await addToRoom(db, roomId, { kind: 'workpiece', id: workpiece._id, addedBy: actor.actorId });
+    }
 
-    // Born outside every room, so nobody may open it yet; putting it in one is its own step.
     response.status(201).json(workpiece);
   });
 
   routes.get('/workpieces/:id', async (request, response) => {
-    const workpiece = await findWorkpiece(db, idOf(request));
+    const id = idOf(request);
+    const workpiece = await findWorkpiece(db, id);
 
-    if (workpiece === null || !(await maySeeWorkpiece(db, actorOf(request), workpiece))) {
+    if (workpiece === null || !(await maySee(db, actorOf(request), { kind: 'workpiece', id }))) {
       return fail(response, 404, 'unknown workpiece');
     }
 

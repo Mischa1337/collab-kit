@@ -5,16 +5,17 @@ import { ObjectId, type Db } from 'mongodb';
 import type { Actor } from '../model/actor.ts';
 import type { Reference } from '../model/anchor.ts';
 import { RIGHTS, type Right } from '../model/right.ts';
-import { findWorkpiece, type WorkpieceRecord } from '../db/collections/workpieces.ts';
+import { workpieceExists } from '../db/collections/workpieces.ts';
 import { findComment } from '../db/collections/comments.ts';
-import { grantsOf, isScopeKind, rightsHeld, type Scope } from '../db/collections/grants.ts';
-import { findGroup, groupsOf, isMemberOfAny, type GroupRecord } from '../db/collections/groups.ts';
 import {
-  findRoom,
-  roomsContaining,
-  roomsCreatedByOrHolding,
-  type RoomRecord,
-} from '../db/collections/rooms.ts';
+  grantsOf,
+  isScopeKind,
+  placesWhere,
+  rightsHeld,
+  type Scope,
+} from '../db/collections/grants.ts';
+import { findGroup, groupsOf, isMemberOfAny, type GroupRecord } from '../db/collections/groups.ts';
+import { findRoom, findRooms, roomsContaining, type RoomRecord } from '../db/collections/rooms.ts';
 import { findTask, type Assignee, type TaskRecord } from '../db/collections/tasks.ts';
 
 /** Whether the actor holds the right at the target, by a grant there, above it or everywhere. */
@@ -132,54 +133,49 @@ function above(
   ];
 }
 
-/** Open: some room bundles the workpiece and a group the actor is in. No room, nobody. */
+/** Open over the socket: edit at it or above, until the gateway can hold a reader to reading. */
 export async function mayOpenWorkpiece(
   db: Db,
   actor: Actor,
   workpieceId: ObjectId,
 ): Promise<boolean> {
-  const rooms = await roomsContaining(db, { kind: 'workpiece', id: workpieceId });
-  const groupIds = rooms.flatMap((room) => groupsIn(room.references));
+  const workpiece: Scope = { kind: 'workpiece', id: workpieceId };
 
-  return isMemberOfAny(db, groupIds, actor.actorId);
+  return (await placeExists(db, workpiece)) && may(db, actor, 'edit', workpiece);
 }
 
-/** See it without working on it: whoever may open it, and its creator. */
-export async function maySeeWorkpiece(
-  db: Db,
-  actor: Actor,
-  workpiece: Pick<WorkpieceRecord, '_id' | 'createdBy'>,
-): Promise<boolean> {
-  if (workpiece.createdBy === actor.actorId) {
-    return true;
-  }
-
-  return mayOpenWorkpiece(db, actor, workpiece._id);
-}
-
-/** See what a room bundles: a member of a group it holds, or whoever may change it. */
-export async function maySeeRoom(db: Db, actor: Actor, roomId: ObjectId): Promise<boolean> {
-  const room = await findRoom(db, roomId);
-
-  if (room === null) {
-    return false;
-  }
-  if (mayChangeRecord(actor, room)) {
-    return true;
-  }
-
-  return isMemberOfAny(db, groupsIn(room.references), actor.actorId);
-}
-
-/** Every room maySeeRoom would let the actor see, as one list; keep both rules in step. */
+/** Every room the actor sees, as one list; the same rule as maySee for a room. */
 export async function roomsVisibleTo(db: Db, actor: Actor): Promise<RoomRecord[]> {
-  const groups = await groupsOf(db, actor.actorId);
+  // Whoever sees everywhere sees every room.
+  if ((await rightsAt(db, actor)).has('see')) {
+    return findRooms(db);
+  }
 
-  return roomsCreatedByOrHolding(
+  const groups = await groupsOf(db, actor.actorId);
+  const ids = await placesWhere(
     db,
-    actor.actorId,
     groups.map((group) => group._id),
+    'see',
+    'room',
   );
+  return findRooms(db, ids);
+}
+
+/** Whether a place of the service is there, so no rule answers yes about a key nothing has. */
+export async function placeExists(db: Db, place: Scope): Promise<boolean> {
+  if (place.kind === 'room') {
+    return (await findRoom(db, place.id)) !== null;
+  }
+  if (place.kind === 'workpiece') {
+    return workpieceExists(db, place.id);
+  }
+  if (place.kind === 'task') {
+    return (await findTask(db, place.id)) !== null;
+  }
+  if (place.kind === 'comment') {
+    return (await findComment(db, place.id)) !== null;
+  }
+  return (await findGroup(db, place.id)) !== null;
 }
 
 /** Seen by its members and by whoever holds see at it, since who is in it tells what it opens. */
@@ -198,12 +194,10 @@ export async function maySee(db: Db, actor: Actor, target: Reference): Promise<b
   if (!(target.id instanceof ObjectId)) {
     return true;
   }
-  if (target.kind === 'workpiece') {
-    const workpiece = await findWorkpiece(db, target.id);
-    return workpiece !== null && maySeeWorkpiece(db, actor, workpiece);
-  }
-  if (target.kind === 'room') {
-    return maySeeRoom(db, actor, target.id);
+  if (target.kind === 'workpiece' || target.kind === 'room') {
+    // Seen from a grant at it or above; creating it gives nothing.
+    const place: Scope = { kind: target.kind, id: target.id };
+    return (await placeExists(db, place)) && may(db, actor, 'see', place);
   }
   if (target.kind === 'group') {
     const group = await findGroup(db, target.id);
@@ -274,24 +268,4 @@ export async function maySetCommentState(
   commentId: ObjectId,
 ): Promise<boolean> {
   return maySee(db, actor, { kind: 'comment', id: commentId });
-}
-
-/** Whether the actor may change a room, looked up by its id. */
-export async function mayChangeRoom(db: Db, actor: Actor, id: ObjectId): Promise<boolean> {
-  const room = await findRoom(db, id);
-
-  return room !== null && mayChangeRecord(actor, room);
-}
-
-/** Provisional until rooms ask grants: only the creator changes a room, as it hands out access. */
-function mayChangeRecord(actor: Actor, room: Pick<RoomRecord, 'createdBy'>): boolean {
-  return room.createdBy === actor.actorId;
-}
-
-/** The groups a room holds; references the service does not keep grant nothing. */
-function groupsIn(references: readonly Reference[]): ObjectId[] {
-  return references
-    .filter((entry) => entry.kind === 'group')
-    .map((entry) => entry.id)
-    .filter((id) => id instanceof ObjectId);
 }

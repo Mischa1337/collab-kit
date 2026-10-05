@@ -78,18 +78,13 @@ async function group(members: readonly string[]): Promise<string> {
   return created.body._id as string;
 }
 
-/** A workpiece the dozent creates and puts into the room, by its key. */
+/** A workpiece the dozent creates right in the room, by its key. */
 async function workpieceIn(roomId: string): Promise<string> {
   const created = await request(server)
     .post('/workpieces')
     .set(as(dozent))
-    .send({ name: 'Modell', contract: {} });
-  const id = created.body._id as string;
-  await request(server)
-    .post(`/rooms/${roomId}/references`)
-    .set(as(dozent))
-    .send({ kind: 'workpiece', id });
-  return id;
+    .send({ name: 'Modell', contract: {}, roomId });
+  return created.body._id as string;
 }
 
 /** Sets rights over the route, by default as the dozent. */
@@ -294,5 +289,88 @@ describe('groups under grants', () => {
 
     await grant(leads, at, ['see', 'edit', 'manage']);
     expect((await take()).status).toBe(201);
+  });
+});
+
+describe('rooms and workpieces under grants', () => {
+  it('shows and lists a room only to whoever holds see there or everywhere', async () => {
+    const { roomId, team, at } = await course();
+    await grant(team, at, ['see']);
+    const other = await room();
+    const listed = async (token: string) =>
+      (await request(server).get('/me/rooms').set(as(token))).body.map(
+        (entry: { _id: string }) => entry._id,
+      );
+
+    expect(await listed(alice)).toContain(roomId);
+    expect(await listed(alice)).not.toContain(other);
+    expect(await listed(dozent)).toEqual(expect.arrayContaining([roomId, other]));
+    expect((await request(server).get(`/rooms/${roomId}`).set(as(alice))).status).toBe(200);
+    expect((await request(server).get(`/rooms/${roomId}`).set(as(bob))).status).toBe(404);
+  });
+
+  it('lets whoever manages a room change it, while creating it gave the dozent nothing extra', async () => {
+    const { roomId, team, at } = await course();
+    await grant(team, at, ['see']);
+    const rename = (token: string) =>
+      request(server)
+        .patch(`/rooms/${roomId}`)
+        .set(as(token))
+        .send({ settings: { mode: 'sync' } });
+
+    expect((await rename(tutor)).status).toBe(200);
+    expect((await rename(alice)).status).toBe(403);
+  });
+
+  it('creates a workpiece in a room with manage there, outside every room with manage everywhere', async () => {
+    const { roomId } = await course();
+    const create = (token: string, more: object) =>
+      request(server)
+        .post('/workpieces')
+        .set(as(token))
+        .send({ name: 'Neu', ...more });
+
+    const made = await create(tutor, { roomId });
+    expect(made.status).toBe(201);
+    const inRoom = await request(server).get(`/rooms/${roomId}`).set(as(tutor));
+    expect(inRoom.body.references).toContainEqual({ kind: 'workpiece', id: made.body._id });
+
+    expect((await create(tutor, {})).status).toBe(403);
+    expect((await create(dozent, {})).status).toBe(201);
+    expect((await create(alice, { roomId })).status).toBe(404);
+    expect((await create(tutor, { roomId: new ObjectId().toHexString() })).status).toBe(404);
+    expect((await create(tutor, { roomId: 'kein-schluessel' })).status).toBe(400);
+  });
+
+  it('hands a workpiece into another room only with manage at both', async () => {
+    const { workpieceId } = await course();
+    const second = await room();
+    const review = await group(['bob']);
+    await grant(review, { kind: 'room', id: second }, ['see', 'manage']);
+    const push = () =>
+      request(server)
+        .post(`/rooms/${second}/references`)
+        .set(as(bob))
+        .send({ kind: 'workpiece', id: workpieceId });
+
+    // Unseen it stays unknown; seen but not managed it is not bob's to hand on.
+    expect((await push()).status).toBe(404);
+    await grant(review, { kind: 'workpiece', id: workpieceId }, ['see']);
+    expect((await push()).status).toBe(403);
+    await grant(review, { kind: 'workpiece', id: workpieceId }, ['see', 'manage']);
+    expect((await push()).status).toBe(201);
+  });
+
+  it('keeps groups out of the references and points to the grants', async () => {
+    const roomId = await room();
+    const team = await group(['alice']);
+
+    const pushed = await request(server)
+      .post(`/rooms/${roomId}/references`)
+      .set(as(dozent))
+      .send({ kind: 'group', id: team });
+
+    expect(pushed.status).toBe(400);
+    expect(pushed.body.error).toContain('PUT /grants');
   });
 });

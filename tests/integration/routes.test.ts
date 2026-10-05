@@ -9,6 +9,8 @@ import { createTokenCheck } from '../../src/auth/token.ts';
 import { applyDefinitions } from '../../src/db/apply.ts';
 import { connect, type Storage } from '../../src/db/client.ts';
 import { createComment } from '../../src/db/collections/comments.ts';
+import { setGrant } from '../../src/db/collections/grants.ts';
+import { createGroup } from '../../src/db/collections/groups.ts';
 import { createRoom } from '../../src/db/collections/rooms.ts';
 import { createTask, type NewTask } from '../../src/db/collections/tasks.ts';
 import { appendUpdate } from '../../src/db/collections/updates.ts';
@@ -81,8 +83,16 @@ async function setUp(): Promise<{ roomId: string; groupId: string; workpieceId: 
   const into = (entry: { kind: string; id: string }) =>
     request(server).post(`/rooms/${roomId}/references`).set(as(alice)).send(entry);
 
-  await into({ kind: 'group', id: group.body._id as string });
   await into({ kind: 'workpiece', id: workpiece.body._id as string });
+  // The group may into the room through a grant, as it did before through lying in it.
+  await request(server)
+    .put('/grants')
+    .set(as(alice))
+    .send({
+      groupId: group.body._id as string,
+      scope: { kind: 'room', id: roomId },
+      rights: ['see', 'speak', 'edit', 'plan'],
+    });
 
   return {
     roomId,
@@ -119,9 +129,10 @@ describe('setting a room up', () => {
 
     const room = await request(server).get(`/rooms/${roomId}`).set(as(bob));
     expect(room.status).toBe(200);
-    expect(room.body.references).toHaveLength(2);
+    // Only the workpiece lies in the room, the group may into it through a grant.
+    expect(room.body.references).toHaveLength(1);
 
-    // bob is in a group the room bundles, so the workpiece is his to open.
+    // bob is in a group with see at the room, so the workpiece is his to see.
     expect((await request(server).get(`/workpieces/${workpieceId}`).set(as(bob))).status).toBe(200);
   });
 
@@ -182,8 +193,19 @@ describe('who may change what', () => {
   it('lets nobody put what they may not see into a room of their own', async () => {
     const { workpieceId } = await setUp();
     const carol = tokenFor('carol');
-    // Written directly, as only the top may create a room over the routes.
+    // Written directly, as only the top may create a room over the routes; carol manages it.
     const room = await createRoom(storage.db, { name: 'Eigen', createdBy: 'carol' });
+    const own = await createGroup(storage.db, {
+      name: 'Carol',
+      createdBy: 'carol',
+      members: ['carol'],
+    });
+    await setGrant(storage.db, {
+      groupId: own._id,
+      scope: { kind: 'room', id: room._id },
+      rights: ['see', 'manage'],
+      setBy: 'carol',
+    });
 
     const pushed = await request(server)
       .post(`/rooms/${room._id.toHexString()}/references`)
@@ -194,16 +216,16 @@ describe('who may change what', () => {
   });
 
   it('takes an id only as text, so it never reaches the database as an operator', async () => {
-    const carol = tokenFor('carol');
-    const room = await createRoom(storage.db, { name: 'Eigen', createdBy: 'carol' });
+    // alice at the top passes every rule, so only reading the id can refuse.
+    const room = await createRoom(storage.db, { name: 'Eigen', createdBy: 'alice' });
     const statuses = async (id: unknown) => {
       const pushed = await request(server)
         .post(`/rooms/${room._id.toHexString()}/references`)
-        .set(as(carol))
+        .set(as(alice))
         .send({ kind: 'workpiece', id });
       const traced = await request(server)
         .post('/events')
-        .set(as(carol))
+        .set(as(alice))
         .send({ kind: 'note', anchor: { kind: 'workpiece', id } });
       return [pushed.status, traced.status];
     };
@@ -389,9 +411,13 @@ describe('the room as a channel', () => {
       .set(as(alice))
       .send({ name: 'Andere', members: ['carol'] });
     await request(server)
-      .post(`/rooms/${roomId}/references`)
+      .put('/grants')
       .set(as(alice))
-      .send({ kind: 'group', id: others.body._id as string });
+      .send({
+        groupId: others.body._id as string,
+        scope: { kind: 'room', id: roomId },
+        rights: ['see'],
+      });
 
     const joinedAt = async (token: string) => {
       const events = await request(server)

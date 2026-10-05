@@ -1,8 +1,7 @@
 import { Router } from 'express';
 import type { Db } from 'mongodb';
 
-import { may, mayHandOn, maySeeGroup, rightsAt } from '../auth/access.ts';
-import { findComment } from '../db/collections/comments.ts';
+import { may, mayHandOn, maySeeGroup, placeExists, rightsAt } from '../auth/access.ts';
 import {
   findGrant,
   grantsAt,
@@ -12,9 +11,6 @@ import {
   type Scope,
 } from '../db/collections/grants.ts';
 import { findGroup } from '../db/collections/groups.ts';
-import { findRoom } from '../db/collections/rooms.ts';
-import { findTask } from '../db/collections/tasks.ts';
-import { workpieceExists } from '../db/collections/workpieces.ts';
 import type { Actor } from '../model/actor.ts';
 import { RIGHTS } from '../model/right.ts';
 import {
@@ -30,7 +26,7 @@ import { defined } from '../utils/optional.ts';
 import { actorOf, bodyOf, fail, unusableField } from './http.ts';
 
 /** Who holds which rights where: the tool decides who gets them, the service that none is taken. */
-export function grantRoutes(db: Db): Router {
+export function grantRoutes(db: Db, recheckAccess: () => Promise<void>): Router {
   const routes = Router();
 
   /** Sets what a group may do at a place, or everywhere without one, replacing what it had. */
@@ -68,7 +64,16 @@ export function grantRoutes(db: Db): Router {
       return fail(response, 403, 'not allowed to hand these rights on here');
     }
 
-    await setGrant(db, { groupId, rights, setBy: actor.actorId, ...defined({ scope, reason }) });
+    const changed = await setGrant(db, {
+      groupId,
+      rights,
+      setBy: actor.actorId,
+      ...defined({ scope, reason }),
+    });
+    // Replacing may take rights away, so open connections are asked again.
+    if (changed) {
+      await recheckAccess();
+    }
     response.json(await findGrant(db, groupId, scope));
   });
 
@@ -100,6 +105,10 @@ export function grantRoutes(db: Db): Router {
       removedBy: actor.actorId,
       ...defined({ scope, reason }),
     });
+    // Without the grant, open connections it carried would go on as before.
+    if (removed) {
+      await recheckAccess();
+    }
     response.json({ removed });
   });
 
@@ -160,22 +169,5 @@ async function seesPlace(db: Db, actor: Actor, scope: Scope): Promise<boolean> {
     const group = await findGroup(db, scope.id);
     return group !== null && maySeeGroup(db, actor, group);
   }
-  return (await exists(db, scope)) && may(db, actor, 'see', scope);
-}
-
-/** Whether the place is there, so no grant waits on a key nothing has. */
-async function exists(db: Db, scope: Scope): Promise<boolean> {
-  if (scope.kind === 'group') {
-    return (await findGroup(db, scope.id)) !== null;
-  }
-  if (scope.kind === 'room') {
-    return (await findRoom(db, scope.id)) !== null;
-  }
-  if (scope.kind === 'workpiece') {
-    return workpieceExists(db, scope.id);
-  }
-  if (scope.kind === 'task') {
-    return (await findTask(db, scope.id)) !== null;
-  }
-  return (await findComment(db, scope.id)) !== null;
+  return (await placeExists(db, scope)) && may(db, actor, 'see', scope);
 }

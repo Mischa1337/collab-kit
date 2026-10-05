@@ -10,6 +10,7 @@ import { createTokenCheck } from '../../src/auth/token.ts';
 import { applyDefinitions } from '../../src/db/apply.ts';
 import { connect, type Storage } from '../../src/db/client.ts';
 import { createGroup } from '../../src/db/collections/groups.ts';
+import { setGrant } from '../../src/db/collections/grants.ts';
 import { addToRoom, createRoom } from '../../src/db/collections/rooms.ts';
 import { createWorkpiece, findWorkpieceWithFold } from '../../src/db/collections/workpieces.ts';
 import { collectionDefinitions } from '../../src/db/schemas.ts';
@@ -49,7 +50,13 @@ async function bundle(workpieceId: import('mongodb').ObjectId): Promise<void> {
     members: ['alice', 'bob', 'carol'],
   });
   await addToRoom(storage.db, room._id, { kind: 'workpiece', id: workpieceId, addedBy: 'alice' });
-  await addToRoom(storage.db, room._id, { kind: 'group', id: group._id, addedBy: 'alice' });
+  // In through a grant at the room, as a group in it no longer opens anything.
+  await setGrant(storage.db, {
+    groupId: group._id,
+    scope: { kind: 'room', id: room._id },
+    rights: ['see', 'speak', 'edit', 'plan'],
+    setBy: 'alice',
+  });
 }
 
 const open = (workpieceId: ObjectId, actor: string) =>

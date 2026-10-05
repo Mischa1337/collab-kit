@@ -167,6 +167,30 @@ export async function rightsHeld(
   return new Set(found.flatMap((grant) => grant.rights));
 }
 
+/** The places of one kind where one of these groups holds the right, by key. */
+export async function placesWhere(
+  db: Db,
+  groupIds: readonly ObjectId[],
+  right: Right,
+  kind: ScopeKind,
+): Promise<ObjectId[]> {
+  if (groupIds.length === 0) {
+    return [];
+  }
+
+  const found = await db
+    .collection<GrantRecord>('grants')
+    .find(
+      { groupId: { $in: [...groupIds] }, rights: right, 'scope.kind': kind } as Filter<GrantRecord>,
+      {
+        projection: { scope: 1 },
+      },
+    )
+    .toArray();
+
+  return found.flatMap((grant) => (grant.scope === undefined ? [] : [grant.scope.id]));
+}
+
 /** The one grant of a group at a place, or the one it holds everywhere. */
 function grantAt(groupId: ObjectId, scope: Scope | undefined): Filter<GrantRecord> {
   return {
