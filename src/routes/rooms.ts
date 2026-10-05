@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import type { Db } from 'mongodb';
 
-import { mayChange, maySee, roomsVisibleTo } from '../auth/access.ts';
+import { may, mayChangeRoom, maySee, roomsVisibleTo } from '../auth/access.ts';
 import { readEventsSince } from '../db/collections/events.ts';
 import {
   addToRoom,
@@ -24,12 +24,17 @@ export function roomRoutes(db: Db, recheckAccess: () => Promise<void>): Router {
   const seeing = guard((actor, id) => maySee(db, actor, { kind: 'room', id }), 404, 'unknown room');
   // Behind seeing, so 403 tells only whoever already sees the room.
   const changing = guard(
-    (actor, id) => mayChange(db, actor, 'room', id),
+    (actor, id) => mayChangeRoom(db, actor, id),
     403,
     'not allowed to change this room',
   );
 
   routes.post('/rooms', async (request, response) => {
+    // A room lies in nothing, so creating one takes manage everywhere.
+    if (!(await may(db, actorOf(request), 'manage'))) {
+      return fail(response, 403, 'not allowed to create a room');
+    }
+
     const body = bodyOf(request);
     const name = asText(body['name']);
 

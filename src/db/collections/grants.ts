@@ -129,27 +129,42 @@ export async function grantsAt(db: Db, scope?: Scope): Promise<GrantRecord[]> {
   return db.collection<GrantRecord>('grants').find(filter).toArray();
 }
 
-/** Whether one of these groups holds the right at one of these places or everywhere, one query. */
-export async function holdsRight(
+/** Every grant the group holds, wherever. */
+export async function grantsOf(db: Db, groupId: ObjectId): Promise<GrantRecord[]> {
+  return db.collection<GrantRecord>('grants').find({ groupId }).toArray();
+}
+
+/** The one grant of the group at the place, or the one it holds everywhere. */
+export async function findGrant(
+  db: Db,
+  groupId: ObjectId,
+  scope?: Scope,
+): Promise<GrantRecord | null> {
+  return db.collection<GrantRecord>('grants').findOne(grantAt(groupId, scope));
+}
+
+/** Every right these groups hold at one of these places or everywhere, each once, one query. */
+export async function rightsHeld(
   db: Db,
   groupIds: readonly ObjectId[],
-  right: Right,
   places: readonly Scope[],
-): Promise<boolean> {
+): Promise<Set<Right>> {
   if (groupIds.length === 0) {
-    return false;
+    return new Set();
   }
 
-  const found = await db.collection<GrantRecord>('grants').findOne(
-    {
-      groupId: { $in: [...groupIds] },
-      rights: right,
-      $or: [{ scope: { $exists: false } }, ...places.map(atPlace)],
-    } as Filter<GrantRecord>,
-    { projection: { _id: 1 } },
-  );
+  const found = await db
+    .collection<GrantRecord>('grants')
+    .find(
+      {
+        groupId: { $in: [...groupIds] },
+        $or: [{ scope: { $exists: false } }, ...places.map(atPlace)],
+      } as Filter<GrantRecord>,
+      { projection: { rights: 1 } },
+    )
+    .toArray();
 
-  return found !== null;
+  return new Set(found.flatMap((grant) => grant.rights));
 }
 
 /** The one grant of a group at a place, or the one it holds everywhere. */

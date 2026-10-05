@@ -388,7 +388,11 @@ describe('when access is taken away', () => {
       api: createApi({
         db: storage.db,
         hub,
-        checkToken: createTokenCheck({ key: secret, algorithm: 'HS256' }),
+        checkToken: createTokenCheck({
+          key: secret,
+          algorithm: 'HS256',
+          top: { claim: 'globalRole', values: ['ADMIN'] },
+        }),
         logger: silent,
         recheckAccess: () => apiGateway.recheck(),
       }),
@@ -446,10 +450,13 @@ describe('when access is taken away', () => {
     return attempt.socket;
   }
 
+  // Alice at the top, since changing a group takes manage at it.
   const removeAsAlice = (path: string) =>
     fetch(`http://127.0.0.1:${apiPort}${path}`, {
       method: 'DELETE',
-      headers: { authorization: `Bearer ${tokenFor('alice')}` },
+      headers: {
+        authorization: `Bearer ${jwt.sign({ sub: 'alice', globalRole: 'ADMIN' }, secret)}`,
+      },
     });
 
   it('closes the connection of whoever lost access, and only theirs', async () => {

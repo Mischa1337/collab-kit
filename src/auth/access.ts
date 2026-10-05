@@ -4,10 +4,10 @@ import { ObjectId, type Db } from 'mongodb';
 
 import type { Actor } from '../model/actor.ts';
 import type { Reference } from '../model/anchor.ts';
-import type { Right } from '../model/right.ts';
+import { RIGHTS, type Right } from '../model/right.ts';
 import { findWorkpiece, type WorkpieceRecord } from '../db/collections/workpieces.ts';
 import { findComment } from '../db/collections/comments.ts';
-import { holdsRight, isScopeKind, type Scope } from '../db/collections/grants.ts';
+import { grantsOf, isScopeKind, rightsHeld, type Scope } from '../db/collections/grants.ts';
 import { findGroup, groupsOf, isMemberOfAny, type GroupRecord } from '../db/collections/groups.ts';
 import {
   findRoom,
@@ -18,26 +18,66 @@ import {
 import { findTask, type Assignee, type TaskRecord } from '../db/collections/tasks.ts';
 
 /** Whether the actor holds the right at the target, by a grant there, above it or everywhere. */
-export async function may(db: Db, actor: Actor, right: Right, target: Reference): Promise<boolean> {
+export async function may(
+  db: Db,
+  actor: Actor,
+  right: Right,
+  target?: Reference,
+): Promise<boolean> {
+  return (await rightsAt(db, actor, target)).has(right);
+}
+
+/** Every right the actor holds at the target; without a target, those that hold everywhere. */
+export async function rightsAt(
+  db: Db,
+  actor: Actor,
+  target?: Reference,
+): Promise<ReadonlySet<Right>> {
   if (actor.top === true) {
-    return true;
+    return new Set(RIGHTS);
   }
 
   // Without a group there is no grant to hold, so the places need not be looked up.
   const groups = await groupsOf(db, actor.actorId);
   if (groups.length === 0) {
-    return false;
+    return new Set();
   }
 
   const places = new Map<string, Scope>();
-  await collectPlaces(db, target, places);
+  if (target !== undefined) {
+    await collectPlaces(db, target, places);
+  }
 
-  return holdsRight(
+  return rightsHeld(
     db,
     groups.map((group) => group._id),
-    right,
     [...places.values()],
   );
+}
+
+/** Whether the actor may hand these rights on at the place: manage there and each of them held. */
+export async function mayHandOn(
+  db: Db,
+  actor: Actor,
+  scope: Scope | undefined,
+  rights: readonly Right[],
+): Promise<boolean> {
+  const held = await rightsAt(db, actor, scope);
+
+  return held.has('manage') && rights.every((right) => held.has(right));
+}
+
+/** Taking someone in hands on every grant of the group, so each must be the actor's to give. */
+export async function mayAddMember(db: Db, actor: Actor, groupId: ObjectId): Promise<boolean> {
+  if (!(await may(db, actor, 'manage', { kind: 'group', id: groupId }))) {
+    return false;
+  }
+
+  const grants = await grantsOf(db, groupId);
+  const allowed = await Promise.all(
+    grants.map((grant) => mayHandOn(db, actor, grant.scope, grant.rights)),
+  );
+  return allowed.every(Boolean);
 }
 
 /** Adds the reference and every place above it, each once, so a chain never runs in a circle. */
@@ -142,12 +182,15 @@ export async function roomsVisibleTo(db: Db, actor: Actor): Promise<RoomRecord[]
   );
 }
 
-/** Seen by its members and whoever may change it, since who is in it tells what it opens. */
-export function maySeeGroup(
+/** Seen by its members and by whoever holds see at it, since who is in it tells what it opens. */
+export async function maySeeGroup(
+  db: Db,
   actor: Actor,
-  group: Pick<GroupRecord, 'createdBy' | 'members'>,
-): boolean {
-  return mayChangeRecord(actor, group) || group.members.includes(actor.actorId);
+  group: Pick<GroupRecord, '_id' | 'members'>,
+): Promise<boolean> {
+  return (
+    group.members.includes(actor.actorId) || may(db, actor, 'see', { kind: 'group', id: group._id })
+  );
 }
 
 /** May the actor see what a reference names? Only the service's own kinds are decided. */
@@ -164,7 +207,7 @@ export async function maySee(db: Db, actor: Actor, target: Reference): Promise<b
   }
   if (target.kind === 'group') {
     const group = await findGroup(db, target.id);
-    return group !== null && maySeeGroup(actor, group);
+    return group !== null && maySeeGroup(db, actor, group);
   }
   if (target.kind === 'comment') {
     // A comment is as visible as what it is about, down the chain to a workpiece or room.
@@ -233,24 +276,16 @@ export async function maySetCommentState(
   return maySee(db, actor, { kind: 'comment', id: commentId });
 }
 
-/** Whether the actor may change a room or group, looked up by its id. */
-export async function mayChange(
-  db: Db,
-  actor: Actor,
-  kind: 'room' | 'group',
-  id: ObjectId,
-): Promise<boolean> {
-  const found = kind === 'room' ? await findRoom(db, id) : await findGroup(db, id);
+/** Whether the actor may change a room, looked up by its id. */
+export async function mayChangeRoom(db: Db, actor: Actor, id: ObjectId): Promise<boolean> {
+  const room = await findRoom(db, id);
 
-  return found !== null && mayChangeRecord(actor, found);
+  return room !== null && mayChangeRecord(actor, room);
 }
 
-/** Provisional: only the creator changes a room or group, as changing hands out access. */
-function mayChangeRecord(
-  actor: Actor,
-  found: Pick<RoomRecord | GroupRecord, 'createdBy'>,
-): boolean {
-  return found.createdBy === actor.actorId;
+/** Provisional until rooms ask grants: only the creator changes a room, as it hands out access. */
+function mayChangeRecord(actor: Actor, room: Pick<RoomRecord, 'createdBy'>): boolean {
+  return room.createdBy === actor.actorId;
 }
 
 /** The groups a room holds; references the service does not keep grant nothing. */

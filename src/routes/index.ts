@@ -7,6 +7,7 @@ import { requireActor } from '../auth/middleware.ts';
 import type { WorkpieceHub } from '../realtime/hub.ts';
 import { roomRoutes } from './rooms.ts';
 import { groupRoutes } from './groups.ts';
+import { grantRoutes } from './grants.ts';
 import { workpieceRoutes } from './workpieces.ts';
 import { eventRoutes } from './events.ts';
 import { commentRoutes } from './comments.ts';
@@ -34,6 +35,7 @@ export function createApi(options: ApiOptions): Router {
 
   api.use(roomRoutes(options.db, options.recheckAccess));
   api.use(groupRoutes(options.db, options.recheckAccess));
+  api.use(grantRoutes(options.db));
   api.use(workpieceRoutes(options.db, options.hub));
   api.use(eventRoutes(options.db));
   api.use(commentRoutes(options.db));

@@ -15,17 +15,19 @@ gespeichert wird in MongoDB.
 Der Dienst stellt keine Token aus. Er prüft das JWT des anbindenden Werkzeugs und liest daraus, wer
 handelt. Eingestellt wird das pro Instanz in der `.env` (Vorlage: `.env.example`), nie pro Anfrage.
 
-| Variable              | Vorgabe | Bedeutung                                                                                                    |
-| --------------------- | ------- | ------------------------------------------------------------------------------------------------------------ |
-| `JWT_ALGORITHM`       | `RS256` | Verfahren, mit dem das Werkzeug signiert: `HS256/384/512`, `RS256/384/512`, `PS256/384/512`, `ES256/384/512` |
-| `JWT_SECRET`          | keine   | Gemeinsames Geheimnis mit dem Werkzeug. Pflicht bei `HS…`                                                    |
-| `JWT_PUBLIC_KEY`      | keine   | Öffentlicher Schlüssel des Werkzeugs als PEM. Bei `RS…`, `PS…` und `ES…` dies oder `JWT_JWKS_URI`            |
-| `JWT_JWKS_URI`        | keine   | Adresse, unter der das Werkzeug seine öffentlichen Schlüssel als JWKS veröffentlicht                         |
-| `JWT_ISSUER`          | keine   | Erwarteter Aussteller `iss`. Leer heißt: nicht geprüft                                                       |
-| `JWT_AUDIENCE`        | keine   | Erwartete Empfänger `aud`, durch Komma getrennt, einer muss passen. Leer heißt: nicht geprüft                |
-| `ACTOR_CLAIM`         | `sub`   | Claim mit der Kennung der Person, Text oder Zahl. Eindeutig und dauerhaft, keine E-Mail, kein Benutzername   |
-| `LABEL_CLAIM`         | `name`  | Claim mit dem Anzeigenamen. Darf im Token fehlen                                                             |
-| `JWT_CLOCK_TOLERANCE` | `5`     | Sekunden, die ein abgelaufenes Token noch gilt, um Uhrenabweichungen auszugleichen. `0` heißt streng         |
+| Variable              | Vorgabe | Bedeutung                                                                                                     |
+| --------------------- | ------- | ------------------------------------------------------------------------------------------------------------- |
+| `JWT_ALGORITHM`       | `RS256` | Verfahren, mit dem das Werkzeug signiert: `HS256/384/512`, `RS256/384/512`, `PS256/384/512`, `ES256/384/512`  |
+| `JWT_SECRET`          | keine   | Gemeinsames Geheimnis mit dem Werkzeug. Pflicht bei `HS…`                                                     |
+| `JWT_PUBLIC_KEY`      | keine   | Öffentlicher Schlüssel des Werkzeugs als PEM. Bei `RS…`, `PS…` und `ES…` dies oder `JWT_JWKS_URI`             |
+| `JWT_JWKS_URI`        | keine   | Adresse, unter der das Werkzeug seine öffentlichen Schlüssel als JWKS veröffentlicht                          |
+| `JWT_ISSUER`          | keine   | Erwarteter Aussteller `iss`. Leer heißt: nicht geprüft                                                        |
+| `JWT_AUDIENCE`        | keine   | Erwartete Empfänger `aud`, durch Komma getrennt, einer muss passen. Leer heißt: nicht geprüft                 |
+| `ACTOR_CLAIM`         | `sub`   | Claim mit der Kennung der Person, Text oder Zahl. Eindeutig und dauerhaft, keine E-Mail, kein Benutzername    |
+| `LABEL_CLAIM`         | `name`  | Claim mit dem Anzeigenamen. Darf im Token fehlen                                                              |
+| `TOP_CLAIM`           | keine   | Claim, der sagt, wer ganz oben steht und überall alles darf. Nur zusammen mit `TOP_VALUES`                    |
+| `TOP_VALUES`          | keine   | Werte in `TOP_CLAIM`, die ganz oben zählen, durch Komma getrennt. Leer heißt: niemand, nur Grants entscheiden |
+| `JWT_CLOCK_TOLERANCE` | `5`     | Sekunden, die ein abgelaufenes Token noch gilt, um Uhrenabweichungen auszugleichen. `0` heißt streng          |
 
 Ein leerer Wert gilt als nicht gesetzt. Ein ungültiger Wert oder ein fehlender Schlüssel verhindert
 den Start, die Ursache steht in der Fehlermeldung. Wie lange ein Token gilt, entscheidet das

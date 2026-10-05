@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import type { Db } from 'mongodb';
 
-import { mayChange, maySee, maySeeGroup } from '../auth/access.ts';
+import { may, mayAddMember, maySee, maySeeGroup } from '../auth/access.ts';
 import {
   addMember,
   createGroup,
@@ -28,12 +28,23 @@ export function groupRoutes(db: Db, recheckAccess: () => Promise<void>): Router 
   );
   // Behind seeing, so 403 tells only whoever already sees the group.
   const changing = guard(
-    (actor, id) => mayChange(db, actor, 'group', id),
+    (actor, id) => may(db, actor, 'manage', { kind: 'group', id }),
+    403,
+    'not allowed to change this group',
+  );
+  // Taking someone in hands on what the group holds, so it takes more than managing it.
+  const adding = guard(
+    (actor, id) => mayAddMember(db, actor, id),
     403,
     'not allowed to change this group',
   );
 
   routes.post('/groups', async (request, response) => {
+    // A group lies in nothing, so creating one takes manage everywhere; new, it holds no grant.
+    if (!(await may(db, actorOf(request), 'manage'))) {
+      return fail(response, 403, 'not allowed to create a group');
+    }
+
     const body = bodyOf(request);
     const name = asText(body['name']);
 
@@ -65,7 +76,7 @@ export function groupRoutes(db: Db, recheckAccess: () => Promise<void>): Router 
   routes.get('/groups/:id', async (request, response) => {
     const group = await findGroup(db, idOf(request));
 
-    if (group === null || !maySeeGroup(actorOf(request), group)) {
+    if (group === null || !(await maySeeGroup(db, actorOf(request), group))) {
       return fail(response, 404, 'unknown group');
     }
 
@@ -84,7 +95,7 @@ export function groupRoutes(db: Db, recheckAccess: () => Promise<void>): Router 
     response.json(await findGroup(db, id));
   });
 
-  routes.post('/groups/:id/members', seeing, changing, async (request, response) => {
+  routes.post('/groups/:id/members', seeing, adding, async (request, response) => {
     const actorId = asActorId(bodyOf(request)['actorId']);
 
     if (actorId === undefined) {

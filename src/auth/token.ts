@@ -120,7 +120,7 @@ function topOf(claims: Record<string, unknown>, top: TopClaim | undefined): true
     return undefined;
   }
 
-  // A claim may carry one value, like globalRole, or a list of them, like roles.
+  // A claim may carry one value or a list of them, as tokens differ in how they name a role.
   const value = claims[top.claim];
   const entries = Array.isArray(value) ? (value as unknown[]) : [value];
 

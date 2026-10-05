@@ -9,6 +9,7 @@ import { createTokenCheck } from '../../src/auth/token.ts';
 import { applyDefinitions } from '../../src/db/apply.ts';
 import { connect, type Storage } from '../../src/db/client.ts';
 import { createComment } from '../../src/db/collections/comments.ts';
+import { createRoom } from '../../src/db/collections/rooms.ts';
 import { createTask, type NewTask } from '../../src/db/collections/tasks.ts';
 import { appendUpdate } from '../../src/db/collections/updates.ts';
 import { foldState } from '../../src/db/collections/workpieces.ts';
@@ -26,8 +27,10 @@ const database = `collab_kit_routes_${Date.now()}_${Math.random().toString(36).s
 const secret = 'routes-secret';
 const logger = pino({ level: 'silent' });
 
-const tokenFor = (subject: string) => jwt.sign({ sub: subject }, secret, { algorithm: 'HS256' });
-const alice = tokenFor('alice');
+const tokenFor = (subject: string, claims: object = {}) =>
+  jwt.sign({ sub: subject, ...claims }, secret, { algorithm: 'HS256' });
+// Alice sets rooms and groups up, which only the top may do.
+const alice = tokenFor('alice', { globalRole: 'ADMIN' });
 const bob = tokenFor('bob');
 
 let storage: Storage;
@@ -45,7 +48,11 @@ beforeAll(async () => {
     api: createApi({
       db: storage.db,
       hub,
-      checkToken: createTokenCheck({ key: secret, algorithm: 'HS256' }),
+      checkToken: createTokenCheck({
+        key: secret,
+        algorithm: 'HS256',
+        top: { claim: 'globalRole', values: ['ADMIN'] },
+      }),
       logger,
       // No sockets in these tests, so there is nothing to ask again.
       recheckAccess: async () => {},
@@ -121,10 +128,10 @@ describe('setting a room up', () => {
   it('takes the actor from the token and never from the body', async () => {
     const room = await request(server)
       .post('/rooms')
-      .set(as(bob))
-      .send({ name: 'Untergeschoben', createdBy: 'alice' });
+      .set(as(alice))
+      .send({ name: 'Untergeschoben', createdBy: 'mallory' });
 
-    expect(room.body.createdBy).toBe('bob');
+    expect(room.body.createdBy).toBe('alice');
   });
 
   it('keeps the contract of the tool untouched', async () => {
@@ -175,10 +182,11 @@ describe('who may change what', () => {
   it('lets nobody put what they may not see into a room of their own', async () => {
     const { workpieceId } = await setUp();
     const carol = tokenFor('carol');
-    const room = await request(server).post('/rooms').set(as(carol)).send({ name: 'Eigen' });
+    // Written directly, as only the top may create a room over the routes.
+    const room = await createRoom(storage.db, { name: 'Eigen', createdBy: 'carol' });
 
     const pushed = await request(server)
-      .post(`/rooms/${room.body._id as string}/references`)
+      .post(`/rooms/${room._id.toHexString()}/references`)
       .set(as(carol))
       .send({ kind: 'workpiece', id: workpieceId });
 
@@ -187,10 +195,10 @@ describe('who may change what', () => {
 
   it('takes an id only as text, so it never reaches the database as an operator', async () => {
     const carol = tokenFor('carol');
-    const room = await request(server).post('/rooms').set(as(carol)).send({ name: 'Eigen' });
+    const room = await createRoom(storage.db, { name: 'Eigen', createdBy: 'carol' });
     const statuses = async (id: unknown) => {
       const pushed = await request(server)
-        .post(`/rooms/${room.body._id as string}/references`)
+        .post(`/rooms/${room._id.toHexString()}/references`)
         .set(as(carol))
         .send({ kind: 'workpiece', id });
       const traced = await request(server)
@@ -205,7 +213,7 @@ describe('who may change what', () => {
     expect(await statuses(42)).toEqual([400, 400]);
   });
 
-  it('lets nobody add themselves to a group they did not create', async () => {
+  it('lets nobody add themselves to a group they do not manage', async () => {
     const { groupId } = await setUp();
     const addSelf = (name: string) =>
       request(server)
