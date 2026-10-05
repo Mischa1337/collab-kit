@@ -488,3 +488,97 @@ describe('tasks and comments under grants', () => {
     expect((await say(dozent)).status).toBe(201);
   });
 });
+
+describe('changing and deleting comments', () => {
+  /** A comment alice said in a room where her team may speak and the tutors manage. */
+  async function said() {
+    const setting = await course();
+    await grant(setting.team, setting.at, ['see', 'speak']);
+    const mates = await group(['carol']);
+    await grant(mates, setting.at, ['see', 'speak']);
+    const anchor = { kind: 'workpiece', id: setting.workpieceId };
+    const comment = await request(server)
+      .post('/comments')
+      .set(as(alice))
+      .send({ kind: 'comment', anchor, body: { text: 'Kardinalitat' } });
+    return { ...setting, anchor, id: comment.body._id as string };
+  }
+  const change = (token: string, id: string, sent: object) =>
+    request(server).patch(`/comments/${id}`).set(as(token)).send(sent);
+  const remove = (token: string, id: string) =>
+    request(server).delete(`/comments/${id}`).set(as(token));
+  const traces = async (id: string, kind: string) =>
+    (
+      await request(server)
+        .get('/events')
+        .query({ anchorKind: 'comment', anchorId: id, kind })
+        .set(as(dozent))
+    ).body as { createdBy: string; detail?: object }[];
+
+  it('lets the author change the words and keeps only who did it, never the old words', async () => {
+    const { id } = await said();
+
+    const changed = await change(alice, id, {
+      body: { text: 'Kardinalität' },
+      reason: 'Tippfehler',
+    });
+    expect(changed.status).toBe(200);
+    expect(changed.body).toMatchObject({ body: { text: 'Kardinalität' } });
+    expect(changed.body.editedAt).toBeDefined();
+
+    // The same words again change nothing and leave no second trace.
+    await change(alice, id, { body: { text: 'Kardinalität' } });
+    const edits = await traces(id, 'comment-edited');
+    expect(edits).toHaveLength(1);
+    expect(edits[0]).toMatchObject({ createdBy: 'alice' });
+    expect(edits[0]).not.toHaveProperty('detail');
+  });
+
+  it('keeps the words from anyone else who may speak, and gives them to whoever manages', async () => {
+    const { id } = await said();
+
+    expect((await change(tokenFor('carol'), id, { body: { text: 'fremd' } })).status).toBe(403);
+    expect((await change(tutor, id, { body: { text: 'moderiert' } })).status).toBe(200);
+  });
+
+  it('takes the words from the author once speak is gone', async () => {
+    const { id, team, roomId } = await said();
+    await grant(team, { kind: 'room', id: roomId }, ['see']);
+
+    expect((await change(alice, id, { body: { text: 'zu spät' } })).status).toBe(403);
+    expect((await remove(alice, id)).status).toBe(403);
+  });
+
+  it('deletes the words for good and leaves a shell, so the answers keep their thread', async () => {
+    const { id, anchor } = await said();
+    const answer = await request(server)
+      .post('/comments')
+      .set(as(tokenFor('carol')))
+      .send({ kind: 'comment', anchor, parentId: id, body: { text: 'Antwort' } });
+
+    const deleted = await remove(alice, id);
+    expect(deleted.status).toBe(200);
+    expect(deleted.body).toMatchObject({ body: {}, createdBy: 'alice', deletedBy: 'alice' });
+    expect(deleted.body.deletedAt).toBeDefined();
+
+    const thread = await request(server)
+      .get('/comments')
+      .query({ anchorKind: 'workpiece', anchorId: anchor.id, parentId: id })
+      .set(as(alice));
+    expect(thread.body.map((entry: { _id: string }) => entry._id)).toEqual([answer.body._id]);
+
+    // Deleting twice is no mistake and leaves no second trace; a shell takes no change.
+    expect((await remove(alice, id)).status).toBe(200);
+    expect(await traces(id, 'comment-deleted')).toHaveLength(1);
+    expect((await change(alice, id, { body: { text: 'wieder' } })).status).toBe(409);
+    expect((await change(tutor, id, { state: 'read' })).status).toBe(409);
+  });
+
+  it('refuses a change without words or state, and words that are no object', async () => {
+    const { id } = await said();
+
+    expect((await change(alice, id, {})).status).toBe(400);
+    expect((await change(alice, id, { body: 'Text' })).status).toBe(400);
+    expect((await remove(bob, id)).status).toBe(404);
+  });
+});

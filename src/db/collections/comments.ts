@@ -3,7 +3,7 @@ import { ObjectId, type Db, type Document, type Filter } from 'mongodb';
 import { anchorSchema, anchoredAt, type Anchor, type AnchorQuery } from '../../model/anchor.ts';
 import { defined, matchOptional } from '../../utils/optional.ts';
 import type { CollectionDefinition } from '../apply.ts';
-import { changeWithEvent } from './events.ts';
+import { changeWithEvent, writeWithEvents, type NewEvent } from './events.ts';
 
 /** Something a person said about a place; feedback, chat and reactions differ only in kind. */
 export interface CommentRecord {
@@ -18,6 +18,11 @@ export interface CommentRecord {
   /** Free, D8.20: open, read, answered, applied, rejected, whatever the tool names. */
   state?: string;
   createdAt: Date;
+  /** When the words last changed, a shortcut; the old words are kept nowhere. */
+  editedAt?: Date;
+  /** Set once the words are gone; the shell stays so the answers keep their thread. */
+  deletedAt?: Date;
+  deletedBy?: string;
 }
 
 export const commentsDefinition: CollectionDefinition = {
@@ -36,6 +41,9 @@ export const commentsDefinition: CollectionDefinition = {
         description: 'free, D8.20: open, read, answered, applied, rejected',
       },
       createdAt: { bsonType: 'date' },
+      editedAt: { bsonType: 'date', description: 'when the words last changed' },
+      deletedAt: { bsonType: 'date', description: 'the words are gone, the shell stays' },
+      deletedBy: { bsonType: 'string' },
     },
   },
   indexes: [
@@ -107,6 +115,76 @@ export async function setCommentState(
     },
     now,
   );
+}
+
+export interface CommentBodyChange {
+  readonly body: Document;
+  readonly changedBy: string;
+  readonly reason?: string;
+}
+
+/** Replaces the words and records who did, never what stood there; answers whether they changed. */
+export async function setCommentBody(
+  db: Db,
+  commentId: ObjectId,
+  input: CommentBodyChange,
+  now = new Date(),
+): Promise<boolean> {
+  return writeWithEvents(
+    db,
+    async (session) => {
+      // Only a live comment, and only if the words differ, so the same words leave no trace.
+      const result = await db
+        .collection<CommentRecord>('comments')
+        .updateOne(
+          { _id: commentId, deletedAt: { $exists: false }, body: { $ne: input.body } },
+          { $set: { body: input.body, editedAt: now } },
+          { session },
+        );
+      return result.modifiedCount === 1;
+    },
+    [commentEvent('comment-edited', commentId, input.changedBy, input.reason)],
+    now,
+  );
+}
+
+export interface CommentDeletion {
+  readonly deletedBy: string;
+  readonly reason?: string;
+}
+
+/** Takes the words away for good and leaves the shell; answers whether it was still there. */
+export async function deleteComment(
+  db: Db,
+  commentId: ObjectId,
+  input: CommentDeletion,
+  now = new Date(),
+): Promise<boolean> {
+  return writeWithEvents(
+    db,
+    async (session) => {
+      const result = await db
+        .collection<CommentRecord>('comments')
+        .updateOne(
+          { _id: commentId, deletedAt: { $exists: false } },
+          { $set: { body: {}, deletedAt: now, deletedBy: input.deletedBy } },
+          { session },
+        );
+      return result.modifiedCount === 1;
+    },
+    [commentEvent('comment-deleted', commentId, input.deletedBy, input.reason)],
+    now,
+  );
+}
+
+/** The trace of a change to the words, at the comment, without the words themselves. */
+function commentEvent(kind: string, commentId: ObjectId, by: string, reason?: string): NewEvent {
+  return {
+    kind,
+    createdBy: by,
+    anchor: { kind: 'comment', id: commentId },
+    ...defined({ reason }),
+  };
 }
 
 /** Matches comments that answer nothing, so the starts of the threads can be asked for. */

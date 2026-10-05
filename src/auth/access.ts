@@ -6,7 +6,7 @@ import type { Actor } from '../model/actor.ts';
 import type { Reference } from '../model/anchor.ts';
 import { RIGHTS, type Right } from '../model/right.ts';
 import { workpieceExists } from '../db/collections/workpieces.ts';
-import { findComment } from '../db/collections/comments.ts';
+import { findComment, type CommentRecord } from '../db/collections/comments.ts';
 import {
   grantsOf,
   isScopeKind,
@@ -314,6 +314,20 @@ export async function assigneeSees(
   const places = new Map<string, Scope>();
   await collectPlaces(db, anchor, places);
   return (await rightsHeld(db, [assignee.id], [...places.values()])).has('see');
+}
+
+/** The words are the author's to change while they may speak there; anyone else's take manage. */
+export async function mayChangeComment(
+  db: Db,
+  actor: Actor,
+  comment: Pick<CommentRecord, '_id' | 'createdBy'>,
+): Promise<boolean> {
+  const at: Reference = { kind: 'comment', id: comment._id };
+
+  if (comment.createdBy === actor.actorId && (await may(db, actor, 'speak', at))) {
+    return true;
+  }
+  return may(db, actor, 'manage', at);
 }
 
 /** A state the tool named a decision takes decide; any other whoever may speak there. */

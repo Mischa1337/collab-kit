@@ -1,11 +1,13 @@
 import { Router } from 'express';
 import type { Db } from 'mongodb';
 
-import { mayCreateAt, maySee, maySetCommentState } from '../auth/access.ts';
+import { mayChangeComment, mayCreateAt, maySee, maySetCommentState } from '../auth/access.ts';
 import {
   createComment,
+  deleteComment,
   findComment,
   readComments,
+  setCommentBody,
   setCommentState,
 } from '../db/collections/comments.ts';
 import {
@@ -117,32 +119,76 @@ export function commentRoutes(db: Db, decisions: readonly string[]): Router {
   });
 
   /** Moves the state; who moved it and why land in the events of the comment, D8.16. */
+  /** Changes the words, the state or both; each part by its own rule, the words never kept. */
   routes.patch('/comments/:id', seeing, async (request, response) => {
     const body = bodyOf(request);
+    const content = asObject(body['body']);
     const state = asText(body['state']);
     const reason = asText(body['reason']);
 
-    if (state === undefined) {
-      return fail(response, 400, 'state is missing');
-    }
-    const unusable = unusableField(body, { reason });
+    const unusable = unusableField(body, { body: content, state, reason });
     if (unusable !== undefined) {
       return fail(response, 400, `${unusable} is unusable`);
     }
-    // Asked only now, as the state decides which right it takes; seeing came first, so 404 first.
+    if (content === undefined && state === undefined) {
+      return fail(response, 400, 'body or state is needed');
+    }
+
+    // Asked only now, as what is sent decides which right it takes; 404 came first from seeing.
     const actor = actorOf(request);
     const id = idOf(request);
-    if (!(await maySetCommentState(db, actor, id, state, decisions))) {
+    const comment = await findComment(db, id);
+    if (comment === null) {
+      return fail(response, 404, 'unknown comment');
+    }
+    if (comment.deletedAt !== undefined) {
+      return fail(response, 409, 'the comment is deleted');
+    }
+    if (content !== undefined && !(await mayChangeComment(db, actor, comment))) {
+      return fail(response, 403, 'not allowed to change these words');
+    }
+    if (state !== undefined && !(await maySetCommentState(db, actor, id, state, decisions))) {
       return fail(response, 403, 'not allowed to change this comment');
     }
 
-    response.json(
-      await setCommentState(db, id, {
-        state,
+    // The words first, so a state moved in the same request answers with the new words.
+    if (content !== undefined) {
+      await setCommentBody(db, id, {
+        body: content,
         changedBy: actor.actorId,
         ...defined({ reason }),
-      }),
+      });
+    }
+    response.json(
+      state === undefined
+        ? await findComment(db, id)
+        : await setCommentState(db, id, {
+            state,
+            changedBy: actor.actorId,
+            ...defined({ reason }),
+          }),
     );
+  });
+
+  /** Takes the words away for good; the shell stays, so the answers keep their thread. */
+  routes.delete('/comments/:id', seeing, async (request, response) => {
+    const reason = asText(request.query['reason']);
+
+    const unusable = unusableField(request.query, { reason });
+    if (unusable !== undefined) {
+      return fail(response, 400, `${unusable} is unusable`);
+    }
+
+    const actor = actorOf(request);
+    const id = idOf(request);
+    const comment = await findComment(db, id);
+    if (comment === null || !(await mayChangeComment(db, actor, comment))) {
+      return fail(response, 403, 'not allowed to delete this comment');
+    }
+
+    // Deleting twice is no mistake, it only leaves no second trace.
+    await deleteComment(db, id, { deletedBy: actor.actorId, ...defined({ reason }) });
+    response.json(await findComment(db, id));
   });
 
   return routes;
