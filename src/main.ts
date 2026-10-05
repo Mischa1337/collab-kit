@@ -30,7 +30,7 @@ const checkToken = createTokenCheck({
   clockToleranceSeconds: config.jwtClockTolerance,
   actorClaim: config.actorClaim,
   labelClaim: config.labelClaim,
-  ...defined({ issuer: config.jwtIssuer, audience: config.jwtAudience }),
+  ...defined({ issuer: config.jwtIssuer, audience: config.jwtAudience, top: config.top }),
 });
 // Keeps the open workpieces in memory for real-time work.
 const hub = createWorkpieceHub({ db: storage.db, logger: log });

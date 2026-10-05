@@ -4,8 +4,10 @@ import { ObjectId, type Db } from 'mongodb';
 
 import type { Actor } from '../model/actor.ts';
 import type { Reference } from '../model/anchor.ts';
+import type { Right } from '../model/right.ts';
 import { findWorkpiece, type WorkpieceRecord } from '../db/collections/workpieces.ts';
 import { findComment } from '../db/collections/comments.ts';
+import { holdsRight, isScopeKind, type Scope } from '../db/collections/grants.ts';
 import { findGroup, groupsOf, isMemberOfAny, type GroupRecord } from '../db/collections/groups.ts';
 import {
   findRoom,
@@ -14,6 +16,81 @@ import {
   type RoomRecord,
 } from '../db/collections/rooms.ts';
 import { findTask, type Assignee, type TaskRecord } from '../db/collections/tasks.ts';
+
+/** Whether the actor holds the right at the target, by a grant there, above it or everywhere. */
+export async function may(db: Db, actor: Actor, right: Right, target: Reference): Promise<boolean> {
+  if (actor.top === true) {
+    return true;
+  }
+
+  // Without a group there is no grant to hold, so the places need not be looked up.
+  const groups = await groupsOf(db, actor.actorId);
+  if (groups.length === 0) {
+    return false;
+  }
+
+  const places = new Map<string, Scope>();
+  await collectPlaces(db, target, places);
+
+  return holdsRight(
+    db,
+    groups.map((group) => group._id),
+    right,
+    [...places.values()],
+  );
+}
+
+/** Adds the reference and every place above it, each once, so a chain never runs in a circle. */
+async function collectPlaces(
+  db: Db,
+  reference: Reference,
+  places: Map<string, Scope>,
+): Promise<void> {
+  // A kind of the tool is no place, as the service could not enforce a right there.
+  if (!isScopeKind(reference.kind) || !(reference.id instanceof ObjectId)) {
+    return;
+  }
+  const key = `${reference.kind}:${reference.id.toHexString()}`;
+  if (places.has(key)) {
+    return;
+  }
+
+  // Taken before the first await, so the parents searched side by side never add it twice.
+  const place: Scope = { kind: reference.kind, id: reference.id };
+  places.set(key, place);
+
+  const parents = await parentsOf(db, place);
+  await Promise.all(parents.map((parent) => collectPlaces(db, parent, places)));
+}
+
+/** Right above a place: the rooms of a workpiece, the parent and anchor of a task or comment. */
+async function parentsOf(db: Db, place: Scope): Promise<Reference[]> {
+  if (place.kind === 'workpiece') {
+    const rooms = await roomsContaining(db, place);
+    return rooms.map((room) => ({ kind: 'room', id: room._id }));
+  }
+  if (place.kind === 'task') {
+    const task = await findTask(db, place.id);
+    return task === null ? [] : above('task', task);
+  }
+  if (place.kind === 'comment') {
+    const comment = await findComment(db, place.id);
+    return comment === null ? [] : above('comment', comment);
+  }
+  // A room and a group have nothing above them but the instance.
+  return [];
+}
+
+/** The parent of the same kind and the anchor, whichever of the two there is. */
+function above(
+  kind: 'task' | 'comment',
+  entry: { readonly parentId?: ObjectId; readonly anchor?: Reference },
+): Reference[] {
+  return [
+    ...(entry.parentId === undefined ? [] : [{ kind, id: entry.parentId }]),
+    ...(entry.anchor === undefined ? [] : [{ kind: entry.anchor.kind, id: entry.anchor.id }]),
+  ];
+}
 
 /** Open: some room bundles the workpiece and a group the actor is in. No room, nobody. */
 export async function mayOpenWorkpiece(

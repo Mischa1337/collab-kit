@@ -11,6 +11,7 @@ describe('collectionDefinitions', () => {
       'comments',
       'workpieces',
       'events',
+      'grants',
       'groups',
       'rooms',
       'tasks',

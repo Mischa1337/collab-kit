@@ -31,6 +31,12 @@ export function usesSharedSecret(algorithm: string): boolean {
   return algorithm.startsWith('HS');
 }
 
+/** A claim and the values in it that put an actor at the top, where every right holds everywhere. */
+export interface TopClaim {
+  readonly claim: string;
+  readonly values: readonly string[];
+}
+
 /** Finds the key a token names by the kid in its header. */
 export type KeyLookup = (kid: string | undefined) => Promise<KeyObject>;
 
@@ -49,6 +55,8 @@ export interface TokenOptions {
   readonly issuer?: string;
   /** Accepted `aud` values, one must match; left out or empty, every audience passes. */
   readonly audience?: readonly string[];
+  /** Who stands at the top, as the docking tool names it; left out, nobody does. */
+  readonly top?: TopClaim;
 }
 
 /** One message for every rejection, the reason stays in `cause` for the log only. */
@@ -100,8 +108,25 @@ export function createTokenCheck(options: TokenOptions): (token: string) => Prom
     }
 
     const name = claims[labelClaim];
-    return typeof name === 'string' && name.trim() !== '' ? { actorId, label: name } : { actorId };
+    const label = typeof name === 'string' && name.trim() !== '' ? name : undefined;
+
+    return { actorId, ...defined({ label, top: topOf(claims, options.top) }) };
   };
+}
+
+/** True when the top claim holds one of its values, alone or in a list; else nothing at all. */
+function topOf(claims: Record<string, unknown>, top: TopClaim | undefined): true | undefined {
+  if (top === undefined) {
+    return undefined;
+  }
+
+  // A claim may carry one value, like globalRole, or a list of them, like roles.
+  const value = claims[top.claim];
+  const entries = Array.isArray(value) ? (value as unknown[]) : [value];
+
+  return entries.some((entry) => typeof entry === 'string' && top.values.includes(entry))
+    ? true
+    : undefined;
 }
 
 /** One key for every token: the secret for an HS algorithm, the public key for any other. */

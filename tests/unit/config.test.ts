@@ -155,6 +155,28 @@ describe('readConfig', () => {
     expect(config).toMatchObject({ actorClaim: 'sub', labelClaim: 'name' });
   });
 
+  it('reads the top claim and its values as a list', () => {
+    const config = readConfig({
+      ...valid,
+      TOP_CLAIM: ' globalRole ',
+      TOP_VALUES: 'ADMIN, MODERATOR',
+    });
+
+    expect(config).toMatchObject({ top: { claim: 'globalRole', values: ['ADMIN', 'MODERATOR'] } });
+  });
+
+  it('puts nobody at the top while both top variables are blank', () => {
+    expect(readConfig({ ...valid, TOP_CLAIM: ' ', TOP_VALUES: ' , ' })).not.toHaveProperty('top');
+  });
+
+  it('refuses one top variable without the other', () => {
+    for (const half of [{ TOP_CLAIM: 'globalRole' }, { TOP_VALUES: 'ADMIN' }]) {
+      expect(() => readConfig({ ...valid, ...half })).toThrowError(
+        /set TOP_CLAIM and TOP_VALUES together, or neither/,
+      );
+    }
+  });
+
   it('reports every missing variable at once instead of the first one', () => {
     expect(() => readConfig({})).toThrowError(
       /MONGODB_URI is missing[\s\S]*MONGODB_DB is missing[\s\S]*JWT_PUBLIC_KEY or JWT_JWKS_URI/,

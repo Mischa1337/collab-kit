@@ -1,6 +1,6 @@
 /** Runtime configuration, read once at startup so a bad variable fails right away. */
 import { isTokenAlgorithm, TOKEN_ALGORITHMS, usesSharedSecret } from './auth/token.ts';
-import type { TokenAlgorithm } from './auth/token.ts';
+import type { TokenAlgorithm, TopClaim } from './auth/token.ts';
 import { defined } from './utils/optional.ts';
 
 const NODE_ENVS = ['development', 'test', 'production'] as const;
@@ -26,6 +26,8 @@ export interface Config {
   readonly actorClaim: string;
   /** Claim that holds the name to show. */
   readonly labelClaim: string;
+  /** TOP_CLAIM and TOP_VALUES: who may everything everywhere; left out, nobody. */
+  readonly top?: TopClaim;
   /** Largest WebSocket message; left out, the gateway keeps its own default. */
   readonly maxMessageBytes?: number;
   /** Largest awareness update; left out, the gateway keeps its own default. */
@@ -87,6 +89,7 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const allowedOrigins = optionalOrigins(env, problems);
   const jwtIssuer = optionalValue(env, 'JWT_ISSUER');
   const jwtAudience = optionalList(env, 'JWT_AUDIENCE');
+  const top = readTop(env, problems);
 
   if (problems.length > 0) {
     throw new Error(`invalid configuration:\n  - ${problems.join('\n  - ')}`);
@@ -105,7 +108,14 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env): Config {
     // The standard claims of RFC 7519 and OpenID Connect, for a tool that follows them.
     actorClaim: optionalValue(env, 'ACTOR_CLAIM') ?? 'sub',
     labelClaim: optionalValue(env, 'LABEL_CLAIM') ?? 'name',
-    ...defined({ jwtIssuer, jwtAudience, maxMessageBytes, maxAwarenessBytes, allowedOrigins }),
+    ...defined({
+      jwtIssuer,
+      jwtAudience,
+      maxMessageBytes,
+      maxAwarenessBytes,
+      allowedOrigins,
+      top,
+    }),
   };
 }
 
@@ -150,6 +160,21 @@ function readTokenKey(
     problems.push(`JWT_JWKS_URI must be an http or https address, got "${jwksUri}"`);
   }
   return { jwksUri };
+}
+
+/** TOP_CLAIM with TOP_VALUES, both or neither; half of it would quietly put nobody at the top. */
+function readTop(env: NodeJS.ProcessEnv, problems: string[]): TopClaim | undefined {
+  const claim = optionalValue(env, 'TOP_CLAIM');
+  const values = optionalList(env, 'TOP_VALUES');
+
+  if (claim === undefined && values === undefined) {
+    return undefined;
+  }
+  if (claim === undefined || values === undefined) {
+    problems.push('set TOP_CLAIM and TOP_VALUES together, or neither');
+    return undefined;
+  }
+  return { claim, values };
 }
 
 /** A size in whole bytes up to 15 MiB, undefined when not set; anything else is a problem. */
