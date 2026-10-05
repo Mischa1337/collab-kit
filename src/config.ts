@@ -28,6 +28,8 @@ export interface Config {
   readonly labelClaim: string;
   /** TOP_CLAIM and TOP_VALUES: who may everything everywhere; left out, nobody. */
   readonly top?: TopClaim;
+  /** States the tool names a decision, so setting one takes decide; left out, none does. */
+  readonly decisionStates?: readonly string[];
   /** Largest WebSocket message; left out, the gateway keeps its own default. */
   readonly maxMessageBytes?: number;
   /** Largest awareness update; left out, the gateway keeps its own default. */
@@ -90,6 +92,7 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const jwtIssuer = optionalValue(env, 'JWT_ISSUER');
   const jwtAudience = optionalList(env, 'JWT_AUDIENCE');
   const top = readTop(env, problems);
+  const decisionStates = optionalList(env, 'DECISION_STATES');
 
   if (problems.length > 0) {
     throw new Error(`invalid configuration:\n  - ${problems.join('\n  - ')}`);
@@ -115,6 +118,7 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env): Config {
       maxAwarenessBytes,
       allowedOrigins,
       top,
+      decisionStates,
     }),
   };
 }

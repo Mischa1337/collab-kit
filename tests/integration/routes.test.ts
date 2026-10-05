@@ -559,10 +559,11 @@ describe('a value that was sent but cannot be used', () => {
   it('takes a unit only as text, in a body as in a query', async () => {
     const anchor = board();
     const at = { anchorKind: anchor.kind, anchorId: anchor.id };
+    // alice at the top may speak at a kind of the tool, which is no place a grant could reach.
     const say = (unit: unknown) =>
       request(server)
         .post('/comments')
-        .set(as(bob))
+        .set(as(alice))
         .send({ kind: 'comment', anchor: { ...anchor, unit }, body: {} });
     const read = (query: Record<string, string | string[]>) =>
       request(server).get('/comments').query(query).set(as(bob));
@@ -933,10 +934,10 @@ describe('who may see a task', () => {
     expect((await traces(child._id, carol)).status).toBe(404);
   });
 
-  it('shows a task without anchor to its creator and to whom it belongs', async () => {
+  it('shows a task without anchor to whom it belongs, and not to its creator', async () => {
     const reading = await task({ assignees: [{ kind: 'actor', id: 'carol' }] });
 
-    expect((await traces(reading._id, tokenFor('dora'))).status).toBe(200);
+    expect((await traces(reading._id, tokenFor('dora'))).status).toBe(404);
     expect((await traces(reading._id, tokenFor('carol'))).status).toBe(200);
     expect((await traces(reading._id, bob)).status).toBe(404);
   });
@@ -1016,17 +1017,23 @@ describe('work to be done', () => {
   });
 
   it('gives a task only to groups the actor may see, every one of them', async () => {
-    const { groupId } = await setUp();
-    const task = {
+    const { groupId, workpieceId } = await setUp();
+    const hidden = await createGroup(storage.db, {
+      name: 'Fremd',
+      createdBy: 'alice',
+      members: [],
+    });
+    const task = (group: string) => ({
       title: 'x',
+      anchor: { kind: 'workpiece', id: workpieceId },
       assignees: [
         { kind: 'actor', id: 'carol' },
-        { kind: 'group', id: groupId },
+        { kind: 'group', id: group },
       ],
-    };
+    });
 
-    expect((await plan(tokenFor('carol'), task)).status).toBe(404);
-    expect((await plan(bob, task)).status).toBe(201);
+    expect((await plan(bob, task(hidden._id.toHexString()))).status).toBe(404);
+    expect((await plan(bob, task(groupId))).status).toBe(201);
   });
 
   it('reads a person as the token does and a group by its key, nothing else', async () => {

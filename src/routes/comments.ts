@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import type { Db } from 'mongodb';
 
-import { maySee, maySetCommentState } from '../auth/access.ts';
+import { mayCreateAt, maySee, maySetCommentState } from '../auth/access.ts';
 import {
   createComment,
   findComment,
@@ -23,7 +23,7 @@ import { defined } from '../utils/optional.ts';
 import { actorOf, bodyOf, fail, guard, idOf, requireId, unusableField } from './http.ts';
 
 /** Comment, feedback, message and reaction alike: one form, told apart by kind. */
-export function commentRoutes(db: Db): Router {
+export function commentRoutes(db: Db, decisions: readonly string[]): Router {
   const routes = Router();
 
   routes.param('id', requireId('comment'));
@@ -33,12 +33,6 @@ export function commentRoutes(db: Db): Router {
     (actor, id) => maySee(db, actor, { kind: 'comment', id }),
     404,
     'unknown comment',
-  );
-  // Behind seeing, so 403 tells only whoever already sees the comment; today both rules agree.
-  const moving = guard(
-    (actor, id) => maySetCommentState(db, actor, id),
-    403,
-    'not allowed to change this comment',
   );
 
   routes.post('/comments', async (request, response) => {
@@ -71,6 +65,15 @@ export function commentRoutes(db: Db): Router {
     }
     if (parentId !== undefined && !(await maySee(db, actor, { kind: 'comment', id: parentId }))) {
       return fail(response, 404, 'unknown parent');
+    }
+    // Saying something takes speak where it hangs, a first state that is a decision decide too.
+    const places = [anchor, ...(parentId === undefined ? [] : [{ kind: 'comment', id: parentId }])];
+    if (!(await mayCreateAt(db, actor, 'speak', places))) {
+      return fail(response, 403, 'not allowed to say something here');
+    }
+    const deciding = state !== undefined && decisions.includes(state);
+    if (deciding && !(await mayCreateAt(db, actor, 'decide', places))) {
+      return fail(response, 403, 'not allowed to decide here');
     }
 
     response.status(201).json(
@@ -114,7 +117,7 @@ export function commentRoutes(db: Db): Router {
   });
 
   /** Moves the state; who moved it and why land in the events of the comment, D8.16. */
-  routes.patch('/comments/:id', seeing, moving, async (request, response) => {
+  routes.patch('/comments/:id', seeing, async (request, response) => {
     const body = bodyOf(request);
     const state = asText(body['state']);
     const reason = asText(body['reason']);
@@ -126,11 +129,17 @@ export function commentRoutes(db: Db): Router {
     if (unusable !== undefined) {
       return fail(response, 400, `${unusable} is unusable`);
     }
+    // Asked only now, as the state decides which right it takes; seeing came first, so 404 first.
+    const actor = actorOf(request);
+    const id = idOf(request);
+    if (!(await maySetCommentState(db, actor, id, state, decisions))) {
+      return fail(response, 403, 'not allowed to change this comment');
+    }
 
     response.json(
-      await setCommentState(db, idOf(request), {
+      await setCommentState(db, id, {
         state,
-        changedBy: actorOf(request).actorId,
+        changedBy: actor.actorId,
         ...defined({ reason }),
       }),
     );

@@ -51,6 +51,7 @@ beforeAll(async () => {
       logger,
       // No sockets in these tests, so there is nothing to ask again.
       recheckAccess: async () => {},
+      decisionStates: ['accepted'],
     }),
   });
   // Listening once, or supertest opens a port per request and parallel ones hang up.
@@ -372,5 +373,118 @@ describe('rooms and workpieces under grants', () => {
 
     expect(pushed.status).toBe(400);
     expect(pushed.body.error).toContain('PUT /grants');
+  });
+});
+
+describe('tasks and comments under grants', () => {
+  /** A class where the team may see, speak and plan in the room and the readers only see. */
+  async function workroom() {
+    const setting = await course();
+    await grant(setting.team, setting.at, ['see', 'speak', 'plan']);
+    const readers = await group(['erin']);
+    await grant(readers, setting.at, ['see']);
+    return { ...setting, anchor: { kind: 'workpiece', id: setting.workpieceId } };
+  }
+  const plan = (token: string, task: object) =>
+    request(server)
+      .post('/tasks')
+      .set(as(token))
+      .send({ kind: 'task', title: 'Entwurf', state: 'open', ...task });
+  const move = (token: string, id: string, state: string) =>
+    request(server).patch(`/tasks/${id}`).set(as(token)).send({ state });
+
+  it('plans where plan holds, and without an anchor only with plan everywhere', async () => {
+    const { anchor } = await workroom();
+
+    expect((await plan(alice, { anchor })).status).toBe(201);
+    expect((await plan(tokenFor('erin'), { anchor })).status).toBe(403);
+    expect((await plan(bob, { anchor })).status).toBe(404);
+    expect((await plan(alice, {})).status).toBe(403);
+    expect((await plan(alice, { anchor, state: 'accepted' })).status).toBe(403);
+    expect((await plan(dozent, {})).status).toBe(201);
+  });
+
+  it('lets whom a task is given move its state, but never into a decision', async () => {
+    const { anchor } = await workroom();
+    const readers = await group(['erin']);
+    await grant(readers, { kind: 'workpiece', id: anchor.id }, ['see']);
+    const made = await plan(dozent, { anchor, assignees: [{ kind: 'group', id: readers }] });
+    const id = made.body._id as string;
+
+    // erin only sees, but the task is given to her group.
+    expect((await move(tokenFor('erin'), id, 'done')).status).toBe(200);
+    expect((await move(tokenFor('erin'), id, 'accepted')).status).toBe(403);
+    // alice plans in the room, which moves any state but a decision.
+    expect((await move(alice, id, 'open')).status).toBe(200);
+    expect((await move(alice, id, 'accepted')).status).toBe(403);
+    expect((await move(tutor, id, 'accepted')).status).toBe(403);
+    expect((await move(dozent, id, 'accepted')).status).toBe(200);
+  });
+
+  it('gives a task to a group only if it sees what the task is about, a person always', async () => {
+    const { anchor } = await workroom();
+    const outsiders = await group(['frank']);
+    const made = await plan(dozent, { anchor });
+    const give = (assignee: object) =>
+      request(server)
+        .post(`/tasks/${made.body._id as string}/assignees`)
+        .set(as(dozent))
+        .send(assignee);
+
+    expect((await give({ kind: 'group', id: outsiders })).status).toBe(409);
+    expect(
+      (await plan(dozent, { anchor, assignees: [{ kind: 'group', id: outsiders }] })).status,
+    ).toBe(409);
+    // A person is not asked, as the service cannot see whether their token stands at the top.
+    expect((await give({ kind: 'actor', id: 'frank' })).status).toBe(201);
+
+    await grant(outsiders, { kind: 'workpiece', id: anchor.id }, ['see']);
+    expect((await give({ kind: 'group', id: outsiders })).status).toBe(201);
+  });
+
+  it('shows a task to whom it is given, even without any grant', async () => {
+    const { anchor } = await workroom();
+    const made = await plan(dozent, { anchor, assignees: [{ kind: 'actor', id: 'gina' }] });
+    const show = (token: string) =>
+      request(server)
+        .get(`/tasks/${made.body._id as string}`)
+        .set(as(token));
+
+    expect((await show(tokenFor('gina'))).status).toBe(200);
+    expect((await show(bob)).status).toBe(404);
+  });
+
+  it('lets whoever may speak say something, and only decide set a decision', async () => {
+    const { anchor } = await workroom();
+    const say = (token: string, more: object = {}) =>
+      request(server)
+        .post('/comments')
+        .set(as(token))
+        .send({ kind: 'comment', anchor, body: { text: 'Kardinalität?' }, ...more });
+    const mark = (token: string, id: string, state: string) =>
+      request(server).patch(`/comments/${id}`).set(as(token)).send({ state });
+
+    const said = await say(alice);
+    expect(said.status).toBe(201);
+    expect((await say(tokenFor('erin'))).status).toBe(403);
+    expect((await say(alice, { state: 'accepted' })).status).toBe(403);
+
+    const id = said.body._id as string;
+    expect((await mark(alice, id, 'read')).status).toBe(200);
+    expect((await mark(tokenFor('erin'), id, 'read')).status).toBe(403);
+    expect((await mark(alice, id, 'accepted')).status).toBe(403);
+    expect((await mark(tutor, id, 'accepted')).status).toBe(403);
+    expect((await mark(dozent, id, 'accepted')).status).toBe(200);
+  });
+
+  it('keeps a kind of the tool, which no grant reaches, to whoever may speak everywhere', async () => {
+    const say = (token: string) =>
+      request(server)
+        .post('/comments')
+        .set(as(token))
+        .send({ kind: 'comment', anchor: { kind: 'board', id: 'b-1' }, body: {} });
+
+    expect((await say(alice)).status).toBe(403);
+    expect((await say(dozent)).status).toBe(201);
   });
 });

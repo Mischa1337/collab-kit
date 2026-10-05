@@ -2,9 +2,11 @@ import { Router } from 'express';
 import type { Db } from 'mongodb';
 
 import {
+  assigneeSees,
   assigneesFor,
   mayAssignTask,
   mayAssignTo,
+  mayCreateAt,
   maySee,
   maySetTaskState,
 } from '../auth/access.ts';
@@ -34,19 +36,14 @@ import { defined } from '../utils/optional.ts';
 import { actorOf, bodyOf, fail, guard, idOf, requireId, unusableField } from './http.ts';
 
 /** Task, review, revision and approval alike: something to be done, by someone, with a state. */
-export function taskRoutes(db: Db): Router {
+export function taskRoutes(db: Db, decisions: readonly string[]): Router {
   const routes = Router();
 
   routes.param('id', requireId('task'));
 
-  // Seen by its creator, its assignees and whoever sees its anchor or parent; 404 hides it too.
+  // Seen by its assignees and whoever sees it, its anchor or parent; 404 hides it too.
   const seeing = guard((actor, id) => maySee(db, actor, { kind: 'task', id }), 404, 'unknown task');
-  // Behind seeing, so 403 tells only whoever already sees the task; today all three agree.
-  const moving = guard(
-    (actor, id) => maySetTaskState(db, actor, id),
-    403,
-    'not allowed to change this task',
-  );
+  // Behind seeing, so 403 tells only whoever already sees the task.
   const assigning = guard(
     (actor, id) => mayAssignTask(db, actor, id),
     403,
@@ -90,11 +87,25 @@ export function taskRoutes(db: Db): Router {
     if (parentId !== undefined && !(await maySee(db, actor, { kind: 'task', id: parentId }))) {
       return fail(response, 404, 'unknown parent');
     }
-    const assignable = await Promise.all(
-      (assignees ?? []).map((assignee) => mayAssignTo(db, actor, assignee)),
-    );
+    // Planning takes plan where it hangs, or everywhere at nothing; a first decision, decide too.
+    const places = [
+      ...(anchor === undefined ? [] : [anchor]),
+      ...(parentId === undefined ? [] : [{ kind: 'task', id: parentId }]),
+    ];
+    if (!(await mayCreateAt(db, actor, 'plan', places))) {
+      return fail(response, 403, 'not allowed to plan here');
+    }
+    if (decisions.includes(state) && !(await mayCreateAt(db, actor, 'decide', places))) {
+      return fail(response, 403, 'not allowed to decide here');
+    }
+    const given = assignees ?? [];
+    const assignable = await Promise.all(given.map((assignee) => mayAssignTo(db, actor, assignee)));
     if (!assignable.every(Boolean)) {
       return fail(response, 404, 'unknown assignee');
+    }
+    const seen = await Promise.all(given.map((assignee) => assigneeSees(db, assignee, anchor)));
+    if (!seen.every(Boolean)) {
+      return fail(response, 409, 'an assigned group may not see what the task is about');
     }
 
     response.status(201).json(
@@ -153,7 +164,7 @@ export function taskRoutes(db: Db): Router {
   });
 
   /** Moves the state; who moved it and why land in the events of the task. */
-  routes.patch('/tasks/:id', seeing, moving, async (request, response) => {
+  routes.patch('/tasks/:id', seeing, async (request, response) => {
     const body = bodyOf(request);
     const state = asText(body['state']);
     const reason = asText(body['reason']);
@@ -165,11 +176,18 @@ export function taskRoutes(db: Db): Router {
     if (unusable !== undefined) {
       return fail(response, 400, `${unusable} is unusable`);
     }
+    // Asked only now, as the state decides which right it takes; seeing came first, so 404 first.
+    const actor = actorOf(request);
+    const id = idOf(request);
+    const task = await findTask(db, id);
+    if (task === null || !(await maySetTaskState(db, actor, task, state, decisions))) {
+      return fail(response, 403, 'not allowed to change this task');
+    }
 
     response.json(
-      await setTaskState(db, idOf(request), {
+      await setTaskState(db, id, {
         state,
-        changedBy: actorOf(request).actorId,
+        changedBy: actor.actorId,
         ...defined({ reason }),
       }),
     );
@@ -192,8 +210,13 @@ export function taskRoutes(db: Db): Router {
     if (!(await mayAssignTo(db, actor, assignee))) {
       return fail(response, 404, 'unknown assignee');
     }
-
+    // Checked only now, when it is given; a grant taken later leaves it given.
     const id = idOf(request);
+    const task = await findTask(db, id);
+    if (!(await assigneeSees(db, assignee, task?.anchor))) {
+      return fail(response, 409, 'the group may not see what the task is about');
+    }
+
     const added = await addAssignee(db, id, {
       assignee,
       changedBy: actor.actorId,

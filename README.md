@@ -96,6 +96,13 @@ aufrufen darf: durch Komma getrennt, ohne Pfad und ohne `/` am Ende, etwa `https
 Leer heißt: von überall. Andere Herkunft bekommt am Socket `403` und bei den Routen keine
 CORS-Header.
 
+### Entscheidungen
+
+`DECISION_STATES` nennt die Zustände von Aufgaben und Kommentaren, die eine Entscheidung sind,
+durch Komma getrennt, etwa `accepted,rejected`. Einen davon setzt nur, wer das Recht `decide` hat.
+Welche Wörter das sind, bestimmt das Werkzeug, der Dienst kennt ihre Bedeutung nicht. Leer heißt:
+keiner.
+
 ### Bekannte Grenzen
 
 - **Uhr:** Änderungen sind nach der Zeit in ihrer `_id` geordnet. Die Serveruhr sollte deshalb über

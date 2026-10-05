@@ -204,9 +204,12 @@ export async function maySee(db: Db, actor: Actor, target: Reference): Promise<b
     return group !== null && maySeeGroup(db, actor, group);
   }
   if (target.kind === 'comment') {
-    // A comment is as visible as what it is about, down the chain to a workpiece or room.
+    // As visible as what it is about, or by a grant at it or at a comment it answers.
     const comment = await findComment(db, target.id);
-    return comment !== null && maySee(db, actor, comment.anchor);
+    return (
+      comment !== null &&
+      ((await maySee(db, actor, comment.anchor)) || may(db, actor, 'see', target))
+    );
   }
   if (target.kind === 'task') {
     const task = await findTask(db, target.id);
@@ -215,28 +218,38 @@ export async function maySee(db: Db, actor: Actor, target: Reference): Promise<b
   return true;
 }
 
-/** A task is seen by its creator, its assignees, and whoever may see its anchor or its parent. */
+/** A task is seen by whom it is given to, by a grant at it, and through its anchor or parent. */
 async function maySeeTask(db: Db, actor: Actor, task: TaskRecord): Promise<boolean> {
-  const { assignees } = task;
-
-  if (task.createdBy === actor.actorId) {
+  if (await isAssigned(db, actor, task)) {
     return true;
   }
-  if (assignees.some((entry) => entry.kind === 'actor' && entry.id === actor.actorId)) {
+  if (await may(db, actor, 'see', { kind: 'task', id: task._id })) {
     return true;
   }
-  // One query for all groups on the task; none at all asks nothing.
-  const groupIds = assignees.filter((entry) => entry.kind === 'group').map((entry) => entry.id);
-  if (await isMemberOfAny(db, groupIds, actor.actorId)) {
-    return true;
-  }
+  // Through maySee, so whom the anchor or parent task is given to sees this one too.
   if (task.anchor !== undefined && (await maySee(db, actor, task.anchor))) {
     return true;
   }
   return task.parentId !== undefined && maySee(db, actor, { kind: 'task', id: task.parentId });
 }
 
-/** Every assignee maySeeTask lets the actor see through: themselves and each of their groups. */
+/** Whether the task is given to the actor or to one of their groups; creating it gives nothing. */
+export async function isAssigned(
+  db: Db,
+  actor: Actor,
+  task: Pick<TaskRecord, 'assignees'>,
+): Promise<boolean> {
+  const { assignees } = task;
+
+  if (assignees.some((entry) => entry.kind === 'actor' && entry.id === actor.actorId)) {
+    return true;
+  }
+  // One query for all groups on the task; none at all asks nothing.
+  const groupIds = assignees.filter((entry) => entry.kind === 'group').map((entry) => entry.id);
+  return isMemberOfAny(db, groupIds, actor.actorId);
+}
+
+/** Every assignee isAssigned lets the actor count as: themselves and each of their groups. */
 export async function assigneesFor(db: Db, actor: Actor): Promise<[Assignee, ...Assignee[]]> {
   const groups = await groupsOf(db, actor.actorId);
 
@@ -246,14 +259,41 @@ export async function assigneesFor(db: Db, actor: Actor): Promise<[Assignee, ...
   ];
 }
 
-/** Provisional: whoever may see a task moves its state; each move keeps who and why. */
-export async function maySetTaskState(db: Db, actor: Actor, taskId: ObjectId): Promise<boolean> {
-  return maySee(db, actor, { kind: 'task', id: taskId });
+/** Whether the actor holds the right wherever something new will hang, or everywhere at nothing. */
+export async function mayCreateAt(
+  db: Db,
+  actor: Actor,
+  right: Right,
+  places: readonly Reference[],
+): Promise<boolean> {
+  if (places.length === 0) {
+    return may(db, actor, right);
+  }
+
+  // At each of them, so hanging it under a parent opens no way around its anchor.
+  const allowed = await Promise.all(places.map((place) => may(db, actor, right, place)));
+  return allowed.every(Boolean);
 }
 
-/** Provisional: whoever may see a task gives and takes it, so a group can take one left lying. */
+/** A state the tool named a decision takes decide; any other whom it is given to, or plan. */
+export async function maySetTaskState(
+  db: Db,
+  actor: Actor,
+  task: TaskRecord,
+  state: string,
+  decisions: readonly string[],
+): Promise<boolean> {
+  const at: Reference = { kind: 'task', id: task._id };
+
+  if (decisions.includes(state)) {
+    return may(db, actor, 'decide', at);
+  }
+  return (await isAssigned(db, actor, task)) || may(db, actor, 'plan', at);
+}
+
+/** Giving and taking a task is planning. */
 export async function mayAssignTask(db: Db, actor: Actor, taskId: ObjectId): Promise<boolean> {
-  return maySee(db, actor, { kind: 'task', id: taskId });
+  return may(db, actor, 'plan', { kind: 'task', id: taskId });
 }
 
 /** Asked for each entry: any actor key, as the service cannot know them; a group only if seen. */
@@ -261,11 +301,30 @@ export async function mayAssignTo(db: Db, actor: Actor, assignee: Assignee): Pro
   return assignee.kind === 'actor' || maySee(db, actor, assignee);
 }
 
-/** Provisional: whoever may see a comment moves its state; each move keeps who and why, D8.16. */
+/** Whether an assignee sees what the task is about; only a group, a person's token is unknown. */
+export async function assigneeSees(
+  db: Db,
+  assignee: Assignee,
+  anchor: Reference | undefined,
+): Promise<boolean> {
+  if (assignee.kind === 'actor' || anchor === undefined) {
+    return true;
+  }
+
+  const places = new Map<string, Scope>();
+  await collectPlaces(db, anchor, places);
+  return (await rightsHeld(db, [assignee.id], [...places.values()])).has('see');
+}
+
+/** A state the tool named a decision takes decide; any other whoever may speak there. */
 export async function maySetCommentState(
   db: Db,
   actor: Actor,
   commentId: ObjectId,
+  state: string,
+  decisions: readonly string[],
 ): Promise<boolean> {
-  return maySee(db, actor, { kind: 'comment', id: commentId });
+  const right: Right = decisions.includes(state) ? 'decide' : 'speak';
+
+  return may(db, actor, right, { kind: 'comment', id: commentId });
 }

@@ -43,6 +43,7 @@ const server = createServer({
     logger: log,
     // The gateway is attached below; it needs this server, and these routes need it.
     recheckAccess: () => gateway.recheck(),
+    ...defined({ decisionStates: config.decisionStates }),
   }),
   ...defined({ allowedOrigins: config.allowedOrigins }),
 });

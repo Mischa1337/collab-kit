@@ -169,6 +169,13 @@ describe('readConfig', () => {
     expect(readConfig({ ...valid, TOP_CLAIM: ' ', TOP_VALUES: ' , ' })).not.toHaveProperty('top');
   });
 
+  it('reads the decision states as a list, blank as none', () => {
+    expect(readConfig({ ...valid, DECISION_STATES: 'accepted, rejected' })).toMatchObject({
+      decisionStates: ['accepted', 'rejected'],
+    });
+    expect(readConfig({ ...valid, DECISION_STATES: ' , ' })).not.toHaveProperty('decisionStates');
+  });
+
   it('refuses one top variable without the other', () => {
     for (const half of [{ TOP_CLAIM: 'globalRole' }, { TOP_VALUES: 'ADMIN' }]) {
       expect(() => readConfig({ ...valid, ...half })).toThrowError(

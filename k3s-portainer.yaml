@@ -216,6 +216,9 @@ spec:
               value: globalRole
             - name: TOP_VALUES
               value: ADMIN,MODERATOR
+            # States of tasks and comments that only decide may set; blank until the tool names them.
+            - name: DECISION_STATES
+              value: ''
           envFrom:
             - configMapRef:
                 name: collab-kit-config
