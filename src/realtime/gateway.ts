@@ -6,7 +6,7 @@ import type { Logger } from 'pino';
 import { WebSocketServer, type WebSocket } from 'ws';
 
 import type { Actor } from '../model/actor.ts';
-import { mayOpenWorkpiece } from '../auth/access.ts';
+import { workpieceAccess } from '../auth/access.ts';
 import { asObjectId } from '../utils/input.ts';
 import { isAllowedOrigin } from '../utils/origin.ts';
 import type { Connection, WorkpieceHub, OpenWorkpiece } from './hub.ts';
@@ -39,15 +39,17 @@ export interface GatewayOptions {
 export interface Gateway {
   /** How many connections currently hold this workpiece open. */
   countFor(workpieceId: ObjectId): number;
-  /** Asks access.ts again for every open connection, after a route took access away. */
+  /** Asks access.ts again for every open connection, after a route changed who may what. */
   recheck(): Promise<void>;
   close(): Promise<void>;
 }
 
-/** A handshake that may proceed: which workpiece, and who asks for it. */
+/** A handshake that may proceed: which workpiece, who asks for it, and whether they may write. */
 interface Admitted {
   readonly workpieceId: ObjectId;
   readonly actor: Actor;
+  /** Fixed for the life of the connection; when it changes, recheck closes it with 4409. */
+  readonly mayWrite: boolean;
 }
 
 /** Takes WebSocket connections; a refusal is a plain HTTP status, not a socket that dies. */
@@ -117,7 +119,7 @@ export function attachGateway(options: GatewayOptions): Gateway {
 
   return {
     countFor: (workpieceId) => options.hub.count(workpieceId),
-    // Whoever may no longer open their workpiece goes; the others do not notice.
+    // Whoever may no longer see goes, whoever may now write more or less comes back anew.
     recheck: async () => {
       await Promise.all(
         Array.from(wss.clients, async (ws) => {
@@ -127,15 +129,18 @@ export function attachGateway(options: GatewayOptions): Gateway {
           }
 
           try {
-            if (!(await mayOpenWorkpiece(options.db, admitted.actor, admitted.workpieceId))) {
-              options.logger.info(
-                {
-                  workpieceId: admitted.workpieceId.toHexString(),
-                  actorId: admitted.actor.actorId,
-                },
-                'access withdrawn, connection closed',
-              );
+            const access = await workpieceAccess(options.db, admitted.actor, admitted.workpieceId);
+            const who = {
+              workpieceId: admitted.workpieceId.toHexString(),
+              actorId: admitted.actor.actorId,
+            };
+            if (access === 'none') {
+              options.logger.info(who, 'access withdrawn, connection closed');
               ws.close(4403, 'access withdrawn');
+            } else if ((access === 'write') !== admitted.mayWrite) {
+              // A fresh connection is admitted with the new rights, Yjs loses nothing on the way.
+              options.logger.info(who, 'rights changed, connection closed');
+              ws.close(4409, 'rights changed');
             }
           } catch (error) {
             options.logger.error({ err: error }, 'could not check access again');
@@ -207,6 +212,7 @@ async function serveConnection(
           origin: connection,
           maxAwarenessBytes: options.maxAwarenessBytes ?? 64 * 1024,
           mayAnnounce: (clientId) => workpiece.mayAnnounce(connection, clientId),
+          mayWrite: admitted.mayWrite,
         },
         data,
       );
@@ -315,11 +321,12 @@ async function admit(
   }
 
   // Unknown or not allowed gets the same answer, so a handshake does not tell which keys exist.
-  if (!(await mayOpenWorkpiece(options.db, actor, workpieceId))) {
+  const access = await workpieceAccess(options.db, actor, workpieceId);
+  if (access === 'none') {
     return { status: 404, text: 'Not Found', reason: 'unknown or not allowed to open' };
   }
 
-  return { workpieceId, actor };
+  return { workpieceId, actor, mayWrite: access === 'write' };
 }
 
 /** A catch for work nobody waits for: a failure is logged instead of ending the process. */

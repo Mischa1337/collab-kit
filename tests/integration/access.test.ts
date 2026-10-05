@@ -5,7 +5,7 @@ import { applyDefinitions } from '../../src/db/apply.ts';
 import { connect, type Storage } from '../../src/db/client.ts';
 import { collectionDefinitions } from '../../src/db/schemas.ts';
 import type { Right } from '../../src/model/right.ts';
-import { mayOpenWorkpiece } from '../../src/auth/access.ts';
+import { workpieceAccess } from '../../src/auth/access.ts';
 import { createWorkpiece } from '../../src/db/collections/workpieces.ts';
 import { setGrant } from '../../src/db/collections/grants.ts';
 import { createGroup } from '../../src/db/collections/groups.ts';
@@ -32,7 +32,7 @@ afterAll(async () => {
   await storage.close();
 });
 
-describe('who may open a workpiece', () => {
+describe('what someone may do with a workpiece over the socket', () => {
   /** A room with the workpiece and a group holding these rights there, which opening needs. */
   async function bundled(
     members: readonly string[],
@@ -60,28 +60,34 @@ describe('who may open a workpiece', () => {
     return workpiece._id;
   }
 
-  it('lets a member of a group with edit at the room in', async () => {
+  it('lets a member of a group with see and edit at the room write', async () => {
     const workpieceId = await bundled(['alice']);
 
-    await expect(mayOpenWorkpiece(storage.db, actor('alice'), workpieceId)).resolves.toBe(true);
+    await expect(workpieceAccess(storage.db, actor('alice'), workpieceId)).resolves.toBe('write');
   });
 
   it('keeps everybody else out', async () => {
     const workpieceId = await bundled(['alice']);
 
-    await expect(mayOpenWorkpiece(storage.db, actor('mallory'), workpieceId)).resolves.toBe(false);
+    await expect(workpieceAccess(storage.db, actor('mallory'), workpieceId)).resolves.toBe('none');
   });
 
-  it('keeps out who may only see, until the gateway can hold a reader to reading', async () => {
+  it('lets in who may only see, to follow along without writing', async () => {
     const workpieceId = await bundled(['alice'], ['see', 'speak']);
 
-    await expect(mayOpenWorkpiece(storage.db, actor('alice'), workpieceId)).resolves.toBe(false);
+    await expect(workpieceAccess(storage.db, actor('alice'), workpieceId)).resolves.toBe('read');
+  });
+
+  it('keeps out who may edit but not see', async () => {
+    const workpieceId = await bundled(['alice'], ['edit']);
+
+    await expect(workpieceAccess(storage.db, actor('alice'), workpieceId)).resolves.toBe('none');
   });
 
   it('keeps everybody out of a workpiece that sits in no room', async () => {
     const workpiece = await createWorkpiece(storage.db, { name: 'Allein', createdBy: 'alice' });
 
-    await expect(mayOpenWorkpiece(storage.db, actor('alice'), workpiece._id)).resolves.toBe(false);
+    await expect(workpieceAccess(storage.db, actor('alice'), workpiece._id)).resolves.toBe('none');
   });
 
   it('keeps everybody out of a room nobody holds a grant at', async () => {
@@ -93,7 +99,7 @@ describe('who may open a workpiece', () => {
       addedBy: 'alice',
     });
 
-    await expect(mayOpenWorkpiece(storage.db, actor('alice'), workpiece._id)).resolves.toBe(false);
+    await expect(workpieceAccess(storage.db, actor('alice'), workpiece._id)).resolves.toBe('none');
   });
 
   it('lets a second room in, because a workpiece may sit in several', async () => {
@@ -109,13 +115,13 @@ describe('who may open a workpiece', () => {
     await setGrant(storage.db, {
       groupId: theirs._id,
       scope: { kind: 'room', id: other._id },
-      rights: ['edit'],
+      rights: ['see', 'edit'],
       setBy: 'bob',
     });
 
     // Both ways in hold, neither room knows about the other.
-    await expect(mayOpenWorkpiece(storage.db, actor('alice'), workpieceId)).resolves.toBe(true);
-    await expect(mayOpenWorkpiece(storage.db, actor('bob'), workpieceId)).resolves.toBe(true);
+    await expect(workpieceAccess(storage.db, actor('alice'), workpieceId)).resolves.toBe('write');
+    await expect(workpieceAccess(storage.db, actor('bob'), workpieceId)).resolves.toBe('write');
   });
 
   it('opens nothing through a group that still lies in the room from before', async () => {
@@ -134,14 +140,14 @@ describe('who may open a workpiece', () => {
     });
     await addToRoom(storage.db, room._id, { kind: 'group', id: group._id, addedBy: 'alice' });
 
-    await expect(mayOpenWorkpiece(storage.db, actor('alice'), workpiece._id)).resolves.toBe(false);
+    await expect(workpieceAccess(storage.db, actor('alice'), workpiece._id)).resolves.toBe('none');
   });
 
   it('lets the top into every workpiece there is, and into none that is not', async () => {
     const workpiece = await createWorkpiece(storage.db, { name: 'Entwurf', createdBy: 'alice' });
     const top = { actorId: 'dozent', top: true } as const;
 
-    await expect(mayOpenWorkpiece(storage.db, top, workpiece._id)).resolves.toBe(true);
-    await expect(mayOpenWorkpiece(storage.db, top, new ObjectId())).resolves.toBe(false);
+    await expect(workpieceAccess(storage.db, top, workpiece._id)).resolves.toBe('write');
+    await expect(workpieceAccess(storage.db, top, new ObjectId())).resolves.toBe('none');
   });
 });

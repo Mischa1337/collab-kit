@@ -2,7 +2,7 @@ import * as decoding from 'lib0/decoding';
 import * as encoding from 'lib0/encoding';
 import * as awarenessProtocol from 'y-protocols/awareness';
 import * as syncProtocol from 'y-protocols/sync';
-import type * as Y from 'yjs';
+import * as Y from 'yjs';
 
 /** The first number of every message, as in y-websocket, so a standard client just works. */
 const MESSAGE_SYNC = 0;
@@ -59,6 +59,8 @@ interface MessageContext {
   readonly maxAwarenessBytes: number;
   /** Whether the sender may speak for this awareness client. */
   mayAnnounce(clientId: number): boolean;
+  /** Whether the sender may change the workpiece; a reader follows along and changes nothing. */
+  readonly mayWrite: boolean;
 }
 
 /** Applies one message and answers if the protocol wants it; anything unusable throws. */
@@ -66,6 +68,10 @@ export function handleMessage(context: MessageContext, data: Uint8Array): Uint8A
   // The first number says which kind of message follows.
   const decoder = decoding.createDecoder(data);
   const kind = decoding.readVarUint(decoder);
+
+  if (kind === MESSAGE_SYNC && !context.mayWrite) {
+    return answerReader(context.doc, decoder);
+  }
 
   if (kind === MESSAGE_SYNC) {
     // The answer is built as a sync message: step 1 gets step 2 back, the rest gets nothing.
@@ -97,6 +103,55 @@ export function handleMessage(context: MessageContext, data: Uint8Array): Uint8A
 
   // Any other kind is ignored.
   return undefined;
+}
+
+/** A reader gets its answers, but whatever it sends must bring nothing the workpiece lacks. */
+function answerReader(doc: Y.Doc, decoder: decoding.Decoder): Uint8Array | undefined {
+  const step = decoding.readVarUint(decoder);
+
+  // Asking what it misses is reading, so it gets the same answer as everyone.
+  if (step === syncProtocol.messageYjsSyncStep1) {
+    const encoder = encoding.createEncoder();
+    encoding.writeVarUint(encoder, MESSAGE_SYNC);
+    syncProtocol.readSyncStep1(decoder, encoder, doc);
+    return encoding.toUint8Array(encoder);
+  }
+  if (step !== syncProtocol.messageYjsSyncStep2 && step !== syncProtocol.messageYjsUpdate) {
+    throw new Error(`unknown sync message ${step}`);
+  }
+
+  // Every client answers the greeting with what it holds; a reader may only repeat the workpiece.
+  if (!bringsNothingNew(doc, decoding.readVarUint8Array(decoder))) {
+    throw new MessageRefused(1008, 'read only');
+  }
+  return undefined;
+}
+
+/** Whether every item of the update is known and every deletion done, so it would change nothing. */
+function bringsNothingNew(doc: Y.Doc, update: Uint8Array): boolean {
+  const { structs, ds } = Y.decodeUpdate(update);
+  const known = Y.decodeStateVector(Y.encodeStateVector(doc));
+
+  // A Skip only fills a gap in the encoding and carries nothing.
+  const unknownItem = structs.some(
+    (struct) =>
+      !(struct instanceof Y.Skip) &&
+      struct.id.clock + struct.length > (known.get(struct.id.client) ?? 0),
+  );
+  if (unknownItem) {
+    return false;
+  }
+
+  // Yjs sends the whole delete set every time, so a returning reader repeats deletions done long ago.
+  const deleted = Y.createDeleteSetFromStructStore(doc.store);
+  return [...ds.clients].every(([client, ranges]) => {
+    const done = deleted.clients.get(client) ?? [];
+    return ranges.every((range) =>
+      done.some(
+        (span) => span.clock <= range.clock && range.clock + range.len <= span.clock + span.len,
+      ),
+    );
+  });
 }
 
 /** The client ids an awareness update speaks for, read without applying it. */

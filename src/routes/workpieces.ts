@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import type { Db } from 'mongodb';
 
-import { may, mayOpenWorkpiece, maySee } from '../auth/access.ts';
+import { may, maySee } from '../auth/access.ts';
 import { addToRoom } from '../db/collections/rooms.ts';
 import { createWorkpiece, findWorkpiece } from '../db/collections/workpieces.ts';
 import { isUpdateOf, summarizeUpdatesSince } from '../db/collections/updates.ts';
@@ -17,12 +17,17 @@ export function workpieceRoutes(db: Db, hub: WorkpieceHub): Router {
 
   routes.param('id', requireId('workpiece'));
 
-  const opening = guard((actor, id) => mayOpenWorkpiece(db, actor, id), 404, 'unknown workpiece');
   // Reading what is there, the history as the state: whoever sees it.
   const seeing = guard(
     (actor, id) => maySee(db, actor, { kind: 'workpiece', id }),
     404,
     'unknown workpiece',
+  );
+  // Naming a moment of the work belongs to whoever may write it; behind seeing, so 403 after 404.
+  const editing = guard(
+    (actor, id) => may(db, actor, 'edit', { kind: 'workpiece', id }),
+    403,
+    'not allowed to name a moment of this workpiece',
   );
 
   routes.post('/workpieces', async (request, response) => {
@@ -109,7 +114,7 @@ export function workpieceRoutes(db: Db, hub: WorkpieceHub): Router {
   });
 
   /** Names this moment; reason is the only place in the model for the why of a change. */
-  routes.post('/workpieces/:id/checkpoints', opening, async (request, response) => {
+  routes.post('/workpieces/:id/checkpoints', seeing, editing, async (request, response) => {
     const body = bodyOf(request);
     const label = asText(body['label']);
     const reason = asText(body['reason']);

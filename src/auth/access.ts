@@ -133,15 +133,22 @@ function above(
   ];
 }
 
-/** Open over the socket: edit at it or above, until the gateway can hold a reader to reading. */
-export async function mayOpenWorkpiece(
+/** What the actor may do over the socket: nothing, follow along with see, or write with edit too. */
+export async function workpieceAccess(
   db: Db,
   actor: Actor,
   workpieceId: ObjectId,
-): Promise<boolean> {
+): Promise<'none' | 'read' | 'write'> {
   const workpiece: Scope = { kind: 'workpiece', id: workpieceId };
 
-  return (await placeExists(db, workpiece)) && may(db, actor, 'edit', workpiece);
+  if (!(await placeExists(db, workpiece))) {
+    return 'none';
+  }
+  const rights = await rightsAt(db, actor, workpiece);
+  if (!rights.has('see')) {
+    return 'none';
+  }
+  return rights.has('edit') ? 'write' : 'read';
 }
 
 /** Every room the actor sees, as one list; the same rule as maySee for a room. */

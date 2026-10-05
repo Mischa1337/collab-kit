@@ -104,6 +104,10 @@ export function groupRoutes(db: Db, recheckAccess: () => Promise<void>): Router 
 
     const id = idOf(request);
     const added = await addMember(db, id, { actorId, addedBy: actorOf(request).actorId });
+    // The new member may now write where they only read, so their connections are asked again.
+    if (added) {
+      await recheckAccess();
+    }
     response.status(added ? 201 : 200).json(await findGroup(db, id));
   });
 

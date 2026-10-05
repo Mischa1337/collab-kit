@@ -60,6 +60,18 @@ async function bundle(workpieceId: import('mongodb').ObjectId): Promise<void> {
     rights: ['see', 'speak', 'edit', 'plan'],
     setBy: 'alice',
   });
+  // erin may only see, so she follows along without writing.
+  const readers = await createGroup(storage.db, {
+    name: 'Lesende',
+    createdBy: 'alice',
+    members: ['erin'],
+  });
+  await setGrant(storage.db, {
+    groupId: readers._id,
+    scope: { kind: 'room', id: room._id },
+    rights: ['see'],
+    setBy: 'alice',
+  });
 }
 
 const open = (workpieceId: string, actor: string, doc?: Y.Doc) =>
@@ -297,6 +309,47 @@ describe('working on one workpiece together', () => {
 
     await aliceAgain.close();
     await bobAgain.close();
+  });
+});
+
+describe('following along without writing', () => {
+  it('carries every change to a reader and refuses the first one it writes', async () => {
+    const workpieceId = await freshWorkpiece();
+    const alice = await open(workpieceId, 'alice');
+    const erin = await open(workpieceId, 'erin');
+    await Promise.all([alice.synced, erin.synced]);
+
+    alice.doc.getText('t').insert(0, 'vorgelesen');
+    expect(await waitFor(() => erin.doc.getText('t').toString() === 'vorgelesen')).toBe(true);
+
+    erin.doc.getText('t').insert(0, 'nein, ');
+    await expect(erin.closed).resolves.toBe(1008);
+    await pause(100);
+    expect(alice.doc.getText('t').toString()).toBe('vorgelesen');
+
+    await alice.close();
+  });
+
+  it('lets a reader come back with everything it holds, deletions included', async () => {
+    const workpieceId = await freshWorkpiece();
+    const alice = await open(workpieceId, 'alice');
+    await alice.synced;
+    alice.doc.getText('t').insert(0, 'Entwurf eins');
+    alice.doc.getText('t').delete(7, 5);
+
+    const erin = await open(workpieceId, 'erin');
+    await erin.synced;
+    expect(await waitFor(() => erin.doc.getText('t').toString() === 'Entwurf')).toBe(true);
+    await erin.close();
+
+    // Coming back she answers the greeting with the whole delete set, which is nothing new.
+    const again = await open(workpieceId, 'erin', erin.doc);
+    await again.synced;
+    const closedEarly = await Promise.race([again.closed, pause(200).then(() => 'open')]);
+    expect(closedEarly).toBe('open');
+
+    await again.close();
+    await alice.close();
   });
 });
 

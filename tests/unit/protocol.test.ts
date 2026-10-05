@@ -22,14 +22,36 @@ afterEach(() => {
 });
 
 /** The service side of one workpiece; mayAnnounce says who may speak for which client. */
-function service(mayAnnounce: (clientId: number) => boolean = () => true) {
+function service(mayAnnounce: (clientId: number) => boolean = () => true, mayWrite = true) {
   const doc = new Y.Doc();
   const awareness = new Awareness(doc);
   awareness.setLocalState(null);
   awarenesses.push(awareness);
 
-  const context = { doc, awareness, origin: 'alice', maxAwarenessBytes: 1024, mayAnnounce };
+  const context = {
+    doc,
+    awareness,
+    origin: 'alice',
+    maxAwarenessBytes: 1024,
+    mayAnnounce,
+    mayWrite,
+  };
   return { doc, awareness, context };
+}
+
+/** A client's step 2: what it holds that the service, by its state vector, lacks. */
+function stepTwoOf(client: Y.Doc, held: Y.Doc): Uint8Array {
+  const encoder = encoding.createEncoder();
+  encoding.writeVarUint(encoder, 0);
+  syncProtocol.writeSyncStep2(encoder, client, Y.encodeStateVector(held));
+  return encoding.toUint8Array(encoder);
+}
+
+/** A client that holds exactly what the service holds, as a returning one does. */
+function copyOf(doc: Y.Doc): Y.Doc {
+  const copy = new Y.Doc();
+  Y.applyUpdate(copy, Y.encodeStateAsUpdate(doc));
+  return copy;
 }
 
 /** Plays the tool: the service itself never builds a Yjs type. */
@@ -138,6 +160,53 @@ describe('what the service receives', () => {
 
   it('ignores a kind it does not know', () => {
     expect(handleMessage(service().context, new Uint8Array([5, 1, 2]))).toBeUndefined();
+  });
+});
+
+describe('what the service takes from a reader', () => {
+  const reader = () => service(() => true, false);
+
+  it('answers its step 1 like anyone', () => {
+    const { doc, context } = reader();
+    doc.getText('t').insert(0, 'zum Lesen');
+    const client = new Y.Doc();
+
+    const decoder = decoding.createDecoder(handleMessage(context, stepOneOf(client))!);
+    expect(decoding.readVarUint(decoder)).toBe(0);
+    syncProtocol.readSyncMessage(decoder, encoding.createEncoder(), client, null);
+    expect(client.getText('t').toString()).toBe('zum Lesen');
+  });
+
+  it('lets the empty step 2 of a fresh reader through', () => {
+    const { doc, context } = reader();
+    doc.getText('t').insert(0, 'Stand');
+
+    expect(handleMessage(context, stepTwoOf(new Y.Doc(), doc))).toBeUndefined();
+  });
+
+  it('lets a returning reader repeat what the workpiece holds, deletions included', () => {
+    const { doc, context } = reader();
+    doc.getText('t').insert(0, 'Entwurf eins');
+    doc.getText('t').delete(7, 5);
+    const returning = copyOf(doc);
+
+    expect(handleMessage(context, stepTwoOf(returning, doc))).toBeUndefined();
+    expect(
+      handleMessage(context, encodeSyncUpdate(Y.encodeStateAsUpdate(returning))),
+    ).toBeUndefined();
+  });
+
+  it('refuses anything new with 1008 and applies none of it', () => {
+    const { doc, context } = reader();
+    doc.getText('t').insert(0, 'Entwurf');
+    const typing = copyOf(doc);
+    typing.getText('t').insert(7, ' zwei');
+    const deleting = copyOf(doc);
+    deleting.getText('t').delete(0, 3);
+
+    expect(refusalOf(() => handleMessage(context, stepTwoOf(typing, doc)))).toBe(1008);
+    expect(refusalOf(() => handleMessage(context, stepTwoOf(deleting, doc)))).toBe(1008);
+    expect(doc.getText('t').toString()).toBe('Entwurf');
   });
 });
 

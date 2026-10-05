@@ -508,6 +508,68 @@ describe('when access is taken away', () => {
     await close(carol);
   });
 
+  // Alice at the top changes rights over the routes, as a tool would.
+  const asAlice = (method: string, path: string, body: object) =>
+    fetch(`http://127.0.0.1:${apiPort}${path}`, {
+      method,
+      headers: {
+        authorization: `Bearer ${jwt.sign({ sub: 'alice', globalRole: 'ADMIN' }, secret)}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    });
+
+  it('closes with 4409 when edit goes, and lets the same person back in to read', async () => {
+    const { workpiece, room, all } = await seminar();
+    const bob = await openAs('bob', workpiece);
+    const carol = await openAs('carol', workpiece);
+    const bobClosing = closedWith(bob);
+
+    const scope = { kind: 'room', id: room.toHexString() };
+    const lowered = await asAlice('PUT', '/grants', {
+      groupId: all.toHexString(),
+      scope,
+      rights: ['see'],
+    });
+    expect(lowered.status).toBe(200);
+    await expect(bobClosing).resolves.toBe(4409);
+
+    // carol still writes through the other group, and bob comes back as a reader.
+    await pause(100);
+    expect(carol.readyState).toBe(WebSocket.OPEN);
+    await close(await openAs('bob', workpiece));
+    await close(carol);
+  });
+
+  it('closes a reader with 4409 when edit comes, also by being taken into a group', async () => {
+    const { workpiece, room, all } = await seminar();
+    const scope = { kind: 'room', id: room.toHexString() };
+    await asAlice('PUT', '/grants', { groupId: all.toHexString(), scope, rights: ['see'] });
+    const bobClosing = closedWith(await openAs('bob', workpiece));
+
+    await asAlice('PUT', '/grants', { groupId: all.toHexString(), scope, rights: ['see', 'edit'] });
+    await expect(bobClosing).resolves.toBe(4409);
+
+    // dave reads through a group of his own, then joins one that may write.
+    const readers = await createGroup(storage.db, {
+      name: 'Lesende',
+      createdBy: 'alice',
+      members: ['dave'],
+    });
+    await setGrant(storage.db, {
+      groupId: readers._id,
+      scope: { kind: 'room', id: room },
+      rights: ['see'],
+      setBy: 'alice',
+    });
+    const daveClosing = closedWith(await openAs('dave', workpiece));
+    const joined = await asAlice('POST', `/groups/${all.toHexString()}/members`, {
+      actorId: 'dave',
+    });
+    expect(joined.status).toBe(201);
+    await expect(daveClosing).resolves.toBe(4409);
+  });
+
   it('closes every connection when the workpiece leaves the room', async () => {
     const { workpiece, room } = await seminar();
     const closing = [
