@@ -92,13 +92,11 @@ export function handleMessage(context: MessageContext, data: Uint8Array): Uint8A
     if (update.length > context.maxAwarenessBytes) {
       throw new MessageRefused(1009, 'awareness update too large');
     }
-    // Checked before anything is applied: nobody speaks for a client of another person.
-    for (const clientId of clientIdsIn(update)) {
-      if (!context.mayAnnounce(clientId)) {
-        throw new MessageRefused(1008, 'awareness of a client that belongs to somebody else');
-      }
+    // Only what the sender may speak for; y-websocket echoes everyone's, so the rest is skipped.
+    const own = entriesIn(update).filter((entry) => context.mayAnnounce(entry.clientId));
+    if (own.length > 0) {
+      awarenessProtocol.applyAwarenessUpdate(context.awareness, encodeEntries(own), context.origin);
     }
-    awarenessProtocol.applyAwarenessUpdate(context.awareness, update, context.origin);
   }
 
   // Any other kind is ignored.
@@ -154,17 +152,37 @@ function bringsNothingNew(doc: Y.Doc, update: Uint8Array): boolean {
   });
 }
 
-/** The client ids an awareness update speaks for, read without applying it. */
-function clientIdsIn(update: Uint8Array): number[] {
+/** One awareness entry as it travels: which client, its clock, and its state still as JSON. */
+interface AwarenessEntry {
+  readonly clientId: number;
+  readonly clock: number;
+  readonly state: string;
+}
+
+/** The entries of an awareness update, read without applying it. */
+function entriesIn(update: Uint8Array): AwarenessEntry[] {
   const decoder = decoding.createDecoder(update);
   const count = decoding.readVarUint(decoder);
-  const clientIds: number[] = [];
+  const entries: AwarenessEntry[] = [];
 
   for (let entry = 0; entry < count; entry += 1) {
-    clientIds.push(decoding.readVarUint(decoder));
-    // Clock and state follow; only read past them.
-    decoding.readVarUint(decoder);
-    decoding.readVarString(decoder);
+    // Read in the order they were written: client, clock, state.
+    const clientId = decoding.readVarUint(decoder);
+    const clock = decoding.readVarUint(decoder);
+    entries.push({ clientId, clock, state: decoding.readVarString(decoder) });
   }
-  return clientIds;
+  return entries;
+}
+
+/** An awareness update of just these entries, written as the client wrote them. */
+function encodeEntries(entries: AwarenessEntry[]): Uint8Array {
+  const encoder = encoding.createEncoder();
+  encoding.writeVarUint(encoder, entries.length);
+
+  for (const { clientId, clock, state } of entries) {
+    encoding.writeVarUint(encoder, clientId);
+    encoding.writeVarUint(encoder, clock);
+    encoding.writeVarString(encoder, state);
+  }
+  return encoding.toUint8Array(encoder);
 }
