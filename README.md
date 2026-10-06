@@ -10,6 +10,12 @@ anbindende Werkzeug mit. Personen führt er nicht selbst, er liest sie aus dem s
 Werkzeugs. Jedes Werkzeug bekommt eine eigene Instanz. Echtzeit läuft über Yjs und WebSocket,
 gespeichert wird in MongoDB.
 
+## Rechte
+
+Der Dienst kennt sechs feste Rechte: `see`, `speak`, `edit`, `plan`, `decide` und `manage`. Damit
+regelt er, wer was sehen, kommentieren, bearbeiten, planen, entscheiden und verwalten darf. Wer sie
+wo bekommt, legt das anbindende Werkzeug fest.
+
 ## Token
 
 Der Dienst stellt keine Token aus. Er prüft das JWT des anbindenden Werkzeugs und liest daraus, wer
