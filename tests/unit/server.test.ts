@@ -101,11 +101,11 @@ describe('createServer', () => {
 });
 
 /** What a browser asks before it sends a token to another origin. */
-function preflight(target: Server, origin: string) {
+function preflight(target: Server, origin: string, method = 'GET') {
   return request(target)
     .options('/things')
     .set('Origin', origin)
-    .set('Access-Control-Request-Method', 'GET')
+    .set('Access-Control-Request-Method', method)
     .set('Access-Control-Request-Headers', 'authorization');
 }
 
@@ -131,6 +131,14 @@ describe('cross-origin calls', () => {
     expect(response.status).toBe(204);
     expect(response.headers['access-control-allow-origin']).toBe(TOOL);
     expect(response.headers['access-control-allow-headers']).toContain('Authorization');
+  });
+
+  it('allows in the preflight every method the routes use', async () => {
+    const response = await preflight(listed, TOOL, 'PUT');
+    const allowed = String(response.headers['access-control-allow-methods']).split(', ');
+
+    // PUT /grants among them; a browser sends nothing it was not allowed beforehand.
+    expect(allowed).toEqual(expect.arrayContaining(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']));
   });
 
   it('gives an origin off the list no headers', async () => {

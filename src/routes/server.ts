@@ -59,7 +59,7 @@ function allowCrossOrigin(allowed?: readonly string[]): RequestHandler {
     }
     // A preflight carries no token, so it must not reach requireActor.
     response.set({
-      'Access-Control-Allow-Methods': 'GET, POST, PATCH, DELETE',
+      'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE',
       'Access-Control-Allow-Headers': 'Authorization, Content-Type',
       'Access-Control-Max-Age': '600',
     });
