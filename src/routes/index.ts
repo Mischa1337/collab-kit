@@ -7,6 +7,7 @@ import { requireActor } from '../auth/middleware.ts';
 import type { WorkpieceHub } from '../realtime/hub.ts';
 import { roomRoutes } from './rooms.ts';
 import { groupRoutes } from './groups.ts';
+import { grantRoutes } from './grants.ts';
 import { workpieceRoutes } from './workpieces.ts';
 import { eventRoutes } from './events.ts';
 import { commentRoutes } from './comments.ts';
@@ -19,6 +20,8 @@ export interface ApiOptions {
   readonly logger: Logger;
   /** Called after a route took access away, so open connections are asked again. */
   readonly recheckAccess: () => Promise<void>;
+  /** States the tool names a decision, which only decide may set; left out, none. */
+  readonly decisionStates?: readonly string[];
 }
 
 /** Every route behind requireActor: who acts comes from the token, never from a body. */
@@ -34,10 +37,12 @@ export function createApi(options: ApiOptions): Router {
 
   api.use(roomRoutes(options.db, options.recheckAccess));
   api.use(groupRoutes(options.db, options.recheckAccess));
+  api.use(grantRoutes(options.db, options.recheckAccess));
   api.use(workpieceRoutes(options.db, options.hub));
   api.use(eventRoutes(options.db));
-  api.use(commentRoutes(options.db));
-  api.use(taskRoutes(options.db));
+  const decisions = options.decisionStates ?? [];
+  api.use(commentRoutes(options.db, decisions));
+  api.use(taskRoutes(options.db, decisions));
 
   return api;
 }

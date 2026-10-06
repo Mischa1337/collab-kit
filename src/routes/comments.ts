@@ -1,11 +1,13 @@
 import { Router } from 'express';
 import type { Db } from 'mongodb';
 
-import { maySee, maySetCommentState } from '../auth/access.ts';
+import { mayChangeComment, mayCreateAt, maySee, maySetCommentState } from '../auth/access.ts';
 import {
   createComment,
+  deleteComment,
   findComment,
   readComments,
+  setCommentBody,
   setCommentState,
 } from '../db/collections/comments.ts';
 import {
@@ -19,11 +21,12 @@ import {
   asParentId,
   asText,
 } from '../utils/input.ts';
+import type { Reference } from '../model/anchor.ts';
 import { defined } from '../utils/optional.ts';
 import { actorOf, bodyOf, fail, guard, idOf, requireId, unusableField } from './http.ts';
 
 /** Comment, feedback, message and reaction alike: one form, told apart by kind. */
-export function commentRoutes(db: Db): Router {
+export function commentRoutes(db: Db, decisions: readonly string[]): Router {
   const routes = Router();
 
   routes.param('id', requireId('comment'));
@@ -33,12 +36,6 @@ export function commentRoutes(db: Db): Router {
     (actor, id) => maySee(db, actor, { kind: 'comment', id }),
     404,
     'unknown comment',
-  );
-  // Behind seeing, so 403 tells only whoever already sees the comment; today both rules agree.
-  const moving = guard(
-    (actor, id) => maySetCommentState(db, actor, id),
-    403,
-    'not allowed to change this comment',
   );
 
   routes.post('/comments', async (request, response) => {
@@ -71,6 +68,20 @@ export function commentRoutes(db: Db): Router {
     }
     if (parentId !== undefined && !(await maySee(db, actor, { kind: 'comment', id: parentId }))) {
       return fail(response, 404, 'unknown parent');
+    }
+    // A conversation is about one thing: an answer may move to another unit, never elsewhere.
+    const parent = parentId === undefined ? null : await findComment(db, parentId);
+    if (parent !== null && !sameThing(parent.anchor, anchor)) {
+      return fail(response, 400, 'an answer hangs on the same thing as the comment it answers');
+    }
+    // Saying something takes speak where it hangs, a first state that is a decision decide too.
+    const places = [anchor, ...(parentId === undefined ? [] : [{ kind: 'comment', id: parentId }])];
+    if (!(await mayCreateAt(db, actor, 'speak', places))) {
+      return fail(response, 403, 'not allowed to say something here');
+    }
+    const deciding = state !== undefined && decisions.includes(state);
+    if (deciding && !(await mayCreateAt(db, actor, 'decide', places))) {
+      return fail(response, 403, 'not allowed to decide here');
     }
 
     response.status(201).json(
@@ -114,27 +125,82 @@ export function commentRoutes(db: Db): Router {
   });
 
   /** Moves the state; who moved it and why land in the events of the comment, D8.16. */
-  routes.patch('/comments/:id', seeing, moving, async (request, response) => {
+  /** Changes the words, the state or both; each part by its own rule, the words never kept. */
+  routes.patch('/comments/:id', seeing, async (request, response) => {
     const body = bodyOf(request);
+    const content = asObject(body['body']);
     const state = asText(body['state']);
     const reason = asText(body['reason']);
 
-    if (state === undefined) {
-      return fail(response, 400, 'state is missing');
+    const unusable = unusableField(body, { body: content, state, reason });
+    if (unusable !== undefined) {
+      return fail(response, 400, `${unusable} is unusable`);
     }
-    const unusable = unusableField(body, { reason });
+    if (content === undefined && state === undefined) {
+      return fail(response, 400, 'body or state is needed');
+    }
+
+    // Asked only now, as what is sent decides which right it takes; 404 came first from seeing.
+    const actor = actorOf(request);
+    const id = idOf(request);
+    const comment = await findComment(db, id);
+    if (comment === null) {
+      return fail(response, 404, 'unknown comment');
+    }
+    if (comment.deletedAt !== undefined) {
+      return fail(response, 409, 'the comment is deleted');
+    }
+    if (content !== undefined && !(await mayChangeComment(db, actor, comment))) {
+      return fail(response, 403, 'not allowed to change these words');
+    }
+    if (state !== undefined && !(await maySetCommentState(db, actor, id, state, decisions))) {
+      return fail(response, 403, 'not allowed to change this comment');
+    }
+
+    // The words first, so a state moved in the same request answers with the new words.
+    if (content !== undefined) {
+      await setCommentBody(db, id, {
+        body: content,
+        changedBy: actor.actorId,
+        ...defined({ reason }),
+      });
+    }
+    response.json(
+      state === undefined
+        ? await findComment(db, id)
+        : await setCommentState(db, id, {
+            state,
+            changedBy: actor.actorId,
+            ...defined({ reason }),
+          }),
+    );
+  });
+
+  /** Takes the words away for good; the shell stays, so the answers keep their thread. */
+  routes.delete('/comments/:id', seeing, async (request, response) => {
+    const reason = asText(request.query['reason']);
+
+    const unusable = unusableField(request.query, { reason });
     if (unusable !== undefined) {
       return fail(response, 400, `${unusable} is unusable`);
     }
 
-    response.json(
-      await setCommentState(db, idOf(request), {
-        state,
-        changedBy: actorOf(request).actorId,
-        ...defined({ reason }),
-      }),
-    );
+    const actor = actorOf(request);
+    const id = idOf(request);
+    const comment = await findComment(db, id);
+    if (comment === null || !(await mayChangeComment(db, actor, comment))) {
+      return fail(response, 403, 'not allowed to delete this comment');
+    }
+
+    // Deleting twice is no mistake, it only leaves no second trace.
+    await deleteComment(db, id, { deletedBy: actor.actorId, ...defined({ reason }) });
+    response.json(await findComment(db, id));
   });
 
   return routes;
+}
+
+/** Whether two references name the same thing, whatever unit inside it they point at. */
+function sameThing(one: Reference, other: Reference): boolean {
+  return one.kind === other.kind && String(one.id) === String(other.id);
 }

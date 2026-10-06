@@ -13,6 +13,7 @@ import { connect, type Storage } from '../../src/db/client.ts';
 import { createWorkpiece } from '../../src/db/collections/workpieces.ts';
 import { latestEvent, readEvents } from '../../src/db/collections/events.ts';
 import { createGroup } from '../../src/db/collections/groups.ts';
+import { setGrant } from '../../src/db/collections/grants.ts';
 import { addToRoom, createRoom } from '../../src/db/collections/rooms.ts';
 import { collectionDefinitions } from '../../src/db/schemas.ts';
 import { readUpdatesSince } from '../../src/db/collections/updates.ts';
@@ -49,7 +50,13 @@ async function freshWorkpiece(): Promise<ObjectId> {
     id: workpiece._id,
     addedBy: 'alice',
   });
-  await addToRoom(storage.db, room._id, { kind: 'group', id: group._id, addedBy: 'alice' });
+  // In through a grant at the room, as a group in it no longer opens anything.
+  await setGrant(storage.db, {
+    groupId: group._id,
+    scope: { kind: 'room', id: room._id },
+    rights: ['see', 'speak', 'edit', 'plan'],
+    setBy: 'alice',
+  });
   return workpiece._id;
 }
 

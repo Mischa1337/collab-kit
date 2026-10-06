@@ -210,6 +210,15 @@ spec:
               value: id
             - name: LABEL_CLAIM
               value: name
+            # Who may everything everywhere: only they can create the first rooms, groups and
+            # grants. Provisional until it is settled who stands at the top in the feedback system.
+            - name: TOP_CLAIM
+              value: globalRole
+            - name: TOP_VALUES
+              value: ADMIN,MODERATOR
+            # States of tasks and comments that only decide may set; blank until the tool names them.
+            - name: DECISION_STATES
+              value: ''
           envFrom:
             - configMapRef:
                 name: collab-kit-config

@@ -9,6 +9,9 @@ import { createTokenCheck } from '../../src/auth/token.ts';
 import { applyDefinitions } from '../../src/db/apply.ts';
 import { connect, type Storage } from '../../src/db/client.ts';
 import { createComment } from '../../src/db/collections/comments.ts';
+import { setGrant } from '../../src/db/collections/grants.ts';
+import { createGroup } from '../../src/db/collections/groups.ts';
+import { createRoom } from '../../src/db/collections/rooms.ts';
 import { createTask, type NewTask } from '../../src/db/collections/tasks.ts';
 import { appendUpdate } from '../../src/db/collections/updates.ts';
 import { foldState } from '../../src/db/collections/workpieces.ts';
@@ -26,8 +29,10 @@ const database = `collab_kit_routes_${Date.now()}_${Math.random().toString(36).s
 const secret = 'routes-secret';
 const logger = pino({ level: 'silent' });
 
-const tokenFor = (subject: string) => jwt.sign({ sub: subject }, secret, { algorithm: 'HS256' });
-const alice = tokenFor('alice');
+const tokenFor = (subject: string, claims: object = {}) =>
+  jwt.sign({ sub: subject, ...claims }, secret, { algorithm: 'HS256' });
+// Alice sets rooms and groups up, which only the top may do.
+const alice = tokenFor('alice', { globalRole: 'ADMIN' });
 const bob = tokenFor('bob');
 
 let storage: Storage;
@@ -45,7 +50,11 @@ beforeAll(async () => {
     api: createApi({
       db: storage.db,
       hub,
-      checkToken: createTokenCheck({ key: secret, algorithm: 'HS256' }),
+      checkToken: createTokenCheck({
+        key: secret,
+        algorithm: 'HS256',
+        top: { claim: 'globalRole', values: ['ADMIN'] },
+      }),
       logger,
       // No sockets in these tests, so there is nothing to ask again.
       recheckAccess: async () => {},
@@ -74,8 +83,16 @@ async function setUp(): Promise<{ roomId: string; groupId: string; workpieceId: 
   const into = (entry: { kind: string; id: string }) =>
     request(server).post(`/rooms/${roomId}/references`).set(as(alice)).send(entry);
 
-  await into({ kind: 'group', id: group.body._id as string });
   await into({ kind: 'workpiece', id: workpiece.body._id as string });
+  // The group may into the room through a grant, as it did before through lying in it.
+  await request(server)
+    .put('/grants')
+    .set(as(alice))
+    .send({
+      groupId: group.body._id as string,
+      scope: { kind: 'room', id: roomId },
+      rights: ['see', 'speak', 'edit', 'plan'],
+    });
 
   return {
     roomId,
@@ -112,19 +129,20 @@ describe('setting a room up', () => {
 
     const room = await request(server).get(`/rooms/${roomId}`).set(as(bob));
     expect(room.status).toBe(200);
-    expect(room.body.references).toHaveLength(2);
+    // Only the workpiece lies in the room, the group may into it through a grant.
+    expect(room.body.references).toHaveLength(1);
 
-    // bob is in a group the room bundles, so the workpiece is his to open.
+    // bob is in a group with see at the room, so the workpiece is his to see.
     expect((await request(server).get(`/workpieces/${workpieceId}`).set(as(bob))).status).toBe(200);
   });
 
   it('takes the actor from the token and never from the body', async () => {
     const room = await request(server)
       .post('/rooms')
-      .set(as(bob))
-      .send({ name: 'Untergeschoben', createdBy: 'alice' });
+      .set(as(alice))
+      .send({ name: 'Untergeschoben', createdBy: 'mallory' });
 
-    expect(room.body.createdBy).toBe('bob');
+    expect(room.body.createdBy).toBe('alice');
   });
 
   it('keeps the contract of the tool untouched', async () => {
@@ -175,10 +193,22 @@ describe('who may change what', () => {
   it('lets nobody put what they may not see into a room of their own', async () => {
     const { workpieceId } = await setUp();
     const carol = tokenFor('carol');
-    const room = await request(server).post('/rooms').set(as(carol)).send({ name: 'Eigen' });
+    // Written directly, as only the top may create a room over the routes; carol manages it.
+    const room = await createRoom(storage.db, { name: 'Eigen', createdBy: 'carol' });
+    const own = await createGroup(storage.db, {
+      name: 'Carol',
+      createdBy: 'carol',
+      members: ['carol'],
+    });
+    await setGrant(storage.db, {
+      groupId: own._id,
+      scope: { kind: 'room', id: room._id },
+      rights: ['see', 'manage'],
+      setBy: 'carol',
+    });
 
     const pushed = await request(server)
-      .post(`/rooms/${room.body._id as string}/references`)
+      .post(`/rooms/${room._id.toHexString()}/references`)
       .set(as(carol))
       .send({ kind: 'workpiece', id: workpieceId });
 
@@ -186,16 +216,16 @@ describe('who may change what', () => {
   });
 
   it('takes an id only as text, so it never reaches the database as an operator', async () => {
-    const carol = tokenFor('carol');
-    const room = await request(server).post('/rooms').set(as(carol)).send({ name: 'Eigen' });
+    // alice at the top passes every rule, so only reading the id can refuse.
+    const room = await createRoom(storage.db, { name: 'Eigen', createdBy: 'alice' });
     const statuses = async (id: unknown) => {
       const pushed = await request(server)
-        .post(`/rooms/${room.body._id as string}/references`)
-        .set(as(carol))
+        .post(`/rooms/${room._id.toHexString()}/references`)
+        .set(as(alice))
         .send({ kind: 'workpiece', id });
       const traced = await request(server)
         .post('/events')
-        .set(as(carol))
+        .set(as(alice))
         .send({ kind: 'note', anchor: { kind: 'workpiece', id } });
       return [pushed.status, traced.status];
     };
@@ -205,7 +235,7 @@ describe('who may change what', () => {
     expect(await statuses(42)).toEqual([400, 400]);
   });
 
-  it('lets nobody add themselves to a group they did not create', async () => {
+  it('lets nobody add themselves to a group they do not manage', async () => {
     const { groupId } = await setUp();
     const addSelf = (name: string) =>
       request(server)
@@ -381,9 +411,13 @@ describe('the room as a channel', () => {
       .set(as(alice))
       .send({ name: 'Andere', members: ['carol'] });
     await request(server)
-      .post(`/rooms/${roomId}/references`)
+      .put('/grants')
       .set(as(alice))
-      .send({ kind: 'group', id: others.body._id as string });
+      .send({
+        groupId: others.body._id as string,
+        scope: { kind: 'room', id: roomId },
+        rights: ['see'],
+      });
 
     const joinedAt = async (token: string) => {
       const events = await request(server)
@@ -525,10 +559,11 @@ describe('a value that was sent but cannot be used', () => {
   it('takes a unit only as text, in a body as in a query', async () => {
     const anchor = board();
     const at = { anchorKind: anchor.kind, anchorId: anchor.id };
+    // alice at the top may speak at a kind of the tool, which is no place a grant could reach.
     const say = (unit: unknown) =>
       request(server)
         .post('/comments')
-        .set(as(bob))
+        .set(as(alice))
         .send({ kind: 'comment', anchor: { ...anchor, unit }, body: {} });
     const read = (query: Record<string, string | string[]>) =>
       request(server).get('/comments').query(query).set(as(bob));
@@ -899,10 +934,10 @@ describe('who may see a task', () => {
     expect((await traces(child._id, carol)).status).toBe(404);
   });
 
-  it('shows a task without anchor to its creator and to whom it belongs', async () => {
+  it('shows a task without anchor to whom it belongs, and not to its creator', async () => {
     const reading = await task({ assignees: [{ kind: 'actor', id: 'carol' }] });
 
-    expect((await traces(reading._id, tokenFor('dora'))).status).toBe(200);
+    expect((await traces(reading._id, tokenFor('dora'))).status).toBe(404);
     expect((await traces(reading._id, tokenFor('carol'))).status).toBe(200);
     expect((await traces(reading._id, bob)).status).toBe(404);
   });
@@ -982,17 +1017,23 @@ describe('work to be done', () => {
   });
 
   it('gives a task only to groups the actor may see, every one of them', async () => {
-    const { groupId } = await setUp();
-    const task = {
+    const { groupId, workpieceId } = await setUp();
+    const hidden = await createGroup(storage.db, {
+      name: 'Fremd',
+      createdBy: 'alice',
+      members: [],
+    });
+    const task = (group: string) => ({
       title: 'x',
+      anchor: { kind: 'workpiece', id: workpieceId },
       assignees: [
         { kind: 'actor', id: 'carol' },
-        { kind: 'group', id: groupId },
+        { kind: 'group', id: group },
       ],
-    };
+    });
 
-    expect((await plan(tokenFor('carol'), task)).status).toBe(404);
-    expect((await plan(bob, task)).status).toBe(201);
+    expect((await plan(bob, task(hidden._id.toHexString()))).status).toBe(404);
+    expect((await plan(bob, task(groupId))).status).toBe(201);
   });
 
   it('reads a person as the token does and a group by its key, nothing else', async () => {

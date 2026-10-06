@@ -124,6 +124,43 @@ describe('createTokenCheck with claims set for the instance', () => {
   });
 });
 
+describe('createTokenCheck with a top claim set for the instance', () => {
+  const topped = (claim: string) =>
+    createTokenCheck({
+      key: secret,
+      algorithm: 'HS256',
+      top: { claim, values: ['ADMIN', 'MODERATOR'] },
+    });
+
+  it('puts an actor at the top when the claim holds one of the values', async () => {
+    const token = sign({ sub: 'u-8134', globalRole: 'MODERATOR' }, { expiresIn: '15m' });
+
+    await expect(topped('globalRole')(token)).resolves.toEqual({ actorId: 'u-8134', top: true });
+  });
+
+  it('finds the value as one entry of a list claim', async () => {
+    const token = sign({ sub: 'u-8134', roles: ['ROLE_USER', 'ADMIN'] }, { expiresIn: '15m' });
+
+    await expect(topped('roles')(token)).resolves.toEqual({ actorId: 'u-8134', top: true });
+  });
+
+  it('leaves every other actor without the field, also for a near miss', async () => {
+    await Promise.all(
+      ['USER', 'admin', ['USER'], 0, undefined].map((globalRole) =>
+        expect(
+          topped('globalRole')(sign({ sub: 'u-8134', globalRole }, { expiresIn: '15m' })),
+        ).resolves.toEqual({ actorId: 'u-8134' }),
+      ),
+    );
+  });
+
+  it('puts nobody at the top while no claim is set', async () => {
+    const token = sign({ sub: 'u-8134', globalRole: 'ADMIN' }, { expiresIn: '15m' });
+
+    await expect(check(token)).resolves.toEqual({ actorId: 'u-8134' });
+  });
+});
+
 describe('createTokenCheck with the algorithm set for the instance', () => {
   it('accepts HS512 once it is set and then refuses HS256', async () => {
     const hs512 = createTokenCheck({ key: secret, algorithm: 'HS512' });

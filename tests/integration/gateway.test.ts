@@ -11,6 +11,7 @@ import { applyDefinitions } from '../../src/db/apply.ts';
 import { connect, type Storage } from '../../src/db/client.ts';
 import { createWorkpiece } from '../../src/db/collections/workpieces.ts';
 import { createGroup } from '../../src/db/collections/groups.ts';
+import { setGrant } from '../../src/db/collections/grants.ts';
 import { addToRoom, createRoom } from '../../src/db/collections/rooms.ts';
 import { collectionDefinitions } from '../../src/db/schemas.ts';
 import { createWorkpieceHub } from '../../src/realtime/hub.ts';
@@ -132,7 +133,13 @@ beforeAll(async () => {
     id: workpiece._id,
     addedBy: 'alice',
   });
-  await addToRoom(storage.db, room._id, { kind: 'group', id: group._id, addedBy: 'alice' });
+  // In through a grant at the room, as a group in it no longer opens anything.
+  await setGrant(storage.db, {
+    groupId: group._id,
+    scope: { kind: 'room', id: room._id },
+    rights: ['see', 'speak', 'edit', 'plan'],
+    setBy: 'alice',
+  });
 
   server = createServer({ logger: pino({ level: 'silent' }) });
   gateway = attachGateway({
@@ -388,7 +395,11 @@ describe('when access is taken away', () => {
       api: createApi({
         db: storage.db,
         hub,
-        checkToken: createTokenCheck({ key: secret, algorithm: 'HS256' }),
+        checkToken: createTokenCheck({
+          key: secret,
+          algorithm: 'HS256',
+          top: { claim: 'globalRole', values: ['ADMIN'] },
+        }),
         logger: silent,
         recheckAccess: () => apiGateway.recheck(),
       }),
@@ -423,14 +434,22 @@ describe('when access is taken away', () => {
       createdBy: 'alice',
       members: ['carol'],
     });
-    for (const [kind, id] of [
-      ['workpiece', workpiece._id],
-      ['group', all._id],
-      ['group', tutors._id],
-    ] as const) {
-      // eslint-disable-next-line no-await-in-loop
-      await addToRoom(storage.db, room._id, { kind, id, addedBy: 'alice' });
-    }
+    await addToRoom(storage.db, room._id, {
+      kind: 'workpiece',
+      id: workpiece._id,
+      addedBy: 'alice',
+    });
+    // Both groups may work in the room, so carol gets in twice over.
+    await Promise.all(
+      [all._id, tutors._id].map((groupId) =>
+        setGrant(storage.db, {
+          groupId,
+          scope: { kind: 'room', id: room._id },
+          rights: ['see', 'edit'],
+          setBy: 'alice',
+        }),
+      ),
+    );
     return { workpiece: workpiece._id, room: room._id, all: all._id };
   }
 
@@ -446,10 +465,13 @@ describe('when access is taken away', () => {
     return attempt.socket;
   }
 
+  // Alice at the top, since changing a group takes manage at it.
   const removeAsAlice = (path: string) =>
     fetch(`http://127.0.0.1:${apiPort}${path}`, {
       method: 'DELETE',
-      headers: { authorization: `Bearer ${tokenFor('alice')}` },
+      headers: {
+        authorization: `Bearer ${jwt.sign({ sub: 'alice', globalRole: 'ADMIN' }, secret)}`,
+      },
     });
 
   it('closes the connection of whoever lost access, and only theirs', async () => {
@@ -467,6 +489,85 @@ describe('when access is taken away', () => {
     expect(carol.readyState).toBe(WebSocket.OPEN);
 
     await close(carol);
+  });
+
+  it('closes the connection of whoever lost a grant, and only theirs', async () => {
+    const { workpiece, room, all } = await seminar();
+    const bob = await openAs('bob', workpiece);
+    const carol = await openAs('carol', workpiece);
+    const bobClosing = closedWith(bob);
+
+    const query = `groupId=${all.toHexString()}&scopeKind=room&scopeId=${room.toHexString()}`;
+    expect((await removeAsAlice(`/grants?${query}`)).status).toBe(200);
+    await expect(bobClosing).resolves.toBe(4403);
+
+    // carol still holds edit through the other group.
+    await pause(100);
+    expect(carol.readyState).toBe(WebSocket.OPEN);
+
+    await close(carol);
+  });
+
+  // Alice at the top changes rights over the routes, as a tool would.
+  const asAlice = (method: string, path: string, body: object) =>
+    fetch(`http://127.0.0.1:${apiPort}${path}`, {
+      method,
+      headers: {
+        authorization: `Bearer ${jwt.sign({ sub: 'alice', globalRole: 'ADMIN' }, secret)}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    });
+
+  it('closes with 4409 when edit goes, and lets the same person back in to read', async () => {
+    const { workpiece, room, all } = await seminar();
+    const bob = await openAs('bob', workpiece);
+    const carol = await openAs('carol', workpiece);
+    const bobClosing = closedWith(bob);
+
+    const scope = { kind: 'room', id: room.toHexString() };
+    const lowered = await asAlice('PUT', '/grants', {
+      groupId: all.toHexString(),
+      scope,
+      rights: ['see'],
+    });
+    expect(lowered.status).toBe(200);
+    await expect(bobClosing).resolves.toBe(4409);
+
+    // carol still writes through the other group, and bob comes back as a reader.
+    await pause(100);
+    expect(carol.readyState).toBe(WebSocket.OPEN);
+    await close(await openAs('bob', workpiece));
+    await close(carol);
+  });
+
+  it('closes a reader with 4409 when edit comes, also by being taken into a group', async () => {
+    const { workpiece, room, all } = await seminar();
+    const scope = { kind: 'room', id: room.toHexString() };
+    await asAlice('PUT', '/grants', { groupId: all.toHexString(), scope, rights: ['see'] });
+    const bobClosing = closedWith(await openAs('bob', workpiece));
+
+    await asAlice('PUT', '/grants', { groupId: all.toHexString(), scope, rights: ['see', 'edit'] });
+    await expect(bobClosing).resolves.toBe(4409);
+
+    // dave reads through a group of his own, then joins one that may write.
+    const readers = await createGroup(storage.db, {
+      name: 'Lesende',
+      createdBy: 'alice',
+      members: ['dave'],
+    });
+    await setGrant(storage.db, {
+      groupId: readers._id,
+      scope: { kind: 'room', id: room },
+      rights: ['see'],
+      setBy: 'alice',
+    });
+    const daveClosing = closedWith(await openAs('dave', workpiece));
+    const joined = await asAlice('POST', `/groups/${all.toHexString()}/members`, {
+      actorId: 'dave',
+    });
+    expect(joined.status).toBe(201);
+    await expect(daveClosing).resolves.toBe(4409);
   });
 
   it('closes every connection when the workpiece leaves the room', async () => {

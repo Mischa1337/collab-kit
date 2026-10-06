@@ -1,7 +1,8 @@
 import { Router } from 'express';
-import type { Db } from 'mongodb';
+import { ObjectId, type Db } from 'mongodb';
 
-import { mayChange, maySee, roomsVisibleTo } from '../auth/access.ts';
+import { may, maySee, roomsVisibleTo } from '../auth/access.ts';
+import { grantsAt, isScopeKind } from '../db/collections/grants.ts';
 import { readEventsSince } from '../db/collections/events.ts';
 import {
   addToRoom,
@@ -24,12 +25,17 @@ export function roomRoutes(db: Db, recheckAccess: () => Promise<void>): Router {
   const seeing = guard((actor, id) => maySee(db, actor, { kind: 'room', id }), 404, 'unknown room');
   // Behind seeing, so 403 tells only whoever already sees the room.
   const changing = guard(
-    (actor, id) => mayChange(db, actor, 'room', id),
+    (actor, id) => may(db, actor, 'manage', { kind: 'room', id }),
     403,
     'not allowed to change this room',
   );
 
   routes.post('/rooms', async (request, response) => {
+    // A room lies in nothing, so creating one takes manage everywhere.
+    if (!(await may(db, actorOf(request), 'manage'))) {
+      return fail(response, 403, 'not allowed to create a room');
+    }
+
     const body = bodyOf(request);
     const name = asText(body['name']);
 
@@ -74,11 +80,19 @@ export function roomRoutes(db: Db, recheckAccess: () => Promise<void>): Router {
     if (reference === undefined) {
       return fail(response, 400, 'kind and id are needed, both as text');
     }
+    // Who may into a room stands in its grants, a group in here would open nothing.
+    if (reference.kind === 'group') {
+      return fail(response, 400, 'a group gets into a room through PUT /grants');
+    }
 
-    // A room hands what it bundles to its groups, so only what the actor may see goes in.
     const actor = actorOf(request);
     if (!(await maySee(db, actor, reference))) {
       return fail(response, 404, 'unknown reference');
+    }
+    // In here it gets the rights of the room, so a thing of the service takes manage at it too.
+    const own = isScopeKind(reference.kind) && reference.id instanceof ObjectId;
+    if (own && !(await may(db, actor, 'manage', reference))) {
+      return fail(response, 403, 'not allowed to hand this on');
     }
 
     const id = idOf(request);
@@ -117,7 +131,12 @@ export function roomRoutes(db: Db, recheckAccess: () => Promise<void>): Router {
 
     const id = idOf(request);
     const room = await findRoom(db, id);
-    const bundled = room?.references ?? [];
+    // The groups that may into the room belong to its stream, as when they lay in it.
+    const holders = await grantsAt(db, { kind: 'room', id });
+    const bundled = [
+      ...(room?.references ?? []),
+      ...holders.map((grant) => ({ kind: 'group', id: grant.groupId })),
+    ];
     // Only what the actor may see, so the room shows no more than /events would.
     const actor = actorOf(request);
     const visible = await Promise.all(bundled.map((reference) => maySee(db, actor, reference)));

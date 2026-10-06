@@ -2,8 +2,10 @@
 
 import { ObjectId, type Document } from 'mongodb';
 
+import { isScopeKind, type Scope } from '../db/collections/grants.ts';
 import type { Assignee } from '../db/collections/tasks.ts';
 import { WHOLE, type Anchor, type AnchorQuery, type Reference } from '../model/anchor.ts';
+import { RIGHTS, type Right } from '../model/right.ts';
 import { defined } from './optional.ts';
 
 const HEX24 = /^[0-9a-f]{24}$/i;
@@ -63,6 +65,37 @@ export function asReference(raw: unknown): Reference | undefined {
   const id = asReferenceId(fields?.['id']);
 
   return kind === undefined || id === undefined ? undefined : { kind, id };
+}
+
+/** What asScope needs, for the 400 of a route that takes a place. */
+export const SCOPE_RULE =
+  'a place needs a kind of room, workpiece, task, comment or group and its key';
+
+/** A place a grant can hold at: one of the service's own kinds and a key it keeps. */
+export function asScope(raw: unknown): Scope | undefined {
+  const reference = asReference(raw);
+
+  if (reference === undefined || !isScopeKind(reference.kind)) {
+    return undefined;
+  }
+  return reference.id instanceof ObjectId ? { kind: reference.kind, id: reference.id } : undefined;
+}
+
+/** What asRights needs, for the 400 of a route that takes rights. */
+export const RIGHTS_RULE = `rights must list at least one of ${RIGHTS.join(', ')}`;
+
+/** At least one right, each known, each once; anything else makes the whole list unusable. */
+export function asRights(raw: unknown): [Right, ...Right[]] | undefined {
+  if (!Array.isArray(raw)) {
+    return undefined;
+  }
+  const entries = raw as unknown[];
+  if (!entries.every((entry): entry is Right => (RIGHTS as readonly unknown[]).includes(entry))) {
+    return undefined;
+  }
+
+  const [first, ...rest] = [...new Set(entries)];
+  return first === undefined ? undefined : [first, ...rest];
 }
 
 /** What asAnchor needs, for the 400 of a route that takes an anchor in its body. */

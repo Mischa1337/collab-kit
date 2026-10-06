@@ -62,6 +62,10 @@ export const SERVICE_KINDS: ReadonlySet<string> = new Set([
   'assignee-added',
   'assignee-removed',
   'comment-state',
+  'grant-set',
+  'grant-removed',
+  'comment-edited',
+  'comment-deleted',
 ]);
 
 export interface NewEvent {

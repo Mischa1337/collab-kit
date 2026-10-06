@@ -24,7 +24,7 @@ export const workpiecesDefinition: CollectionDefinition = {
   name: 'workpieces',
   schema: {
     bsonType: 'object',
-    required: ['name', 'createdAt', 'createdBy'],
+    required: ['name', 'contract', 'createdAt', 'createdBy'],
     properties: {
       name: { bsonType: 'string' },
       contract: {

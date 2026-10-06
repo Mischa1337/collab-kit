@@ -3,6 +3,7 @@ import { actorsDefinition } from './collections/actors.ts';
 import { commentsDefinition } from './collections/comments.ts';
 import { workpiecesDefinition } from './collections/workpieces.ts';
 import { eventsDefinition } from './collections/events.ts';
+import { grantsDefinition } from './collections/grants.ts';
 import { groupsDefinition } from './collections/groups.ts';
 import { roomsDefinition } from './collections/rooms.ts';
 import { tasksDefinition } from './collections/tasks.ts';
@@ -19,6 +20,7 @@ export const collectionDefinitions: readonly CollectionDefinition[] = [
   commentsDefinition,
   workpiecesDefinition,
   eventsDefinition,
+  grantsDefinition,
   groupsDefinition,
   roomsDefinition,
   tasksDefinition,
