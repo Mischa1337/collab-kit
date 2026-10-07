@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createTokenCheck } from '../../src/auth/token.ts';
 import { applyDefinitions } from '../../src/db/apply.ts';
 import { connect, type Storage } from '../../src/db/client.ts';
+import type { EventRecord } from '../../src/db/collections/events.ts';
 import { collectionDefinitions } from '../../src/db/schemas.ts';
 import { createWorkpieceHub } from '../../src/realtime/hub.ts';
 import { createApi } from '../../src/routes/index.ts';
@@ -96,6 +97,15 @@ function grant(
   by = dozent,
 ) {
   return request(server).put('/grants').set(as(by)).send({ groupId, scope, rights });
+}
+
+/** The traces at a thing, oldest first, read straight from the database. */
+function tracesAt(id: string): Promise<EventRecord[]> {
+  return storage.db
+    .collection<EventRecord>('events')
+    .find({ 'anchor.id': new ObjectId(id) })
+    .sort({ _id: 1 })
+    .toArray();
 }
 
 /** A class: a room with a workpiece, a team with alice, tutors who manage the room. */
@@ -373,6 +383,81 @@ describe('rooms and workpieces under grants', () => {
 
     expect(pushed.status).toBe(400);
     expect(pushed.body.error).toContain('PUT /grants');
+  });
+});
+
+describe('renaming and deleting rooms', () => {
+  it('renames a room with manage there and leaves a trace, but none for the same name', async () => {
+    const { roomId, team, at } = await course();
+    await grant(team, at, ['see']);
+    const rename = (token: string) =>
+      request(server)
+        .patch(`/rooms/${roomId}`)
+        .set(as(token))
+        .send({ name: 'Seminar', reason: 'neues Semester' });
+
+    expect((await rename(bob)).status).toBe(404);
+    expect((await rename(alice)).status).toBe(403);
+    const renamed = await rename(tutor);
+    expect(renamed.status).toBe(200);
+    expect(renamed.body.name).toBe('Seminar');
+    expect((await rename(tutor)).status).toBe(200);
+
+    const traces = (await tracesAt(roomId)).filter((event) => event.kind === 'room-renamed');
+    expect(traces).toHaveLength(1);
+    expect(traces[0]).toMatchObject({
+      createdBy: 'tutor',
+      detail: { to: 'Seminar' },
+      reason: 'neues Semester',
+    });
+  });
+
+  it('takes name and settings at once and refuses a change with neither', async () => {
+    const roomId = await room();
+    const change = (sent: object) =>
+      request(server).patch(`/rooms/${roomId}`).set(as(dozent)).send(sent);
+
+    const both = await change({ name: 'Labor', settings: { mode: 'async' } });
+    expect(both.body).toMatchObject({ name: 'Labor', settings: { mode: 'async' } });
+    expect((await change({})).status).toBe(400);
+    expect((await change({ name: '  ' })).status).toBe(400);
+    expect((await change({ name: 7, settings: {} })).status).toBe(400);
+  });
+
+  it('deletes a room with manage there: its grants go, its workpieces stay', async () => {
+    const { roomId, workpieceId, team, tutors, at } = await course();
+    await grant(team, at, ['see']);
+    const remove = (token: string) =>
+      request(server).delete(`/rooms/${roomId}?reason=aufgeraeumt`).set(as(token));
+
+    expect((await remove(bob)).status).toBe(404);
+    expect((await remove(alice)).status).toBe(403);
+    const removed = await remove(tutor);
+    expect(removed.status).toBe(200);
+    expect(removed.body).toEqual({ deleted: true });
+    expect((await remove(tutor)).status).toBe(404);
+
+    const grants = storage.db.collection('grants');
+    expect(await grants.countDocuments({ 'scope.id': new ObjectId(roomId) })).toBe(0);
+    // The workpiece lives on; alice saw it only through the room, the dozent sees it from above.
+    const show = (token: string) =>
+      request(server).get(`/workpieces/${workpieceId}`).set(as(token));
+    expect((await show(dozent)).status).toBe(200);
+    expect((await show(alice)).status).toBe(404);
+
+    // A trace for each grant that went, then one for the room, all with the why.
+    const traces = await tracesAt(roomId);
+    const gone = traces.filter((event) => event.kind === 'grant-removed');
+    expect(gone.map((event) => String(event.detail?.['groupId'])).toSorted()).toEqual(
+      [team, tutors].toSorted(),
+    );
+    expect(gone.every((event) => event.reason === 'aufgeraeumt')).toBe(true);
+    expect(traces.at(-1)).toMatchObject({
+      kind: 'room-deleted',
+      createdBy: 'tutor',
+      detail: { name: 'Übung' },
+      reason: 'aufgeraeumt',
+    });
   });
 });
 

@@ -7,8 +7,10 @@ import { readEventsSince } from '../db/collections/events.ts';
 import {
   addToRoom,
   createRoom,
+  deleteRoom,
   findRoom,
   removeFromRoom,
+  renameRoom,
   setRoomSettings,
 } from '../db/collections/rooms.ts';
 import { asActorId, asCount, asObject, asObjectId, asReference, asText } from '../utils/input.ts';
@@ -63,15 +65,52 @@ export function roomRoutes(db: Db, recheckAccess: () => Promise<void>): Router {
   });
 
   routes.patch('/rooms/:id', seeing, changing, async (request, response) => {
-    const settings = asObject(bodyOf(request)['settings']);
+    const body = bodyOf(request);
+    const name = asText(body['name']);
+    const settings = asObject(body['settings']);
+    const reason = asText(body['reason']);
 
-    if (settings === undefined) {
-      return fail(response, 400, 'settings must be an object');
+    const unusable = unusableField(body, { name, settings, reason });
+    if (unusable !== undefined) {
+      return fail(response, 400, `${unusable} is unusable`);
+    }
+    if (name === undefined && settings === undefined) {
+      return fail(response, 400, 'name or settings is needed');
     }
 
+    // Only the name leaves a trace; the settings are the tool's and never read here.
     const id = idOf(request);
-    await setRoomSettings(db, id, settings);
+    if (name !== undefined) {
+      await renameRoom(db, id, {
+        name,
+        renamedBy: actorOf(request).actorId,
+        ...defined({ reason }),
+      });
+    }
+    if (settings !== undefined) {
+      await setRoomSettings(db, id, settings);
+    }
     response.json(await findRoom(db, id));
+  });
+
+  // The reason in the query, as a body on DELETE may get lost on the way.
+  routes.delete('/rooms/:id', seeing, changing, async (request, response) => {
+    const reason = asText(request.query['reason']);
+
+    const unusable = unusableField(request.query, { reason });
+    if (unusable !== undefined) {
+      return fail(response, 400, `${unusable} is unusable`);
+    }
+
+    const deleted = await deleteRoom(db, idOf(request), {
+      deletedBy: actorOf(request).actorId,
+      ...defined({ reason }),
+    });
+    // Without the room and its grants, open connections to what it opened would carry on.
+    if (deleted) {
+      await recheckAccess();
+    }
+    response.json({ deleted });
   });
 
   routes.post('/rooms/:id/references', seeing, changing, async (request, response) => {

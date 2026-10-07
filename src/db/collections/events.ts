@@ -66,6 +66,8 @@ export const SERVICE_KINDS: ReadonlySet<string> = new Set([
   'grant-removed',
   'comment-edited',
   'comment-deleted',
+  'room-renamed',
+  'room-deleted',
 ]);
 
 export interface NewEvent {
@@ -203,6 +205,24 @@ export async function writeWithEvents(
       await db.collection<EventRecord>('events').insertMany(records, { session });
     }
 
+    return true;
+  });
+}
+
+/** As writeWithEvents, for a write whose events depend on what it finds; none means no change. */
+export async function writeReturningEvents(
+  db: Db,
+  write: (session: ClientSession) => Promise<readonly NewEvent[]>,
+  now = new Date(),
+): Promise<boolean> {
+  return inTransaction(db, async (session) => {
+    const events = await write(session);
+    if (events.length === 0) {
+      return false;
+    }
+
+    const records = events.map((event) => recordOf(event, now));
+    await db.collection<EventRecord>('events').insertMany(records, { session });
     return true;
   });
 }

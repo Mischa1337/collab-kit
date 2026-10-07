@@ -583,6 +583,17 @@ describe('when access is taken away', () => {
     );
     await expect(Promise.all(closing)).resolves.toEqual([4403, 4403]);
   });
+
+  it('closes every connection when the room is deleted', async () => {
+    const { workpiece, room } = await seminar();
+    const closing = [
+      closedWith(await openAs('bob', workpiece)),
+      closedWith(await openAs('carol', workpiece)),
+    ];
+
+    expect((await removeAsAlice(`/rooms/${room.toHexString()}`)).status).toBe(200);
+    await expect(Promise.all(closing)).resolves.toEqual([4403, 4403]);
+  });
 });
 
 describe('shutting down', () => {

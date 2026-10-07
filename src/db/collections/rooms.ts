@@ -1,8 +1,10 @@
 import { ObjectId, type Db, type Document } from 'mongodb';
 
 import { referenceProperties, type Reference } from '../../model/anchor.ts';
+import { defined } from '../../utils/optional.ts';
 import type { CollectionDefinition } from '../apply.ts';
-import { writeWithEvents, type NewEvent } from './events.ts';
+import { writeReturningEvents, writeWithEvents, type NewEvent } from './events.ts';
+import { removeGrantsAt } from './grants.ts';
 
 /** Bundles without owning: what it references lives on its own and may sit in several rooms. */
 export interface RoomRecord {
@@ -147,6 +149,87 @@ export async function setRoomSettings(
     .updateOne({ _id: roomId }, { $set: { settings } });
 
   return result.matchedCount === 1;
+}
+
+export interface RoomRenaming {
+  readonly name: string;
+  readonly renamedBy: string;
+  readonly reason?: string;
+}
+
+/** Gives the room a new name and records it; the same name leaves no trace. */
+export async function renameRoom(
+  db: Db,
+  roomId: ObjectId,
+  input: RoomRenaming,
+  now = new Date(),
+): Promise<boolean> {
+  return writeWithEvents(
+    db,
+    async (session) => {
+      const result = await db
+        .collection<RoomRecord>('rooms')
+        .updateOne(
+          { _id: roomId, name: { $ne: input.name } },
+          { $set: { name: input.name } },
+          { session },
+        );
+      return result.modifiedCount === 1;
+    },
+    [roomEvent('room-renamed', roomId, input.renamedBy, { to: input.name }, input.reason)],
+    now,
+  );
+}
+
+export interface RoomDeletion {
+  readonly deletedBy: string;
+  readonly reason?: string;
+}
+
+/** Deletes the room and the grants at it; what it bundled stays, and so do its events. */
+export async function deleteRoom(
+  db: Db,
+  roomId: ObjectId,
+  input: RoomDeletion,
+  now = new Date(),
+): Promise<boolean> {
+  return writeReturningEvents(
+    db,
+    async (session) => {
+      const room = await db
+        .collection<RoomRecord>('rooms')
+        .findOneAndDelete({ _id: roomId }, { session });
+      if (room === null) {
+        return [];
+      }
+
+      // Rights at a place that is gone would hold at nothing, so they go with it.
+      const removal = { removedBy: input.deletedBy, ...defined({ reason: input.reason }) };
+      const removed = await removeGrantsAt(db, { kind: 'room', id: roomId }, removal, session);
+      return [
+        ...removed,
+        roomEvent('room-deleted', roomId, input.deletedBy, { name: room.name }, input.reason),
+      ];
+    },
+    now,
+  );
+}
+
+/** The trace of a change to the room itself, anchored at the room. */
+function roomEvent(
+  kind: string,
+  roomId: ObjectId,
+  by: string,
+  detail: Document,
+  reason: string | undefined,
+): NewEvent {
+  return {
+    kind,
+    createdBy: by,
+    anchor: { kind: 'room', id: roomId },
+    detail,
+    ...defined({ reason }),
+  };
 }
 
 /** The trace of a change to what the room references, anchored at the room. */

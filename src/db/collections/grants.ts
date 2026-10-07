@@ -1,4 +1,4 @@
-import { ObjectId, type Db, type Filter } from 'mongodb';
+import { ObjectId, type ClientSession, type Db, type Filter } from 'mongodb';
 
 import type { Reference } from '../../model/anchor.ts';
 import { RIGHTS, type Right } from '../../model/right.ts';
@@ -119,6 +119,28 @@ export async function removeGrant(db: Db, input: GrantRemoval, now = new Date())
     },
     [grantEvent('grant-removed', input, input.removedBy)],
     now,
+  );
+}
+
+/** Takes every grant at the place away, in the caller's transaction; answers with their traces. */
+export async function removeGrantsAt(
+  db: Db,
+  scope: Scope,
+  removal: Pick<GrantRemoval, 'removedBy' | 'reason'>,
+  session: ClientSession,
+): Promise<NewEvent[]> {
+  const filter = atPlace(scope);
+  const grants = db.collection<GrantRecord>('grants');
+  const found = await grants.find(filter, { session }).toArray();
+
+  // Read and deleted in one transaction, so every grant that goes leaves its trace.
+  await grants.deleteMany(filter, { session });
+  return found.map((grant) =>
+    grantEvent(
+      'grant-removed',
+      { groupId: grant.groupId, ...defined({ scope: grant.scope, reason: removal.reason }) },
+      removal.removedBy,
+    ),
   );
 }
 
