@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import type { Db } from 'mongodb';
 
-import { may, maySee } from '../auth/access.ts';
+import { may, maySee, workpiecesVisibleTo } from '../auth/access.ts';
 import { addToRoom } from '../db/collections/rooms.ts';
 import { createWorkpiece, findWorkpiece } from '../db/collections/workpieces.ts';
 import { isUpdateOf, summarizeUpdatesSince } from '../db/collections/updates.ts';
@@ -65,6 +65,11 @@ export function workpieceRoutes(db: Db, hub: WorkpieceHub): Router {
     }
 
     response.status(201).json(workpiece);
+  });
+
+  /** Every workpiece this token may see, so a tool can offer them, say for a room. */
+  routes.get('/workpieces', async (request, response) => {
+    response.json(await workpiecesVisibleTo(db, actorOf(request)));
   });
 
   routes.get('/workpieces/:id', async (request, response) => {

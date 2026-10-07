@@ -80,6 +80,16 @@ export async function findWorkpiece(db: Db, id: ObjectId): Promise<Workpiece | n
     .findOne<Workpiece>({ _id: id }, { projection: { fold: 0 } });
 }
 
+/** These workpieces, or every one when no keys are named; without the folded state, as above. */
+export async function findWorkpieces(db: Db, ids?: readonly ObjectId[]): Promise<Workpiece[]> {
+  const filter = ids === undefined ? {} : { _id: { $in: [...ids] } };
+
+  return db
+    .collection<WorkpieceRecord>('workpieces')
+    .find<Workpiece>(filter, { projection: { fold: 0 } })
+    .toArray();
+}
+
 /** The whole stored workpiece, folded state included, for loading it into memory. */
 export async function findWorkpieceWithFold(db: Db, id: ObjectId): Promise<WorkpieceRecord | null> {
   return db.collection<WorkpieceRecord>('workpieces').findOne({ _id: id });

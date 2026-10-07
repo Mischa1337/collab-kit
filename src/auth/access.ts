@@ -5,7 +5,7 @@ import { ObjectId, type Db } from 'mongodb';
 import type { Actor } from '../model/actor.ts';
 import type { Reference } from '../model/anchor.ts';
 import { RIGHTS, type Right } from '../model/right.ts';
-import { workpieceExists } from '../db/collections/workpieces.ts';
+import { findWorkpieces, workpieceExists, type Workpiece } from '../db/collections/workpieces.ts';
 import { findComment, type CommentRecord } from '../db/collections/comments.ts';
 import {
   grantsOf,
@@ -172,6 +172,27 @@ export async function roomsVisibleTo(db: Db, actor: Actor): Promise<RoomRecord[]
     'room',
   );
   return findRooms(db, ids);
+}
+
+/** Every workpiece the actor sees, as one list; the same rule as maySee for a workpiece. */
+export async function workpiecesVisibleTo(db: Db, actor: Actor): Promise<Workpiece[]> {
+  // Whoever sees everywhere sees every workpiece.
+  if ((await rightsAt(db, actor)).has('see')) {
+    return findWorkpieces(db);
+  }
+
+  // Seen at the workpiece itself, or at a room it lies in.
+  const groups = (await groupsOf(db, actor.actorId)).map((group) => group._id);
+  const [direct, roomIds] = await Promise.all([
+    placesWhere(db, groups, 'see', 'workpiece'),
+    placesWhere(db, groups, 'see', 'room'),
+  ]);
+  const inRooms = (await findRooms(db, roomIds)).flatMap((room) =>
+    room.references.flatMap((reference) =>
+      reference.kind === 'workpiece' && reference.id instanceof ObjectId ? [reference.id] : [],
+    ),
+  );
+  return findWorkpieces(db, [...direct, ...inRooms]);
 }
 
 /** Every group the actor sees, as one list; the same rule as maySeeGroup. */

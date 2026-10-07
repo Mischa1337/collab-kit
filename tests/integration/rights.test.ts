@@ -1,5 +1,5 @@
 import jwt from 'jsonwebtoken';
-import { ObjectId } from 'mongodb';
+import { Binary, ObjectId } from 'mongodb';
 import pino from 'pino';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -407,6 +407,35 @@ describe('rooms and workpieces under grants', () => {
 
     expect((await rename(tutor)).status).toBe(200);
     expect((await rename(alice)).status).toBe(403);
+  });
+
+  it('lists the workpieces a token sees, at them or through a room, all of them at the top', async () => {
+    const { workpieceId, team, at } = await course();
+    await grant(team, at, ['see']);
+    const created = await request(server)
+      .post('/workpieces')
+      .set(as(dozent))
+      .send({ name: 'Einzeln', contract: {} });
+    const single = created.body._id as string;
+    const readers = await group(['bob']);
+    await grant(readers, { kind: 'workpiece', id: single }, ['see']);
+    // Folded once, so the list has a state it must leave out.
+    await storage.db.collection('workpieces').updateOne(
+      { _id: new ObjectId(single) },
+      {
+        $set: { fold: { state: new Binary(Buffer.from([0, 0])), upToUpdateId: new ObjectId() } },
+      },
+    );
+    const listed = async (token: string) =>
+      (await request(server).get('/workpieces').set(as(token))).body as { _id: string }[];
+    const ids = async (token: string) => (await listed(token)).map((entry) => entry._id);
+
+    expect(await ids(alice)).toContain(workpieceId);
+    expect(await ids(alice)).not.toContain(single);
+    expect(await ids(bob)).toContain(single);
+    expect(await ids(bob)).not.toContain(workpieceId);
+    expect(await ids(dozent)).toEqual(expect.arrayContaining([workpieceId, single]));
+    expect((await listed(bob)).find((entry) => entry._id === single)).not.toHaveProperty('fold');
   });
 
   it('creates a workpiece in a room with manage there, outside every room with manage everywhere', async () => {
