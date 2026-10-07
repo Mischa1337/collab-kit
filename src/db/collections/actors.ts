@@ -28,6 +28,20 @@ export const actorsDefinition: CollectionDefinition = {
   },
 };
 
+/** The stored names of these actors; one never seen is simply missing. */
+export async function findNames(
+  db: Db,
+  actorIds: readonly string[],
+): Promise<Pick<ActorRecord, '_id' | 'label'>[]> {
+  return db
+    .collection<ActorRecord>('actors')
+    .find<Pick<ActorRecord, '_id' | 'label'>>(
+      { _id: { $in: [...actorIds] } },
+      { projection: { label: 1 } },
+    )
+    .toArray();
+}
+
 /** Records a visit: creates the row on first contact and moves lastSeenAt every time (D1.10). */
 export async function touchActor(db: Db, actor: Actor, now = new Date()): Promise<ActorRecord> {
   const changes = { lastSeenAt: now, ...defined({ label: actor.label }) };

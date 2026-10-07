@@ -5,6 +5,7 @@ import type { Logger } from 'pino';
 import type { Actor } from '../model/actor.ts';
 import { requireActor } from '../auth/middleware.ts';
 import type { WorkpieceHub } from '../realtime/hub.ts';
+import { actorRoutes } from './actors.ts';
 import { roomRoutes } from './rooms.ts';
 import { groupRoutes } from './groups.ts';
 import { grantRoutes } from './grants.ts';
@@ -38,6 +39,7 @@ export function createApi(options: ApiOptions): Router {
   api.use(roomRoutes(options.db, options.recheckAccess));
   api.use(groupRoutes(options.db, options.recheckAccess));
   api.use(grantRoutes(options.db, options.recheckAccess));
+  api.use(actorRoutes(options.db));
   api.use(workpieceRoutes(options.db, options.hub));
   api.use(eventRoutes(options.db));
   const decisions = options.decisionStates ?? [];

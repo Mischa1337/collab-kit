@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createTokenCheck } from '../../src/auth/token.ts';
 import { applyDefinitions } from '../../src/db/apply.ts';
 import { connect, type Storage } from '../../src/db/client.ts';
+import { touchActor } from '../../src/db/collections/actors.ts';
 import type { EventRecord } from '../../src/db/collections/events.ts';
 import { collectionDefinitions } from '../../src/db/schemas.ts';
 import { createWorkpieceHub } from '../../src/realtime/hub.ts';
@@ -376,6 +377,48 @@ describe('listing, renaming and deleting groups', () => {
       detail: { name: 'Gruppe' },
       reason: 'aufgeloest',
     });
+  });
+});
+
+describe('names to actor keys', () => {
+  /** The names a token gets for these keys, ordered by key. */
+  async function names(token: string, ids: string) {
+    const answer = await request(server).get(`/actors?ids=${ids}`).set(as(token));
+    return (answer.body as { actorId: string }[]).toSorted((a, b) =>
+      a.actorId.localeCompare(b.actorId),
+    );
+  }
+
+  it('names oneself and the members of every group one sees, everyone at the top', async () => {
+    await Promise.all([
+      touchActor(storage.db, { actorId: 'ida', label: 'Ida' }),
+      touchActor(storage.db, { actorId: 'jan' }),
+      touchActor(storage.db, { actorId: 'kim', label: 'Kim' }),
+    ]);
+    await group(['alice', 'ida', 'jan']);
+    const kims = await group(['kim']);
+    const leads = await group(['bob']);
+    await grant(leads, { kind: 'group', id: kims }, ['see']);
+
+    // kim is in no group alice sees, and ghost was never seen; jan has no name yet.
+    expect(await names(alice, 'ida, jan,kim,ghost')).toEqual([
+      { actorId: 'ida', label: 'Ida' },
+      { actorId: 'jan' },
+    ]);
+    expect(await names(bob, 'kim,ida')).toEqual([{ actorId: 'kim', label: 'Kim' }]);
+    expect(await names(dozent, 'kim,ida,ghost')).toEqual([
+      { actorId: 'ida', label: 'Ida' },
+      { actorId: 'kim', label: 'Kim' },
+    ]);
+  });
+
+  it('refuses keys it cannot read', async () => {
+    const ask = (query: string) => request(server).get(`/actors${query}`).set(as(alice));
+
+    expect((await ask('')).status).toBe(400);
+    expect((await ask('?ids=')).status).toBe(400);
+    expect((await ask('?ids=ida,,jan')).status).toBe(400);
+    expect((await ask('?ids=ida&ids=jan')).status).toBe(400);
   });
 });
 

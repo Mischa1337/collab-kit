@@ -208,6 +208,23 @@ export async function groupsVisibleTo(db: Db, actor: Actor): Promise<GroupRecord
   return findGroups(db, [...own, ...seen]);
 }
 
+/** Which of these actors the actor may put a name to: itself and the members of groups it sees. */
+export async function nameableAmong(
+  db: Db,
+  actor: Actor,
+  actorIds: readonly string[],
+): Promise<string[]> {
+  // Whoever sees everywhere may name everyone.
+  if ((await rightsAt(db, actor)).has('see')) {
+    return [...actorIds];
+  }
+
+  // Not anyone: keys are often counted up, so every name would be a single request away.
+  const groups = await groupsVisibleTo(db, actor);
+  const known = new Set([actor.actorId, ...groups.flatMap((group) => group.members)]);
+  return actorIds.filter((actorId) => known.has(actorId));
+}
+
 /** Whether a place of the service is there, so no rule answers yes about a key nothing has. */
 export async function placeExists(db: Db, place: Scope): Promise<boolean> {
   if (place.kind === 'room') {
