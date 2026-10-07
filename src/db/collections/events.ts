@@ -68,6 +68,8 @@ export const SERVICE_KINDS: ReadonlySet<string> = new Set([
   'comment-deleted',
   'room-renamed',
   'room-deleted',
+  'group-renamed',
+  'group-deleted',
 ]);
 
 export interface NewEvent {

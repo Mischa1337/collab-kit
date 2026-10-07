@@ -14,7 +14,13 @@ import {
   rightsHeld,
   type Scope,
 } from '../db/collections/grants.ts';
-import { findGroup, groupsOf, isMemberOfAny, type GroupRecord } from '../db/collections/groups.ts';
+import {
+  findGroup,
+  findGroups,
+  groupsOf,
+  isMemberOfAny,
+  type GroupRecord,
+} from '../db/collections/groups.ts';
 import { findRoom, findRooms, roomsContaining, type RoomRecord } from '../db/collections/rooms.ts';
 import { findTask, type Assignee, type TaskRecord } from '../db/collections/tasks.ts';
 
@@ -166,6 +172,19 @@ export async function roomsVisibleTo(db: Db, actor: Actor): Promise<RoomRecord[]
     'room',
   );
   return findRooms(db, ids);
+}
+
+/** Every group the actor sees, as one list; the same rule as maySeeGroup. */
+export async function groupsVisibleTo(db: Db, actor: Actor): Promise<GroupRecord[]> {
+  // Whoever sees everywhere sees every group.
+  if ((await rightsAt(db, actor)).has('see')) {
+    return findGroups(db);
+  }
+
+  // The own groups, and those where one of them holds see.
+  const own = (await groupsOf(db, actor.actorId)).map((group) => group._id);
+  const seen = await placesWhere(db, own, 'see', 'group');
+  return findGroups(db, [...own, ...seen]);
 }
 
 /** Whether a place of the service is there, so no rule answers yes about a key nothing has. */

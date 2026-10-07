@@ -584,6 +584,22 @@ describe('when access is taken away', () => {
     await expect(Promise.all(closing)).resolves.toEqual([4403, 4403]);
   });
 
+  it('closes the connection of whoever was in through the deleted group only', async () => {
+    const { workpiece, all } = await seminar();
+    const bob = await openAs('bob', workpiece);
+    const carol = await openAs('carol', workpiece);
+    const bobClosing = closedWith(bob);
+
+    expect((await removeAsAlice(`/groups/${all.toHexString()}`)).status).toBe(200);
+    await expect(bobClosing).resolves.toBe(4403);
+
+    // carol still gets in through the other group of the room.
+    await pause(100);
+    expect(carol.readyState).toBe(WebSocket.OPEN);
+
+    await close(carol);
+  });
+
   it('closes every connection when the room is deleted', async () => {
     const { workpiece, room } = await seminar();
     const closing = [

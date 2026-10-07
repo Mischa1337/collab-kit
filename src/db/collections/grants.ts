@@ -129,7 +129,27 @@ export async function removeGrantsAt(
   removal: Pick<GrantRemoval, 'removedBy' | 'reason'>,
   session: ClientSession,
 ): Promise<NewEvent[]> {
-  const filter = atPlace(scope);
+  return removeGrantsWhere(db, atPlace(scope), removal, session);
+}
+
+/** Takes away every grant the group holds and every grant held at it, as removeGrantsAt does. */
+export async function removeGrantsOfGroup(
+  db: Db,
+  groupId: ObjectId,
+  removal: Pick<GrantRemoval, 'removedBy' | 'reason'>,
+  session: ClientSession,
+): Promise<NewEvent[]> {
+  const filter = { $or: [{ groupId }, atPlace({ kind: 'group', id: groupId })] };
+  return removeGrantsWhere(db, filter as Filter<GrantRecord>, removal, session);
+}
+
+/** Takes away every grant the filter finds and answers with a trace for each. */
+async function removeGrantsWhere(
+  db: Db,
+  filter: Filter<GrantRecord>,
+  removal: Pick<GrantRemoval, 'removedBy' | 'reason'>,
+  session: ClientSession,
+): Promise<NewEvent[]> {
   const grants = db.collection<GrantRecord>('grants');
   const found = await grants.find(filter, { session }).toArray();
 

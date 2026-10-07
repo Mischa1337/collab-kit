@@ -1,7 +1,9 @@
 import { ObjectId, type Db, type Document } from 'mongodb';
 
+import { defined } from '../../utils/optional.ts';
 import type { CollectionDefinition } from '../apply.ts';
-import { writeWithEvents, type NewEvent } from './events.ts';
+import { writeReturningEvents, writeWithEvents, type NewEvent } from './events.ts';
+import { removeGrantsOfGroup } from './grants.ts';
 
 /** A set of actors, nothing more; what it stands for, a role say, is the business of the tool. */
 export interface GroupRecord {
@@ -127,6 +129,13 @@ export async function removeMember(
   );
 }
 
+/** These groups, or every group when no keys are named. */
+export async function findGroups(db: Db, ids?: readonly ObjectId[]): Promise<GroupRecord[]> {
+  const filter = ids === undefined ? {} : { _id: { $in: [...ids] } };
+
+  return db.collection<GroupRecord>('groups').find(filter).toArray();
+}
+
 /** Every group this actor is in. */
 export async function groupsOf(db: Db, actorId: string): Promise<GroupRecord[]> {
   return db.collection<GroupRecord>('groups').find({ members: actorId }).toArray();
@@ -160,6 +169,87 @@ export async function setGroupSettings(
     .updateOne({ _id: groupId }, { $set: { settings } });
 
   return result.matchedCount === 1;
+}
+
+export interface GroupRenaming {
+  readonly name: string;
+  readonly renamedBy: string;
+  readonly reason?: string;
+}
+
+/** Gives the group a new name and records it; the same name leaves no trace. */
+export async function renameGroup(
+  db: Db,
+  groupId: ObjectId,
+  input: GroupRenaming,
+  now = new Date(),
+): Promise<boolean> {
+  return writeWithEvents(
+    db,
+    async (session) => {
+      const result = await db
+        .collection<GroupRecord>('groups')
+        .updateOne(
+          { _id: groupId, name: { $ne: input.name } },
+          { $set: { name: input.name } },
+          { session },
+        );
+      return result.modifiedCount === 1;
+    },
+    [groupEvent('group-renamed', groupId, input.renamedBy, { to: input.name }, input.reason)],
+    now,
+  );
+}
+
+export interface GroupDeletion {
+  readonly deletedBy: string;
+  readonly reason?: string;
+}
+
+/** Deletes the group with its grants and those held at it; a task given to it keeps the entry. */
+export async function deleteGroup(
+  db: Db,
+  groupId: ObjectId,
+  input: GroupDeletion,
+  now = new Date(),
+): Promise<boolean> {
+  return writeReturningEvents(
+    db,
+    async (session) => {
+      const group = await db
+        .collection<GroupRecord>('groups')
+        .findOneAndDelete({ _id: groupId }, { session });
+      if (group === null) {
+        return [];
+      }
+
+      // What it held goes with it, and rights at it would hold at nothing.
+      const removal = { removedBy: input.deletedBy, ...defined({ reason: input.reason }) };
+      const removed = await removeGrantsOfGroup(db, groupId, removal, session);
+      return [
+        ...removed,
+        groupEvent('group-deleted', groupId, input.deletedBy, { name: group.name }, input.reason),
+      ];
+    },
+    now,
+  );
+}
+
+/** The trace of a change to the group itself, anchored at the group. */
+function groupEvent(
+  kind: string,
+  groupId: ObjectId,
+  by: string,
+  detail: Document,
+  reason: string | undefined,
+): NewEvent {
+  return {
+    kind,
+    createdBy: by,
+    anchor: { kind: 'group', id: groupId },
+    detail,
+    ...defined({ reason }),
+  };
 }
 
 /** The trace of a membership change, anchored at the group. */
