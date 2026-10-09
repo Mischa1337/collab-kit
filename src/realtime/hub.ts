@@ -21,6 +21,7 @@ import {
 } from './persistence.ts';
 import { encodeAwareness, encodeEvent, encodeSyncUpdate, SENDER_DELETES } from './protocol.ts';
 import {
+  containersOf,
   deletionsIn,
   idKey,
   lossEvents,
@@ -124,8 +125,10 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
 
   /** Loads the workpiece and wires its Y.Doc and awareness to this hub. */
   async function load(workpieceId: ObjectId, connections: Set<Connection>): Promise<Loaded> {
-    const { doc, stored } = await loadWorkpiece(options.db, workpieceId);
+    const { doc, stored, units } = await loadWorkpiece(options.db, workpieceId);
     const announcedBy = new Map<number, Connection>();
+    // Where the tool keeps its units, so each conflict hangs on the unit it hit.
+    const containers = containersOf(units);
 
     // The service is nobody in the room, so it holds no presence of its own.
     const awareness = new awarenessProtocol.Awareness(doc);
@@ -152,7 +155,7 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
     doc.on('afterTransaction', (transaction: Y.Transaction) => {
       const known = transaction.meta.get(SENDER_DELETES) as DeleteSet | undefined;
       if (known !== undefined) {
-        transaction.meta.set(DELETIONS, deletionsIn(transaction, known));
+        transaction.meta.set(DELETIONS, deletionsIn(transaction, known, containers));
       }
     });
 

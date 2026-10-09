@@ -9,7 +9,7 @@ import { isUpdateOf, summarizeUpdatesSince } from '../db/collections/updates.ts'
 import { eventKeysOf, withNames } from '../db/names.ts';
 import type { WorkpieceHub } from '../realtime/hub.ts';
 import { readStateAt } from '../realtime/persistence.ts';
-import { asCount, asObject, asObjectId, asText } from '../utils/input.ts';
+import { asCount, asObject, asObjectId, asText, asUnits } from '../utils/input.ts';
 import { defined } from '../utils/optional.ts';
 import { actorOf, bodyOf, fail, guard, idOf, requireId, unusableField } from './http.ts';
 
@@ -42,7 +42,8 @@ export function workpieceRoutes(db: Db, hub: WorkpieceHub): Router {
 
     const contract = asObject(body['contract']);
     const roomId = asObjectId(body['roomId']);
-    const unusable = unusableField(body, { contract, roomId });
+    const units = asUnits(body['units']);
+    const unusable = unusableField(body, { contract, roomId, units });
     if (unusable !== undefined) {
       return fail(response, 400, `${unusable} is unusable`);
     }
@@ -60,7 +61,7 @@ export function workpieceRoutes(db: Db, hub: WorkpieceHub): Router {
     const workpiece = await createWorkpiece(db, {
       name,
       createdBy: actor.actorId,
-      ...defined({ contract }),
+      ...defined({ contract, units }),
     });
     if (roomId !== undefined) {
       await addToRoom(db, roomId, { kind: 'workpiece', id: workpiece._id, addedBy: actor.actorId });

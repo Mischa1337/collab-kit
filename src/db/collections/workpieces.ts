@@ -8,12 +8,19 @@ export interface FoldedState {
   upToUpdateId: ObjectId;
 }
 
+/** A Y.Map whose keys are the units, at a path of map keys that starts at a root type. */
+export interface UnitContainer {
+  path: string[];
+}
+
 /** One row per Y.Doc; fold is only a loading shortcut, the truth is the update stream. */
 export interface WorkpieceRecord {
   _id: ObjectId;
   name: string;
   /** What the tool registered while docking. The service never reads into it. */
   contract: Document;
+  /** Where the tool keeps its units, so conflicts hang on the unit they hit; empty if nowhere. */
+  units: UnitContainer[];
   /** Absent until the workpiece has been folded for the first time. */
   fold?: FoldedState;
   createdAt: Date;
@@ -24,12 +31,25 @@ export const workpiecesDefinition: CollectionDefinition = {
   name: 'workpieces',
   schema: {
     bsonType: 'object',
-    required: ['name', 'contract', 'createdAt', 'createdBy'],
+    required: ['name', 'contract', 'units', 'createdAt', 'createdBy'],
     properties: {
       name: { bsonType: 'string' },
       contract: {
         bsonType: 'object',
         description: 'what the tool registered while docking, deliberately unconstrained',
+      },
+      units: {
+        bsonType: 'array',
+        maxItems: 20,
+        description: 'the maps whose keys are units, each at a path of keys from a root type',
+        items: {
+          bsonType: 'object',
+          required: ['path'],
+          additionalProperties: false,
+          properties: {
+            path: { bsonType: 'array', minItems: 1, maxItems: 10, items: { bsonType: 'string' } },
+          },
+        },
       },
       fold: {
         bsonType: 'object',
@@ -50,6 +70,7 @@ export interface NewWorkpiece {
   readonly name: string;
   readonly createdBy: string;
   readonly contract?: Document;
+  readonly units?: UnitContainer[];
 }
 
 /** Creates an empty workpiece without a start state: every change, even the first, is an update. */
@@ -62,6 +83,7 @@ export async function createWorkpiece(
     _id: new ObjectId(),
     name: input.name,
     contract: input.contract ?? {},
+    units: input.units ?? [],
     createdAt: now,
     createdBy: input.createdBy,
   };

@@ -2,7 +2,9 @@ import type { ObjectId } from 'mongodb';
 import * as Y from 'yjs';
 
 import type { NewEvent } from '../db/collections/events.ts';
+import type { UnitContainer } from '../db/collections/workpieces.ts';
 import type { Anchor } from '../model/anchor.ts';
+import { defined } from '../utils/optional.ts';
 
 /** At most this many stretches go into one event; beyond that only how many there were. */
 const MAX_RANGES = 100;
@@ -21,14 +23,23 @@ interface Stretch extends PieceId {
   readonly length: number;
 }
 
+/** A stretch of pieces and the unit they lie in. */
+interface UnitStretch extends Stretch {
+  /** The key of the unit, as anchor.unit names it; absent outside every unit. */
+  readonly unit?: string;
+}
+
+/** The maps whose keys are units, each by its path, ready to be looked up. */
+export type Containers = ReadonlySet<string>;
+
 /** A stretch of pieces the sender deleted with them in front of them. */
-export interface Removal extends Stretch {
+export interface Removal extends UnitStretch {
   /** Whether its key holds another value afterwards; otherwise it is simply gone. */
   readonly replaced: boolean;
 }
 
 /** A stretch of pieces lost to a change whose sender never knew them. */
-export interface Loss extends Stretch {
+export interface Loss extends UnitStretch {
   /** overwritten: another value took the key. place-removed: what it sat in was deleted. */
   readonly cause: 'overwritten' | 'place-removed';
   /** overwritten: the value under the key now. place-removed: the deleted place. */
@@ -63,6 +74,14 @@ interface LossBase {
   readonly sender: string;
 }
 
+/** One group of removals that becomes one event. */
+interface RemovalGroup {
+  readonly kind: string;
+  readonly affected: string;
+  readonly unit: string | undefined;
+  readonly ranges: Stretch[];
+}
+
 /** One group of losses that becomes one event. */
 interface LossGroup {
   readonly loss: Loss;
@@ -71,8 +90,17 @@ interface LossGroup {
   readonly lost: Stretch[];
 }
 
+/** The maps a workpiece names as holding units, looked up by path. */
+export function containersOf(units: readonly UnitContainer[]): Containers {
+  return new Set(units.map((container) => pathKey(container.path)));
+}
+
 /** Splits what a transaction newly deleted, before Yjs collects it and pieces lose their place. */
-export function deletionsIn(transaction: Y.Transaction, known: DeleteSet): Deletions {
+export function deletionsIn(
+  transaction: Y.Transaction,
+  known: DeleteSet,
+  containers: Containers,
+): Deletions {
   const removals: Removal[] = [];
   const losses: Loss[] = [];
   // Lost is what this change deleted although its sender never knew it.
@@ -91,14 +119,26 @@ export function deletionsIn(transaction: Y.Transaction, known: DeleteSet): Delet
       for (const { item, clock, length } of overlaps(range, sent).flatMap((part) =>
         itemsIn(structs, part),
       )) {
-        removals.push({ client, clock, length, replaced: isReplaced(item) });
+        removals.push({
+          client,
+          clock,
+          length,
+          replaced: isReplaced(item),
+          ...defined({ unit: unitOf(item, containers) }),
+        });
       }
       for (const { item, clock, length } of outside(range, sent).flatMap((part) =>
         itemsIn(structs, part),
       )) {
         const why = lossOf(item, isLost, transaction.deleteSet);
         if (why !== undefined) {
-          losses.push({ client, clock, length, ...why });
+          losses.push({
+            client,
+            clock,
+            length,
+            ...why,
+            ...defined({ unit: unitOf(item, containers) }),
+          });
         }
       }
     }
@@ -114,23 +154,23 @@ export function deletionsIn(transaction: Y.Transaction, known: DeleteSet): Delet
   };
 }
 
-/** One event per kind and person whose work it was; the remover's own work is left out. */
+/** One event per kind, person whose work it was and unit; the remover's own work is left out. */
 export function removalEvents(
   removals: readonly Removal[],
   authors: ReadonlyMap<number, string>,
   base: RemovalBase,
 ): NewEvent[] {
-  const groups = new Map<string, { kind: string; affected: string; ranges: object[] }>();
+  const groups = new Map<string, RemovalGroup>();
 
-  // Grouped by kind and author; whose author is unknown stays out.
+  // Grouped by kind, author and unit; whose author is unknown stays out.
   for (const removal of removals) {
     const author = authors.get(removal.client);
     if (author === undefined || author === base.createdBy) {
       continue;
     }
     const kind = removal.replaced ? 'work-replaced' : 'work-removed';
-    const key = JSON.stringify([kind, author]);
-    const group = groups.get(key) ?? { kind, affected: author, ranges: [] };
+    const key = JSON.stringify([kind, author, removal.unit ?? null]);
+    const group = groups.get(key) ?? { kind, affected: author, unit: removal.unit, ranges: [] };
     group.ranges.push({ client: removal.client, clock: removal.clock, length: removal.length });
     groups.set(key, group);
   }
@@ -139,7 +179,7 @@ export function removalEvents(
   return [...groups.values()].map((group) => ({
     kind: group.kind,
     createdBy: base.createdBy,
-    anchor: base.anchor,
+    anchor: inUnit(base.anchor, group.unit),
     at: base.at,
     affects: [group.affected],
     detail:
@@ -149,7 +189,7 @@ export function removalEvents(
   }));
 }
 
-/** One work-lost per cause, place or value, loser and other side; one person on both is none. */
+/** One work-lost per cause, place or value, loser, other side and unit; none if both are one. */
 export function lossEvents(
   losses: readonly Loss[],
   authors: ReadonlyMap<number, string>,
@@ -174,7 +214,13 @@ export function lossEvents(
       continue;
     }
 
-    const key = JSON.stringify([loss.cause, idKey(loss.other), loser, other ?? null]);
+    const key = JSON.stringify([
+      loss.cause,
+      idKey(loss.other),
+      loser,
+      other ?? null,
+      loss.unit ?? null,
+    ]);
     const group = groups.get(key) ?? { loss, loser, other, lost: [] };
     group.lost.push({ client: loss.client, clock: loss.clock, length: loss.length });
     groups.set(key, group);
@@ -196,7 +242,7 @@ function lossEvent(group: LossGroup, base: LossBase): NewEvent {
   return {
     kind: 'work-lost',
     createdBy: other ?? base.sender,
-    anchor: base.anchor,
+    anchor: inUnit(base.anchor, loss.unit),
     at: base.at,
     affects: other === undefined ? [loser] : [loser, other],
     detail: {
@@ -241,6 +287,53 @@ function lossOf(
     other: { client: current.id.client, clock: current.id.clock },
     removedNow: false,
   };
+}
+
+/** The anchor narrowed to the unit, if the pieces lie in one. */
+function inUnit(anchor: Anchor, unit: string | undefined): Anchor {
+  return { ...anchor, ...defined({ unit }) };
+}
+
+/** The unit of a piece: the key under which it, or what holds it, sits directly in a container. */
+function unitOf(item: Y.Item, containers: Containers): string | undefined {
+  // Up from the piece; the first container on the way is the innermost.
+  for (let piece: Y.Item | null = item; piece !== null; piece = placeOf(piece)) {
+    const key = piece.parentSub;
+    if (key !== null && isContainer(piece.parent, containers)) {
+      // A blank key could never be asked for, so it names no unit.
+      return key.trim() === '' ? undefined : key;
+    }
+  }
+  return undefined;
+}
+
+/** Whether the workpiece names the type a piece sits in as holding units. */
+function isContainer(parent: Y.Item['parent'], containers: Containers): boolean {
+  if (containers.size === 0 || !(parent instanceof Y.AbstractType)) {
+    return false;
+  }
+  const path = pathOf(parent);
+  return path !== undefined && containers.has(pathKey(path));
+}
+
+/** A root type by its name, one below by the path of its parent and its key; none in a list. */
+function pathOf(type: Y.AbstractType<unknown>): string[] | undefined {
+  // eslint-disable-next-line no-underscore-dangle
+  const item = type._item;
+  if (item === null) {
+    return [Y.findRootTypeKey(type)];
+  }
+  // In an array or a text it sits at a position, and a position is no key.
+  if (item.parentSub === null || !(item.parent instanceof Y.AbstractType)) {
+    return undefined;
+  }
+  const above = pathOf(item.parent);
+  return above === undefined ? undefined : [...above, item.parentSub];
+}
+
+/** The key under which a path is looked up, as a set cannot compare arrays. */
+function pathKey(path: readonly string[]): string {
+  return JSON.stringify(path);
 }
 
 /** The item of the map, text or array a piece sits in; null at the top of the document. */
@@ -328,8 +421,11 @@ function itemsIn(
   return items;
 }
 
-/** Joins stretches that follow on one another and went alike, so the list stays short. */
-function merged<T extends Stretch>(stretches: readonly T[], alike: (a: T, b: T) => boolean): T[] {
+/** Joins stretches that follow on one another in one unit and went alike; keeps the list short. */
+function merged<T extends UnitStretch>(
+  stretches: readonly T[],
+  alike: (a: T, b: T) => boolean,
+): T[] {
   const joined: T[] = [];
 
   for (const next of stretches) {
@@ -338,6 +434,7 @@ function merged<T extends Stretch>(stretches: readonly T[], alike: (a: T, b: T) 
       last !== undefined &&
       last.client === next.client &&
       last.clock + last.length === next.clock &&
+      last.unit === next.unit &&
       alike(last, next)
     ) {
       joined[joined.length - 1] = { ...last, length: last.length + next.length };

@@ -3,6 +3,7 @@
 import { ObjectId, type Document } from 'mongodb';
 
 import type { Assignee } from '../db/collections/tasks.ts';
+import type { UnitContainer } from '../db/collections/workpieces.ts';
 import {
   isReferenceKind,
   REFERENCE_KINDS,
@@ -15,6 +16,12 @@ import { RIGHTS, type Right } from '../model/right.ts';
 import { defined } from './optional.ts';
 
 const HEX24 = /^[0-9a-f]{24}$/i;
+
+/** Most maps a workpiece may name as holding units. */
+const MAX_CONTAINERS = 20;
+
+/** Most keys on the way from a root type down to such a map. */
+const MAX_PATH = 10;
 
 /** Exactly 24 hex characters become an ObjectId, anything else undefined. */
 export function asObjectId(raw: unknown): ObjectId | undefined {
@@ -158,6 +165,34 @@ export function asAssignees(raw: unknown): Assignee[] | undefined {
 
   const assignees = raw.map((entry: unknown) => asAssignee(entry));
   return assignees.every((entry): entry is Assignee => entry !== undefined) ? assignees : undefined;
+}
+
+/** Where the units lie: up to 20 maps, none also fine; one that does not fit spoils the list. */
+export function asUnits(raw: unknown): UnitContainer[] | undefined {
+  if (!Array.isArray(raw) || raw.length > MAX_CONTAINERS) {
+    return undefined;
+  }
+
+  const containers = raw.map((entry: unknown) => asUnitContainer(entry));
+  return containers.every((entry): entry is UnitContainer => entry !== undefined)
+    ? containers
+    : undefined;
+}
+
+/** One map by its path of 1 to 10 keys; another field too, and a later version would go unheard. */
+function asUnitContainer(raw: unknown): UnitContainer | undefined {
+  const fields = asObject(raw);
+  const path = fields?.['path'];
+  if (fields === undefined || Object.keys(fields).some((name) => name !== 'path')) {
+    return undefined;
+  }
+  if (!Array.isArray(path) || path.length === 0 || path.length > MAX_PATH) {
+    return undefined;
+  }
+
+  // Each key exactly as sent: trimmed, it would no longer match the one in the Y.Doc.
+  const keys = (path as unknown[]).map((key) => asUnit(key));
+  return keys.every((key): key is string => key !== undefined) ? { path: keys } : undefined;
 }
 
 /** The key the tool gives a place: text kept as it is, not blank. A query can send nothing else. */

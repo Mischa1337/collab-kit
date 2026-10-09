@@ -1,7 +1,11 @@
 import type { Binary, Db, ObjectId } from 'mongodb';
 import * as Y from 'yjs';
 
-import { findWorkpieceWithFold, foldState } from '../db/collections/workpieces.ts';
+import {
+  findWorkpieceWithFold,
+  foldState,
+  type UnitContainer,
+} from '../db/collections/workpieces.ts';
 import {
   appendUpdate,
   readUpdatesDeleting,
@@ -23,11 +27,15 @@ export interface Stored {
   updatesSinceFoldAttempt: number;
 }
 
-/** Rebuilds the workpiece from its folded state plus every change after it. */
+/** Rebuilds the workpiece from its fold plus every later change, and says where its units lie. */
 export async function loadWorkpiece(
   db: Db,
   workpieceId: ObjectId,
-): Promise<{ readonly doc: Y.Doc; readonly stored: Stored }> {
+): Promise<{
+  readonly doc: Y.Doc;
+  readonly stored: Stored;
+  readonly units: readonly UnitContainer[];
+}> {
   const record = await findWorkpieceWithFold(db, workpieceId);
 
   if (record === null) {
@@ -57,7 +65,7 @@ export async function loadWorkpiece(
     }),
   };
 
-  return { doc, stored };
+  return { doc, stored, units: record.units };
 }
 
 /** A stored state as one Yjs update: as it stood after the change at, or the newest one. */

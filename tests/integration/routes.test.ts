@@ -989,6 +989,7 @@ describe('a workpiece as a thing', () => {
       _id: workpieceId,
       name: 'Entwurf',
       contract: { kind: 'sql-skript' },
+      units: [],
       createdAt: expect.any(String),
       createdBy: 'alice',
     });
@@ -1001,6 +1002,46 @@ describe('a workpiece as a thing', () => {
       .send({ name: 'Entwurf', contract: 'sql' });
 
     expect(refused.status).toBe(400);
+  });
+
+  it('keeps where the units lie, each key exactly as sent', async () => {
+    const units = [{ path: ['cells'] }, { path: ['model', ' Zellen '] }];
+    const created = await request(server)
+      .post('/workpieces')
+      .set(as(alice))
+      .send({ name: 'Modell', units });
+
+    const described = await request(server)
+      .get(`/workpieces/${created.body._id as string}`)
+      .set(as(alice));
+    expect(created.status).toBe(201);
+    expect(described.body.units).toEqual(units);
+  });
+
+  it('takes no units as none, sent empty or not at all', async () => {
+    const empty = await request(server)
+      .post('/workpieces')
+      .set(as(alice))
+      .send({ name: 'Modell', units: [] });
+
+    expect(empty.status).toBe(201);
+    expect(empty.body.units).toEqual([]);
+  });
+
+  it('refuses units that do not fit, so nothing is dropped unnoticed', async () => {
+    const create = async (units: unknown) =>
+      (await request(server).post('/workpieces').set(as(alice)).send({ name: 'Modell', units }))
+        .status;
+    const map = { path: ['cells'] };
+
+    expect(await create({ path: ['cells'] })).toBe(400);
+    expect(await create([{ path: [] }])).toBe(400);
+    expect(await create([{ path: ['cells', ' '] }])).toBe(400);
+    expect(await create([{ path: ['cells', 7] }])).toBe(400);
+    expect(await create([{ path: Array.from({ length: 11 }, () => 'm') }])).toBe(400);
+    expect(await create([{ ...map, key: 'id' }])).toBe(400);
+    expect(await create(Array.from({ length: 21 }, () => map))).toBe(400);
+    expect(await create(Array.from({ length: 20 }, () => map))).toBe(201);
   });
 });
 
