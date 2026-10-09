@@ -10,11 +10,11 @@ import * as Y from 'yjs';
 import { createTokenCheck } from '../../src/auth/token.ts';
 import { applyDefinitions } from '../../src/db/apply.ts';
 import { connect, type Storage } from '../../src/db/client.ts';
-import { readEvents, type EventRecord } from '../../src/db/collections/events.ts';
+import { latestEvent, readEvents, type EventRecord } from '../../src/db/collections/events.ts';
 import { setGrant } from '../../src/db/collections/grants.ts';
 import { createGroup } from '../../src/db/collections/groups.ts';
 import { addToRoom, createRoom } from '../../src/db/collections/rooms.ts';
-import { readUpdatesSince } from '../../src/db/collections/updates.ts';
+import { appendUpdate, readUpdatesSince } from '../../src/db/collections/updates.ts';
 import {
   createWorkpiece,
   findWorkpieceWithFold,
@@ -23,7 +23,7 @@ import {
 import { collectionDefinitions } from '../../src/db/schemas.ts';
 import type { Right } from '../../src/model/right.ts';
 import { attachGateway, type Gateway } from '../../src/realtime/gateway.ts';
-import { createWorkpieceHub } from '../../src/realtime/hub.ts';
+import { createWorkpieceHub, type Connection } from '../../src/realtime/hub.ts';
 import { readStateAt } from '../../src/realtime/persistence.ts';
 import { createApi } from '../../src/routes/index.ts';
 import { createServer } from '../../src/routes/server.ts';
@@ -505,6 +505,74 @@ describe('merging', () => {
           merged.body.at,
       ),
     ).toBe(true);
+  });
+
+  it('loses nothing when the last one leaves just as a merge begins', async () => {
+    // Each moment right after the leaving goes on, as a merge may begin at any of them.
+    /* eslint-disable no-await-in-loop */
+    for (let ticks = 0; ticks < 20; ticks += 1) {
+      // Noting the name of whoever leaves is held back, so the test knows when it goes on.
+      let holdBack = false;
+      let goOn: (() => void) | undefined;
+      const hub = createWorkpieceHub({
+        db: storage.db,
+        logger: silent,
+        noteActor: () =>
+          holdBack
+            ? new Promise<void>((resolve) => {
+                goOn = resolve;
+              })
+            : Promise.resolve(),
+      });
+      const target = (await createWorkpiece(storage.db, { name: 'Gruppe', createdBy: 'alice' }))
+        ._id;
+      const source = (await createWorkpiece(storage.db, { name: 'Allein', createdBy: 'bob' }))._id;
+      const written = new Y.Doc();
+      written.getText('t').insert(0, 'allein');
+      await appendUpdate(storage.db, {
+        workpieceId: source,
+        bytes: Y.encodeStateAsUpdate(written),
+        clients: [written.clientID],
+        createdBy: 'bob',
+      });
+      const rows = await readUpdatesSince(storage.db, source);
+
+      const alice: Connection = {
+        actor: { actorId: 'alice' },
+        wantsEvents: false,
+        send: () => {},
+        close: () => {},
+      };
+      await hub.join(target, alice);
+      holdBack = true;
+      const leaving = hub.leave(target, alice);
+      expect(
+        await waitFor(
+          async () =>
+            goOn !== undefined &&
+            (await latestEvent(storage.db, {
+              anchor: { kind: 'workpiece', id: target },
+              kind: 'left',
+            })) !== null,
+        ),
+      ).toBe(true);
+
+      // Lets the leaving go on, and begins the merge so many ticks later.
+      goOn?.();
+      let later = Promise.resolve();
+      for (let tick = 0; tick < ticks; tick += 1) {
+        later = later.then(() => {});
+      }
+      const merged = await later.then(() =>
+        hub.merge(target, { from: source, rows, upTo: rows[0]!._id, createdBy: 'alice' }),
+      );
+      await leaving;
+
+      expect(merged.detail?.['count']).toBe(1);
+      expect(await readUpdatesSince(storage.db, target)).toHaveLength(1);
+      await hub.close();
+    }
+    /* eslint-enable no-await-in-loop */
   });
 
   it('unites two states without a shared past', async () => {

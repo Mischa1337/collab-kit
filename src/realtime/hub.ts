@@ -101,9 +101,16 @@ export interface WorkpieceHub {
   close(): Promise<void>;
 }
 
+/** How many merges run into a workpiece; held and loaded side share it, as its connections. */
+interface MergeCount {
+  running: number;
+}
+
 /** A workpiece the hub holds: its connections at once, the loaded workpiece once it is there. */
 interface Held {
   readonly connections: Set<Connection>;
+  /** Counted before loading is awaited, so nobody lets go of the Y.Doc under a merge. */
+  readonly merges: MergeCount;
   readonly loaded: Promise<Loaded>;
 }
 
@@ -117,7 +124,7 @@ interface Loaded {
   /** Whose pieces each Yjs client brought, filled only from the database, so both agree. */
   readonly authors: Map<number, string>;
   /** Merges running into it; while there are any, it stays loaded without anybody connected. */
-  merges: number;
+  readonly merges: MergeCount;
 }
 
 /** What a merge found while replaying, per author, to be told once it is done. */
@@ -164,7 +171,11 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
   const merging = new Set<Promise<unknown>>();
 
   /** Loads the workpiece and wires its Y.Doc and awareness to this hub. */
-  async function load(workpieceId: ObjectId, connections: Set<Connection>): Promise<Loaded> {
+  async function load(
+    workpieceId: ObjectId,
+    connections: Set<Connection>,
+    merges: MergeCount,
+  ): Promise<Loaded> {
     const { doc, stored, units } = await loadWorkpiece(options.db, workpieceId);
     const announcedBy = new Map<number, Connection>();
     // Where the tool keeps its units, so each conflict hangs on the unit it hit.
@@ -189,7 +200,7 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
       stored,
       announcedBy,
       authors: new Map(),
-      merges: 0,
+      merges,
     };
 
     // Before Yjs collects what was deleted, while each piece still knows where it sat.
@@ -443,7 +454,8 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
 
     // The promise is stored, not the result, so two at once do not each load their own copy.
     const connections = new Set<Connection>();
-    const held: Held = { connections, loaded: load(workpieceId, connections) };
+    const merges: MergeCount = { running: 0 };
+    const held: Held = { connections, merges, loaded: load(workpieceId, connections, merges) };
     heldByKey.set(key, held);
     return held;
   }
@@ -504,7 +516,7 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
     await tryFold(loaded);
 
     // Somebody may have joined meanwhile, or a merge runs into it, so it has to stay.
-    if (!force && (loaded.workpiece.connections.size > 0 || loaded.merges > 0)) {
+    if (!force && (loaded.workpiece.connections.size > 0 || loaded.merges.running > 0)) {
       return;
     }
 
@@ -537,26 +549,31 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
     const key = workpieceId.toHexString();
     const held = hold(workpieceId);
 
-    let loaded: Loaded;
+    // Counted before awaiting, as a joining connection is, so the last one leaving meanwhile
+    // does not free the Y.Doc under the merge.
+    held.merges.running += 1;
+    let loaded: Loaded | undefined;
     try {
-      loaded = await held.loaded;
-    } catch (error) {
-      // Loading failed: forget it, so the next one tries again.
-      if (heldByKey.get(key) === held) {
-        heldByKey.delete(key);
+      try {
+        loaded = await held.loaded;
+      } catch (error) {
+        // Loading failed: forget it, so the next one tries again.
+        if (heldByKey.get(key) === held) {
+          heldByKey.delete(key);
+        }
+        throw error;
       }
-      throw error;
-    }
 
-    // Counted, so the last one leaving meanwhile does not free the Y.Doc under the merge.
-    loaded.merges += 1;
-    try {
       const found = await replay(loaded, input.rows);
       return await recordMerge(loaded, input, found);
     } finally {
-      loaded.merges -= 1;
+      held.merges.running -= 1;
       // Nobody connected and no other merge running: let go, as the last one out would.
-      if (loaded.workpiece.connections.size === 0 && loaded.merges === 0) {
+      if (
+        loaded !== undefined &&
+        loaded.workpiece.connections.size === 0 &&
+        held.merges.running === 0
+      ) {
         await release(key, loaded);
       }
     }
