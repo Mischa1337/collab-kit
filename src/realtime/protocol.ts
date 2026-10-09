@@ -8,6 +8,9 @@ import * as Y from 'yjs';
 const MESSAGE_SYNC = 0;
 const MESSAGE_AWARENESS = 1;
 
+/** Sent by the service alone: an event as it happens, to connections that asked with ?events=1. */
+const MESSAGE_EVENT = 101;
+
 /** Key in transaction.meta for the sender's deletions, so what they had in front of them. */
 export const SENDER_DELETES = Symbol('sender deletes');
 
@@ -24,6 +27,14 @@ export function encodeSyncUpdate(update: Uint8Array): Uint8Array {
   const encoder = encoding.createEncoder();
   encoding.writeVarUint(encoder, MESSAGE_SYNC);
   syncProtocol.writeUpdate(encoder, update);
+  return encoding.toUint8Array(encoder);
+}
+
+/** An event as one message, written as JSON the way the routes give it. */
+export function encodeEvent(event: object): Uint8Array {
+  const encoder = encoding.createEncoder();
+  encoding.writeVarUint(encoder, MESSAGE_EVENT);
+  encoding.writeVarString(encoder, JSON.stringify(event));
   return encoding.toUint8Array(encoder);
 }
 

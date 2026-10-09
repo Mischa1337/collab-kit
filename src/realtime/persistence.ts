@@ -2,7 +2,12 @@ import type { Binary, Db, ObjectId } from 'mongodb';
 import * as Y from 'yjs';
 
 import { findWorkpieceWithFold, foldState } from '../db/collections/workpieces.ts';
-import { appendUpdate, readUpdatesSince, readUpdatesUntil } from '../db/collections/updates.ts';
+import {
+  appendUpdate,
+  readUpdatesDeleting,
+  readUpdatesSince,
+  readUpdatesUntil,
+} from '../db/collections/updates.ts';
 import { defined } from '../utils/optional.ts';
 
 /** How far a workpiece is stored, and the queue its writes run through. */
@@ -30,7 +35,7 @@ export async function loadWorkpiece(
   }
 
   // Starts from the folded state, if there is one.
-  const doc = new Y.Doc();
+  const doc = new Y.Doc({ gcFilter: keepsFrames });
   if (record.fold !== undefined) {
     applyStored(doc, record.fold.state, `the fold of workpiece ${workpieceId.toHexString()}`);
   }
@@ -79,6 +84,11 @@ export async function readStateAt(
   return { state, upToUpdateId: at };
 }
 
+/** Keeps a deleted map, text or array as a frame, so a later change in it still finds its place. */
+function keepsFrames(item: Y.Item): boolean {
+  return !(item.content instanceof Y.ContentType);
+}
+
 /** Applies stored bytes; what does not apply names itself, so the row can be found. */
 function applyStored(doc: Y.Doc, bytes: Binary, what: string): void {
   try {
@@ -112,6 +122,8 @@ export async function storeUpdate(
     bytes: update,
     // Which clients bring new pieces, so whose they are can be found later.
     clients: [...Y.parseUpdateMeta(update).from.keys()],
+    // Whose pieces it deleted, so who deleted one can be found later.
+    deletes: [...Y.decodeUpdate(update).ds.clients.keys()],
     createdBy,
   });
 
@@ -119,6 +131,21 @@ export async function storeUpdate(
   stored.lastUpdateId = record._id;
   stored.updatesSinceFoldAttempt += 1;
   return record._id;
+}
+
+/** Who deleted this piece: the author of the one stored change whose deletions hold it. */
+export async function deleterOf(
+  db: Db,
+  workpieceId: ObjectId,
+  id: { readonly client: number; readonly clock: number },
+): Promise<string | undefined> {
+  // Each piece is deleted by one stored change, so the first that holds it is the one.
+  for await (const row of readUpdatesDeleting(db, workpieceId, id.client)) {
+    if (Y.isDeleted(Y.decodeUpdate(new Uint8Array(row.bytes.buffer)).ds, id)) {
+      return row.createdBy;
+    }
+  }
+  return undefined;
 }
 
 /** Writes the state from memory as the new shortcut; runs in the queue or after it drained. */

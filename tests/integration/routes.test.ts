@@ -638,6 +638,7 @@ describe('traces and marks', () => {
     expect((await report('task-created')).status).toBe(400);
     expect((await report('work-removed')).status).toBe(400);
     expect((await report('work-replaced')).status).toBe(400);
+    expect((await report('work-lost')).status).toBe(400);
     expect((await report('visit')).status).toBe(201);
   });
 

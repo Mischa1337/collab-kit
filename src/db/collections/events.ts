@@ -102,6 +102,7 @@ export const SERVICE_KINDS: ReadonlySet<string> = new Set([
   'group-deleted',
   'work-removed',
   'work-replaced',
+  'work-lost',
 ]);
 
 export interface NewEvent {

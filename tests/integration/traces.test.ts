@@ -72,6 +72,7 @@ const open = (workpieceId: ObjectId, actor: string) =>
 /** A connection without a socket, to drive the hub directly. */
 const quiet = (actorId: string): Connection => ({
   actor: { actorId },
+  wantsEvents: false,
   send: () => {},
   close: () => {},
 });

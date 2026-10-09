@@ -50,6 +50,8 @@ interface Admitted {
   readonly actor: Actor;
   /** Fixed for the life of the connection; when it changes, recheck closes it with 4409. */
   readonly mayWrite: boolean;
+  /** Whether it asked with ?events=1 to hear of events as they happen. */
+  readonly wantsEvents: boolean;
 }
 
 /** Takes WebSocket connections; a refusal is a plain HTTP status, not a socket that dies. */
@@ -185,6 +187,7 @@ async function serveConnection(
   // What the hub knows of this socket: who is on it and how to reach them.
   const connection: Connection = {
     actor: admitted.actor,
+    wantsEvents: admitted.wantsEvents,
     send: (message) => {
       if (ws.readyState === ws.OPEN) {
         ws.send(message);
@@ -303,7 +306,8 @@ async function admit(
     return { status: 404, text: 'Not Found', reason: 'unknown path' };
   }
 
-  const workpieceId = asObjectId(path.slice(PATH_PREFIX.length).split('?')[0]);
+  const [key, query] = path.slice(PATH_PREFIX.length).split('?');
+  const workpieceId = asObjectId(key);
   if (workpieceId === undefined) {
     return { status: 400, text: 'Bad Request', reason: 'malformed workpiece key' };
   }
@@ -326,7 +330,9 @@ async function admit(
     return { status: 404, text: 'Not Found', reason: 'unknown or not allowed to open' };
   }
 
-  return { workpieceId, actor, mayWrite: access === 'write' };
+  // Only who asks hears of events: a plain y-websocket client would not know message 101.
+  const wantsEvents = new URLSearchParams(query).get('events') === '1';
+  return { workpieceId, actor, mayWrite: access === 'write', wantsEvents };
 }
 
 /** A catch for work nobody waits for: a failure is logged instead of ending the process. */

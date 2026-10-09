@@ -10,16 +10,37 @@ import { workpieceExists } from '../db/collections/workpieces.ts';
 import { recordEvent, type EventRecord } from '../db/collections/events.ts';
 import { creatorsOf, newestUpdateId } from '../db/collections/updates.ts';
 import { defined } from '../utils/optional.ts';
-import { enqueue, foldNow, loadWorkpiece, storeUpdate, type Stored } from './persistence.ts';
-import { encodeAwareness, encodeSyncUpdate, SENDER_DELETES } from './protocol.ts';
-import { removalEvents, removalsIn, type DeleteSet, type Removal } from './removals.ts';
+import {
+  deleterOf,
+  enqueue,
+  foldNow,
+  loadWorkpiece,
+  storeUpdate,
+  type Stored,
+} from './persistence.ts';
+import { encodeAwareness, encodeEvent, encodeSyncUpdate, SENDER_DELETES } from './protocol.ts';
+import {
+  deletionsIn,
+  idKey,
+  lossEvents,
+  removalEvents,
+  type DeleteSet,
+  type Deletions,
+  type Loss,
+  type Removal,
+} from './removals.ts';
 
-/** Key in transaction.meta for what the sender removed while it could still be read. */
-const REMOVALS = Symbol('removals');
+/** Key in transaction.meta for what the change deleted, read while it still could be. */
+const DELETIONS = Symbol('deletions');
+
+/** What a change without a sender deleted: nothing anybody needs to hear about. */
+const NO_DELETIONS: Deletions = { removals: [], losses: [] };
 
 /** What the hub needs from a connection, so it does not depend on the transport. */
 export interface Connection {
   readonly actor: Actor;
+  /** Whether it asked with ?events=1 to hear of events as they happen, as message 101. */
+  readonly wantsEvents: boolean;
   send(message: Uint8Array): void;
   /** Ends the connection; a client that comes back syncs again from the stored state. */
   close(code: number, reason: string): void;
@@ -127,7 +148,7 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
     doc.on('afterTransaction', (transaction: Y.Transaction) => {
       const known = transaction.meta.get(SENDER_DELETES) as DeleteSet | undefined;
       if (known !== undefined) {
-        transaction.meta.set(REMOVALS, removalsIn(transaction, known));
+        transaction.meta.set(DELETIONS, deletionsIn(transaction, known));
       }
     });
 
@@ -135,8 +156,9 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
     doc.on(
       'update',
       (update: Uint8Array, origin: unknown, _doc: Y.Doc, transaction: Y.Transaction) => {
-        const removals = (transaction.meta.get(REMOVALS) as Removal[] | undefined) ?? [];
-        onUpdate(loaded, update, origin, removals);
+        const deletions =
+          (transaction.meta.get(DELETIONS) as Deletions | undefined) ?? NO_DELETIONS;
+        onUpdate(loaded, update, origin, deletions);
       },
     );
 
@@ -180,6 +202,30 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
     ]);
   }
 
+  /** Whose pieces these clients brought; asked of the database once, remembered from then on. */
+  async function authorsOf(
+    loaded: Loaded,
+    clients: readonly number[],
+  ): Promise<ReadonlyMap<number, string>> {
+    const workpieceId = loaded.workpiece.workpieceId;
+    const missing = [...new Set(clients)].filter((client) => !loaded.authors.has(client));
+    if (missing.length > 0) {
+      for (const [client, author] of await creatorsOf(options.db, workpieceId, missing)) {
+        loaded.authors.set(client, author);
+      }
+    }
+
+    // Whose author no stored change names stays out of the events.
+    const unknown = missing.filter((client) => !loaded.authors.has(client));
+    if (unknown.length > 0) {
+      options.logger.warn(
+        { workpieceId: workpieceId.toHexString(), clients: unknown },
+        'deleted pieces whose author no stored change names, left out',
+      );
+    }
+    return loaded.authors;
+  }
+
   /** Tells whose work a change removed or replaced; a failure is only logged, like any trace. */
   async function traceRemovals(
     loaded: Loaded,
@@ -190,24 +236,11 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
     const workpieceId = loaded.workpiece.workpieceId;
 
     try {
-      // Asked of the database once per client, and remembered from then on.
-      const missing = [...new Set(removals.map((removal) => removal.client))].filter(
-        (client) => !loaded.authors.has(client),
+      const authors = await authorsOf(
+        loaded,
+        removals.map((removal) => removal.client),
       );
-      if (missing.length > 0) {
-        for (const [client, author] of await creatorsOf(options.db, workpieceId, missing)) {
-          loaded.authors.set(client, author);
-        }
-      }
-      const unknown = missing.filter((client) => !loaded.authors.has(client));
-      if (unknown.length > 0) {
-        options.logger.warn(
-          { workpieceId: workpieceId.toHexString(), clients: unknown },
-          'removed pieces whose author no stored change names, left out',
-        );
-      }
-
-      const events = removalEvents(removals, loaded.authors, {
+      const events = removalEvents(removals, authors, {
         createdBy,
         anchor: anchorOf(workpieceId),
         at,
@@ -221,12 +254,68 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
     }
   }
 
+  /** Tells who lost work to whom, at once to whoever asked; a failure is only logged. */
+  async function traceLosses(
+    loaded: Loaded,
+    losses: readonly Loss[],
+    sender: string,
+    at: ObjectId,
+  ): Promise<void> {
+    const workpieceId = loaded.workpiece.workpieceId;
+
+    try {
+      // Whose the lost pieces are, and whose the values that took their keys.
+      const authors = await authorsOf(
+        loaded,
+        losses.flatMap((loss) =>
+          loss.cause === 'overwritten' ? [loss.client, loss.other.client] : [loss.client],
+        ),
+      );
+
+      // Who deleted each place: the sender, if this change did, else whoever stored it.
+      const places = new Map(
+        losses
+          .filter((loss) => loss.cause === 'place-removed')
+          .map((loss) => [idKey(loss.other), loss]),
+      );
+      const deleters = new Map<string, string>();
+      await Promise.all(
+        [...places].map(async ([key, loss]) => {
+          const deleter = loss.removedNow
+            ? sender
+            : await deleterOf(options.db, workpieceId, loss.other);
+          if (deleter !== undefined) {
+            deleters.set(key, deleter);
+          }
+        }),
+      );
+
+      const events = lossEvents(losses, authors, deleters, {
+        anchor: anchorOf(workpieceId),
+        at,
+        sender,
+      });
+      await Promise.all(
+        events.map(async (event) => {
+          const record = await recordEvent(options.db, event);
+          // Only what is written goes out, so nobody hears of an event that is nowhere kept.
+          notify(loaded.workpiece, encodeEvent(record));
+        }),
+      );
+    } catch (error) {
+      options.logger.error(
+        { err: error, workpieceId: workpieceId.toHexString() },
+        'could not tell whose work was lost, the work carries on without it',
+      );
+    }
+  }
+
   /** Stores first, distributes second: nobody shall see a change that is nowhere kept. */
   function onUpdate(
     loaded: Loaded,
     update: Uint8Array,
     origin: unknown,
-    removals: readonly Removal[],
+    deletions: Deletions,
   ): void {
     const from = asConnection(origin);
 
@@ -254,8 +343,11 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
       broadcast(loaded.workpiece, encodeSyncUpdate(update), from);
 
       // Only once stored and passed on, so telling of it never holds up the work.
-      if (removals.length > 0) {
-        await traceRemovals(loaded, removals, from.actor.actorId, updateId);
+      if (deletions.removals.length > 0) {
+        await traceRemovals(loaded, deletions.removals, from.actor.actorId, updateId);
+      }
+      if (deletions.losses.length > 0) {
+        await traceLosses(loaded, deletions.losses, from.actor.actorId, updateId);
       }
 
       // Now and then, so the next load does not replay the whole history.
@@ -496,6 +588,15 @@ function broadcast(
 ): void {
   for (const connection of workpiece.connections) {
     if (connection !== from) {
+      connection.send(message);
+    }
+  }
+}
+
+/** Sends a message to every connection on the workpiece that asked for events. */
+function notify(workpiece: OpenWorkpiece, message: Uint8Array): void {
+  for (const connection of workpiece.connections) {
+    if (connection.wantsEvents) {
       connection.send(message);
     }
   }
