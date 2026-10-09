@@ -9,6 +9,7 @@ import { createTokenCheck } from '../../src/auth/token.ts';
 import { applyDefinitions } from '../../src/db/apply.ts';
 import { connect, type Storage } from '../../src/db/client.ts';
 import { createComment } from '../../src/db/collections/comments.ts';
+import { recordEvent } from '../../src/db/collections/events.ts';
 import { setGrant } from '../../src/db/collections/grants.ts';
 import { createGroup } from '../../src/db/collections/groups.ts';
 import { createRoom } from '../../src/db/collections/rooms.ts';
@@ -635,6 +636,8 @@ describe('traces and marks', () => {
     expect((await report('checkpoint')).status).toBe(400);
     expect((await report('comment-created')).status).toBe(400);
     expect((await report('task-created')).status).toBe(400);
+    expect((await report('work-removed')).status).toBe(400);
+    expect((await report('work-replaced')).status).toBe(400);
     expect((await report('visit')).status).toBe(201);
   });
 
@@ -673,6 +676,48 @@ describe('traces and marks', () => {
   });
 });
 
+describe('what concerns me', () => {
+  /** Notes that alice removed some of bob's work at this workpiece. */
+  const removedFromBob = async (workpieceId: string) =>
+    (
+      await recordEvent(storage.db, {
+        kind: 'work-removed',
+        createdBy: 'alice',
+        anchor: { kind: 'workpiece', id: new ObjectId(workpieceId) },
+        affects: ['bob'],
+      })
+    )._id.toHexString();
+  const mine = async (token: string, query: Record<string, string> = {}): Promise<string[]> =>
+    (await request(server).get('/me/events').query(query).set(as(token))).body.map(
+      (event: { _id: string }) => event._id,
+    );
+
+  it('shows bob what concerns him, carol nothing, and bob nothing he may no longer see', async () => {
+    const { groupId, workpieceId } = await setUp();
+    const removed = await removedFromBob(workpieceId);
+
+    expect(await mine(bob)).toContain(removed);
+    expect(await mine(tokenFor('carol'))).not.toContain(removed);
+
+    await request(server).delete(`/groups/${groupId}/members/bob`).set(as(alice));
+    expect(await mine(bob)).not.toContain(removed);
+  });
+
+  it('reads on past what bob may not see, so a page does not end early', async () => {
+    const { workpieceId } = await setUp();
+    const hidden = await untouched();
+    const first = await removedFromBob(workpieceId);
+    await removedFromBob(hidden.id);
+    await removedFromBob(hidden.id);
+    await removedFromBob(hidden.id);
+    const last = await removedFromBob(workpieceId);
+
+    expect(await mine(bob, { limit: '1' })).toEqual([last]);
+    expect(await mine(bob, { before: last, limit: '1' })).toEqual([first]);
+    expect(await mine(bob, { since: first, limit: '1' })).toEqual([last]);
+  });
+});
+
 describe('a value that was sent but cannot be used', () => {
   it('is refused instead of dropped unnoticed, in queries and in bodies', async () => {
     const { roomId, workpieceId } = await setUp();
@@ -687,6 +732,7 @@ describe('a value that was sent but cannot be used', () => {
     expect((await read(`/workpieces/${workpieceId}/updates`, { since: 'x' })).status).toBe(400);
     expect((await read('/events', { ...at, scope: 'wohle' })).status).toBe(400);
     expect((await read('/events', { ...at, limit: 'viele' })).status).toBe(400);
+    expect((await read('/me/events', { before: 'gestern' })).status).toBe(400);
     expect((await send('/events', { kind: 'note', anchor, reason: 42 })).status).toBe(400);
     expect((await send('/events', { kind: 'note', anchor, detail: 'frei' })).status).toBe(400);
     expect((await send(`/workpieces/${workpieceId}/checkpoints`, { reason: 42 })).status).toBe(400);
@@ -816,7 +862,12 @@ describe('the history of a workpiece', () => {
     const { workpieceId } = await setUp();
     const id = new ObjectId(workpieceId);
     const change = (size: number) =>
-      appendUpdate(storage.db, { workpieceId: id, bytes: new Uint8Array(size), createdBy: 'bob' });
+      appendUpdate(storage.db, {
+        workpieceId: id,
+        bytes: new Uint8Array(size),
+        clients: [],
+        createdBy: 'bob',
+      });
     await change(3);
     const second = await change(5);
     await change(7);
@@ -848,6 +899,7 @@ describe('the history of a workpiece', () => {
       const stored = await appendUpdate(storage.db, {
         workpieceId: new ObjectId(workpieceId),
         bytes,
+        clients: [],
         createdBy: 'bob',
       });
       ids.push(stored._id);

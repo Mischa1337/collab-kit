@@ -125,11 +125,13 @@ describe('the stream of updates', () => {
     const first = await appendUpdate(storage.db, {
       workpieceId,
       bytes: new Uint8Array([1]),
+      clients: [],
       createdBy: 'alice',
     });
     await appendUpdate(storage.db, {
       workpieceId,
       bytes: new Uint8Array([2]),
+      clients: [],
       createdBy: 'bob',
     });
 
@@ -147,6 +149,7 @@ describe('the stream of updates', () => {
     await appendUpdate(storage.db, {
       workpieceId: other,
       bytes: new Uint8Array([1]),
+      clients: [],
       createdBy: 'alice',
     });
 
@@ -160,6 +163,7 @@ describe('loading', () => {
     const broken = await appendUpdate(storage.db, {
       workpieceId,
       bytes: new Uint8Array([1, 2, 3]),
+      clients: [],
       createdBy: 'alice',
     });
 
@@ -278,6 +282,7 @@ describe('folding', () => {
     await appendUpdate(storage.db, {
       workpieceId,
       bytes: Y.encodeStateAsUpdate(writtenBy('geschlossen')),
+      clients: [],
       createdBy: 'carol',
     });
     const { doc, stored } = await loadWorkpiece(storage.db, workpieceId);
@@ -300,6 +305,7 @@ describe('folding', () => {
     await appendUpdate(storage.db, {
       workpieceId,
       bytes: Y.encodeStateAsUpdate(writtenBy('etwas')),
+      clients: [],
       createdBy: 'alice',
     });
 
@@ -313,6 +319,7 @@ describe('folding', () => {
     await appendUpdate(storage.db, {
       workpieceId,
       bytes: Y.encodeStateAsUpdate(writtenBy('vorher')),
+      clients: [],
       createdBy: 'alice',
     });
     const { doc, stored } = await loadWorkpiece(storage.db, workpieceId);
@@ -333,6 +340,7 @@ describe('folding', () => {
     await appendUpdate(storage.db, {
       workpieceId,
       bytes: Y.encodeStateAsUpdate(writtenBy('eins')),
+      clients: [],
       createdBy: 'alice',
     });
 

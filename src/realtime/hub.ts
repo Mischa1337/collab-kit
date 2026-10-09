@@ -8,10 +8,14 @@ import type { Anchor } from '../model/anchor.ts';
 import { touchActor } from '../db/collections/actors.ts';
 import { workpieceExists } from '../db/collections/workpieces.ts';
 import { recordEvent, type EventRecord } from '../db/collections/events.ts';
-import { newestUpdateId } from '../db/collections/updates.ts';
+import { creatorsOf, newestUpdateId } from '../db/collections/updates.ts';
 import { defined } from '../utils/optional.ts';
 import { enqueue, foldNow, loadWorkpiece, storeUpdate, type Stored } from './persistence.ts';
-import { encodeAwareness, encodeSyncUpdate } from './protocol.ts';
+import { encodeAwareness, encodeSyncUpdate, SENDER_DELETES } from './protocol.ts';
+import { removalEvents, removalsIn, type DeleteSet, type Removal } from './removals.ts';
+
+/** Key in transaction.meta for what the sender removed while it could still be read. */
+const REMOVALS = Symbol('removals');
 
 /** What the hub needs from a connection, so it does not depend on the transport. */
 export interface Connection {
@@ -65,6 +69,8 @@ interface Loaded {
   readonly stored: Stored;
   /** Which connection speaks for each awareness client; its entry goes when that one leaves. */
   readonly announcedBy: Map<number, Connection>;
+  /** Whose pieces each Yjs client brought, filled only from the database, so both agree. */
+  readonly authors: Map<number, string>;
 }
 
 /** What an awareness update reports: the client ids added, updated and removed. */
@@ -114,12 +120,25 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
       },
       stored,
       announcedBy,
+      authors: new Map(),
     };
 
-    // Attached only now: replaying the stored history must not store it a second time.
-    doc.on('update', (update: Uint8Array, origin: unknown) => {
-      onUpdate(loaded, update, origin);
+    // Before Yjs collects what was deleted, while each piece still knows where it sat.
+    doc.on('afterTransaction', (transaction: Y.Transaction) => {
+      const known = transaction.meta.get(SENDER_DELETES) as DeleteSet | undefined;
+      if (known !== undefined) {
+        transaction.meta.set(REMOVALS, removalsIn(transaction, known));
+      }
     });
+
+    // Attached only now: replaying the stored history must not store it a second time.
+    doc.on(
+      'update',
+      (update: Uint8Array, origin: unknown, _doc: Y.Doc, transaction: Y.Transaction) => {
+        const removals = (transaction.meta.get(REMOVALS) as Removal[] | undefined) ?? [];
+        onUpdate(loaded, update, origin, removals);
+      },
+    );
 
     // Awareness is passed on like an update, but never stored.
     loaded.workpiece.awareness.on('update', (change: AwarenessChange, origin: unknown) => {
@@ -161,8 +180,54 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
     ]);
   }
 
+  /** Tells whose work a change removed or replaced; a failure is only logged, like any trace. */
+  async function traceRemovals(
+    loaded: Loaded,
+    removals: readonly Removal[],
+    createdBy: string,
+    at: ObjectId,
+  ): Promise<void> {
+    const workpieceId = loaded.workpiece.workpieceId;
+
+    try {
+      // Asked of the database once per client, and remembered from then on.
+      const missing = [...new Set(removals.map((removal) => removal.client))].filter(
+        (client) => !loaded.authors.has(client),
+      );
+      if (missing.length > 0) {
+        for (const [client, author] of await creatorsOf(options.db, workpieceId, missing)) {
+          loaded.authors.set(client, author);
+        }
+      }
+      const unknown = missing.filter((client) => !loaded.authors.has(client));
+      if (unknown.length > 0) {
+        options.logger.warn(
+          { workpieceId: workpieceId.toHexString(), clients: unknown },
+          'removed pieces whose author no stored change names, left out',
+        );
+      }
+
+      const events = removalEvents(removals, loaded.authors, {
+        createdBy,
+        anchor: anchorOf(workpieceId),
+        at,
+      });
+      await Promise.all(events.map((event) => recordEvent(options.db, event)));
+    } catch (error) {
+      options.logger.error(
+        { err: error, workpieceId: workpieceId.toHexString() },
+        'could not tell whose work was removed, the work carries on without it',
+      );
+    }
+  }
+
   /** Stores first, distributes second: nobody shall see a change that is nowhere kept. */
-  function onUpdate(loaded: Loaded, update: Uint8Array, origin: unknown): void {
+  function onUpdate(
+    loaded: Loaded,
+    update: Uint8Array,
+    origin: unknown,
+    removals: readonly Removal[],
+  ): void {
     const from = asConnection(origin);
 
     // In the queue, so changes are stored in the order they arrived.
@@ -175,8 +240,9 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
         throw new Error('a change arrived without a connection to attribute it to');
       }
 
+      let updateId: ObjectId;
       try {
-        await storeUpdate(options.db, loaded.stored, update, from.actor.actorId);
+        updateId = await storeUpdate(options.db, loaded.stored, update, from.actor.actorId);
       } catch (error) {
         options.logger.error(
           { err: error, workpieceId: loaded.workpiece.workpieceId.toHexString() },
@@ -186,6 +252,11 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
         return;
       }
       broadcast(loaded.workpiece, encodeSyncUpdate(update), from);
+
+      // Only once stored and passed on, so telling of it never holds up the work.
+      if (removals.length > 0) {
+        await traceRemovals(loaded, removals, from.actor.actorId, updateId);
+      }
 
       // Now and then, so the next load does not replay the whole history.
       if (loaded.stored.updatesSinceFoldAttempt >= foldEvery) {

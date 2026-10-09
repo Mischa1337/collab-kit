@@ -8,6 +8,9 @@ import * as Y from 'yjs';
 const MESSAGE_SYNC = 0;
 const MESSAGE_AWARENESS = 1;
 
+/** Key in transaction.meta for the sender's deletions, so what they had in front of them. */
+export const SENDER_DELETES = Symbol('sender deletes');
+
 /** "This is what I have." Carries a state vector, no content. */
 export function encodeSyncStep1(doc: Y.Doc): Uint8Array {
   const encoder = encoding.createEncoder();
@@ -69,21 +72,8 @@ export function handleMessage(context: MessageContext, data: Uint8Array): Uint8A
   const decoder = decoding.createDecoder(data);
   const kind = decoding.readVarUint(decoder);
 
-  if (kind === MESSAGE_SYNC && !context.mayWrite) {
-    return answerReader(context.doc, decoder);
-  }
-
   if (kind === MESSAGE_SYNC) {
-    // The answer is built as a sync message: step 1 gets step 2 back, the rest gets nothing.
-    const encoder = encoding.createEncoder();
-    encoding.writeVarUint(encoder, MESSAGE_SYNC);
-    // y-protocols would only print a broken update; thrown, it is handled like any other.
-    syncProtocol.readSyncMessage(decoder, encoder, context.doc, context.origin, (error) => {
-      throw error;
-    });
-
-    // Length one means the kind byte alone, so there is nothing to answer.
-    return encoding.length(encoder) > 1 ? encoding.toUint8Array(encoder) : undefined;
+    return answerSync(context, decoder);
   }
 
   // Awareness is only applied here; passing it on is up to the hub.
@@ -103,25 +93,42 @@ export function handleMessage(context: MessageContext, data: Uint8Array): Uint8A
   return undefined;
 }
 
-/** A reader gets its answers, but whatever it sends must bring nothing the workpiece lacks. */
-function answerReader(doc: Y.Doc, decoder: decoding.Decoder): Uint8Array | undefined {
+/** Answers what a client misses, and applies what it sends if it may write. */
+function answerSync(context: MessageContext, decoder: decoding.Decoder): Uint8Array | undefined {
   const step = decoding.readVarUint(decoder);
 
-  // Asking what it misses is reading, so it gets the same answer as everyone.
+  // Asking what it misses is reading, so everyone gets the same answer.
   if (step === syncProtocol.messageYjsSyncStep1) {
     const encoder = encoding.createEncoder();
     encoding.writeVarUint(encoder, MESSAGE_SYNC);
-    syncProtocol.readSyncStep1(decoder, encoder, doc);
+    syncProtocol.readSyncStep1(decoder, encoder, context.doc);
     return encoding.toUint8Array(encoder);
   }
   if (step !== syncProtocol.messageYjsSyncStep2 && step !== syncProtocol.messageYjsUpdate) {
     throw new Error(`unknown sync message ${step}`);
   }
+  const update = decoding.readVarUint8Array(decoder);
 
   // Every client answers the greeting with what it holds; a reader may only repeat the workpiece.
-  if (!bringsNothingNew(doc, decoding.readVarUint8Array(decoder))) {
-    throw new MessageRefused(1008, 'read only');
+  if (!context.mayWrite) {
+    if (!bringsNothingNew(context.doc, update)) {
+      throw new MessageRefused(1008, 'read only');
+    }
+    return undefined;
   }
+
+  // Read before applying, so the hub can tell what the sender had in front of them.
+  const { ds } = Y.decodeUpdate(update);
+  Y.transact(
+    context.doc,
+    (transaction) => {
+      transaction.meta.set(SENDER_DELETES, ds);
+      // Joins the transaction around it, which is where the hub finds the deletions.
+      Y.applyUpdate(context.doc, update, context.origin);
+    },
+    context.origin,
+    false,
+  );
   return undefined;
 }
 

@@ -8,7 +8,10 @@ import {
   readEventsSince,
   recordEvent,
   SERVICE_KINDS,
+  type EventQuery,
+  type EventRecord,
 } from '../db/collections/events.ts';
+import type { Actor } from '../model/actor.ts';
 import {
   ANCHOR_QUERY_RULE,
   ANCHOR_RULE,
@@ -57,6 +60,27 @@ export function eventRoutes(db: Db): Router {
     );
   });
 
+  /** What concerns this token, such as its work somebody removed, wherever it may still see. */
+  routes.get('/me/events', async (request, response) => {
+    const since = asObjectId(request.query['since']);
+    const before = asObjectId(request.query['before']);
+    const kind = asText(request.query['kind']);
+    const limit = asCount(request.query['limit']);
+
+    const unusable = unusableField(request.query, { since, before, kind, limit });
+    if (unusable !== undefined) {
+      return fail(response, 400, `${unusable} is unusable`);
+    }
+
+    const actor = actorOf(request);
+    response.json(
+      await readVisible(db, actor, {
+        affects: actor.actorId,
+        ...defined({ since, before, kind, limit }),
+      }),
+    );
+  });
+
   /** What the tool reports itself, a visit or a reading mark; the kind is free. */
   routes.post('/events', async (request, response) => {
     const body = bodyOf(request);
@@ -100,4 +124,40 @@ export function eventRoutes(db: Db): Router {
   });
 
   return routes;
+}
+
+/** Reads on until the page is full, so events at places no longer seen never end it early. */
+async function readVisible(db: Db, actor: Actor, query: EventQuery): Promise<EventRecord[]> {
+  // With a cut a stream, read forwards; without one a history, read backwards.
+  const forwards = query.since !== undefined;
+  // Asked once per anchor, however many events hang on it.
+  const seen = new Map<string, Promise<boolean>>();
+  const visible: EventRecord[] = [];
+  let next = query;
+
+  /* eslint-disable no-await-in-loop */
+  for (;;) {
+    const page = forwards ? await readEventsSince(db, next) : await readEvents(db, next);
+
+    for (const event of page) {
+      const key = `${event.anchor.kind} ${event.anchor.id.toHexString()}`;
+      if (!seen.has(key)) {
+        seen.set(key, maySee(db, actor, event.anchor));
+      }
+      if (await seen.get(key)) {
+        visible.push(event);
+      }
+      if (visible.length === query.limit) {
+        return visible;
+      }
+    }
+
+    // Without a limit everything was read, and a short page means nothing is left.
+    const last = page.at(-1);
+    if (query.limit === undefined || page.length < query.limit || last === undefined) {
+      return visible;
+    }
+    next = forwards ? { ...next, since: last._id } : { ...next, before: last._id };
+  }
+  /* eslint-enable no-await-in-loop */
 }

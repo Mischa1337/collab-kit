@@ -100,22 +100,25 @@ export function enqueue<T>(stored: Pick<Stored, 'queue'>, work: () => T | Promis
   return run;
 }
 
-/** Keeps one change and counts it towards the next folding. Runs inside the queue. */
+/** Keeps one change, counts it towards the next folding and gives its id. Runs inside the queue. */
 export async function storeUpdate(
   db: Db,
   stored: Stored,
   update: Uint8Array,
   createdBy: string,
-): Promise<void> {
+): Promise<ObjectId> {
   const record = await appendUpdate(db, {
     workpieceId: stored.workpieceId,
     bytes: update,
+    // Which clients bring new pieces, so whose they are can be found later.
+    clients: [...Y.parseUpdateMeta(update).from.keys()],
     createdBy,
   });
 
   // The newest stored change is the cut for the next fold.
   stored.lastUpdateId = record._id;
   stored.updatesSinceFoldAttempt += 1;
+  return record._id;
 }
 
 /** Writes the state from memory as the new shortcut; runs in the queue or after it drained. */

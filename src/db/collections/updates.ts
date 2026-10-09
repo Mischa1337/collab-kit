@@ -7,6 +7,8 @@ export interface UpdateRecord {
   _id: ObjectId;
   workpieceId: ObjectId;
   bytes: Binary;
+  /** The Yjs clients with new pieces in it; the first change with one names whose they are. */
+  clients: number[];
   createdBy: string;
   createdAt: Date;
 }
@@ -15,20 +17,30 @@ export const updatesDefinition: CollectionDefinition = {
   name: 'updates',
   schema: {
     bsonType: 'object',
-    required: ['workpieceId', 'bytes', 'createdBy', 'createdAt'],
+    required: ['workpieceId', 'bytes', 'clients', 'createdBy', 'createdAt'],
     properties: {
       workpieceId: { bsonType: 'objectId' },
       bytes: { bsonType: 'binData', description: 'the Yjs update, opaque to the service' },
+      clients: {
+        bsonType: 'array',
+        // Yjs client ids reach 2^32, beyond what an int holds.
+        items: { bsonType: 'number' },
+        description: 'Yjs clients with new pieces in this change',
+      },
       createdBy: { bsonType: 'string', description: 'D6.19, author on every single change' },
       createdAt: { bsonType: 'date' },
     },
   },
-  indexes: [{ key: { workpieceId: 1, _id: 1 }, name: 'workpiece_stream' }],
+  indexes: [
+    { key: { workpieceId: 1, _id: 1 }, name: 'workpiece_stream' },
+    { key: { workpieceId: 1, clients: 1, _id: 1 }, name: 'workpiece_clients' },
+  ],
 };
 
 export interface NewUpdate {
   readonly workpieceId: ObjectId;
   readonly bytes: Uint8Array;
+  readonly clients: readonly number[];
   readonly createdBy: string;
 }
 
@@ -41,6 +53,7 @@ export async function appendUpdate(
     _id: new ObjectId(),
     workpieceId: input.workpieceId,
     bytes: new Binary(input.bytes),
+    clients: [...input.clients],
     createdBy: input.createdBy,
     createdAt: now,
   };
@@ -86,6 +99,31 @@ export async function isUpdateOf(
     .findOne({ _id: updateId, workpieceId }, { projection: { _id: 1 } });
 
   return found !== null;
+}
+
+/** Whose pieces of these Yjs clients are: the author of the first change that brought one. */
+export async function creatorsOf(
+  db: Db,
+  workpieceId: ObjectId,
+  clientIds: readonly number[],
+): Promise<Map<number, string>> {
+  // One lookup per client, each answered by the index alone.
+  const found = await Promise.all(
+    clientIds.map(async (client) => {
+      const first = await db
+        .collection<UpdateRecord>('updates')
+        .findOne(
+          { workpieceId, clients: client },
+          { sort: { _id: 1 }, projection: { createdBy: 1 } },
+        );
+      return [client, first?.createdBy] as const;
+    }),
+  );
+
+  // A client no change brought stays out, so the caller sees whose author is unknown.
+  return new Map(
+    found.filter((entry): entry is readonly [number, string] => entry[1] !== undefined),
+  );
 }
 
 /** One change as the service tells of it: who, when and how many bytes, never the bytes. */

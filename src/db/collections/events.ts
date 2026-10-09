@@ -26,6 +26,8 @@ export interface EventRecord {
   about?: About;
   /** A place in the update stream, for a reading mark or a checkpoint. */
   at?: ObjectId;
+  /** Whom it concerns besides whoever did it, so they find it at /me/events. */
+  affects?: string[];
   /** Only set when a person named this moment. */
   label?: string;
   /** The why, D6.6, the one thing no protocol can derive. */
@@ -57,6 +59,11 @@ export const eventsDefinition: CollectionDefinition = {
         },
       },
       at: { bsonType: 'objectId', description: 'a place in the update stream' },
+      affects: {
+        bsonType: 'array',
+        items: { bsonType: 'string' },
+        description: 'whom it concerns besides whoever did it',
+      },
       label: { bsonType: 'string', description: 'only when a person named this moment' },
       reason: { bsonType: 'string', description: 'the why, D6.6, can only come from a person' },
       detail: { bsonType: 'object', description: 'free, the service never reads it' },
@@ -66,6 +73,7 @@ export const eventsDefinition: CollectionDefinition = {
   indexes: [
     { key: { 'anchor.id': 1, kind: 1, _id: -1 }, name: 'anchor_id_kind' },
     { key: { 'about.id': 1, kind: 1, _id: -1 }, name: 'about_id_kind' },
+    { key: { affects: 1, _id: -1 }, name: 'affects' },
   ],
 };
 
@@ -92,6 +100,8 @@ export const SERVICE_KINDS: ReadonlySet<string> = new Set([
   'room-deleted',
   'group-renamed',
   'group-deleted',
+  'work-removed',
+  'work-replaced',
 ]);
 
 export interface NewEvent {
@@ -100,6 +110,7 @@ export interface NewEvent {
   readonly anchor: Anchor;
   readonly about?: About;
   readonly at?: ObjectId;
+  readonly affects?: readonly string[];
   readonly label?: string;
   readonly reason?: string;
   readonly detail?: Document;
@@ -129,6 +140,7 @@ function recordOf(input: NewEvent, now: Date): EventRecord {
     ...defined({
       about: input.about,
       at: input.at,
+      affects: input.affects === undefined ? undefined : [...input.affects],
       label: input.label,
       reason: input.reason,
       detail: input.detail,
@@ -141,6 +153,8 @@ export interface EventQuery {
   /** Anchored at or about any of these things; how a room asks about what it bundles. */
   readonly references?: readonly [Reference, ...Reference[]];
   readonly createdBy?: string;
+  /** Only what concerns this actor, the way /me/events asks. */
+  readonly affects?: string;
   readonly kind?: string;
   /** Only what happened after this event, the cut for polling. */
   readonly since?: ObjectId;
@@ -163,7 +177,7 @@ function filterOf(query: EventQuery): Filter<EventRecord> {
             { 'about.kind': reference.kind, 'about.id': reference.id },
           ]),
         }),
-    ...defined({ createdBy: query.createdBy, kind: query.kind }),
+    ...defined({ createdBy: query.createdBy, affects: query.affects, kind: query.kind }),
     ...(Object.keys(window).length === 0 ? {} : { _id: window }),
   } as Filter<EventRecord>;
 }
