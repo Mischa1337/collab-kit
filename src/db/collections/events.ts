@@ -103,7 +103,12 @@ export const SERVICE_KINDS: ReadonlySet<string> = new Set([
   'work-removed',
   'work-replaced',
   'work-lost',
+  'workpiece-forked',
+  'workpiece-merged',
 ]);
+
+/** What a merge found, written under authors who were not there: no sign of their activity. */
+const FOUND_BY_MERGE = ['work-removed', 'work-replaced'];
 
 export interface NewEvent {
   readonly kind: string;
@@ -214,13 +219,36 @@ export async function latestPerActor(
     .collection<EventRecord>('events')
     .aggregate<Activity>([
       // work-lost names the other side, who need not have been there when it was written.
-      { $match: { ...filterOf({ references }), kind: { $ne: 'work-lost' } } },
+      {
+        $match: {
+          ...filterOf({ references }),
+          kind: { $ne: 'work-lost' },
+          $nor: [{ kind: { $in: FOUND_BY_MERGE }, 'detail.merge': { $exists: true } }],
+        },
+      },
       { $sort: { _id: -1 } },
       { $group: { _id: '$createdBy', at: { $first: '$createdAt' }, kind: { $first: '$kind' } } },
       { $sort: { at: -1, _id: 1 } },
       { $project: { _id: 0, actorId: '$_id', at: 1, kind: 1 } },
     ])
     .toArray();
+}
+
+/** The newest merge from one workpiece into another; its upTo is where the next one starts. */
+export async function latestMerge(
+  db: Db,
+  target: ObjectId,
+  from: ObjectId,
+): Promise<EventRecord | null> {
+  return db.collection<EventRecord>('events').findOne(
+    {
+      'anchor.kind': 'workpiece',
+      'anchor.id': target,
+      kind: 'workpiece-merged',
+      'detail.from': from,
+    },
+    { sort: { _id: -1 } },
+  );
 }
 
 /** Only the newest; a reading mark is no stored field but the last event of kind read. */

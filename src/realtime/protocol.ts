@@ -128,19 +128,24 @@ function answerSync(context: MessageContext, decoder: decoding.Decoder): Uint8Ar
     return undefined;
   }
 
+  applyAsSent(context.doc, update, context.origin);
+  return undefined;
+}
+
+/** Applies a change, its deletions as what the sender had in front of them, live or replayed. */
+export function applyAsSent(doc: Y.Doc, update: Uint8Array, origin: unknown): void {
   // Read before applying, so the hub can tell what the sender had in front of them.
   const { ds } = Y.decodeUpdate(update);
   Y.transact(
-    context.doc,
+    doc,
     (transaction) => {
       transaction.meta.set(SENDER_DELETES, ds);
       // Joins the transaction around it, which is where the hub finds the deletions.
-      Y.applyUpdate(context.doc, update, context.origin);
+      Y.applyUpdate(doc, update, origin);
     },
-    context.origin,
+    origin,
     false,
   );
-  return undefined;
 }
 
 /** Whether every item of the update is known and every deletion done, so it would change nothing. */

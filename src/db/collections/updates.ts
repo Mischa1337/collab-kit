@@ -74,6 +74,20 @@ export async function appendUpdate(
   return record;
 }
 
+/** Copies changes to another workpiece in their order, each under its author and time as before. */
+export async function copyUpdates(
+  db: Db,
+  rows: readonly UpdateRecord[],
+  workpieceId: ObjectId,
+): Promise<UpdateRecord[]> {
+  // New ids, made one after another, keep the order; everything else stays as it was.
+  const copies = rows.map((row) => ({ ...row, _id: new ObjectId(), workpieceId }));
+  if (copies.length > 0) {
+    await db.collection<UpdateRecord>('updates').insertMany(copies);
+  }
+  return copies;
+}
+
 /** Changes after the given one (all without it), oldest first; _id keeps order with one writer. */
 export async function readUpdatesSince(
   db: Db,
