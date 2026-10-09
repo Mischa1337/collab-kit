@@ -2,6 +2,7 @@ import { Router } from 'express';
 import type { Db } from 'mongodb';
 
 import { mayChangeComment, mayCreateAt, maySee, maySetCommentState } from '../auth/access.ts';
+import { aboutOf } from '../db/about.ts';
 import {
   createComment,
   deleteComment,
@@ -87,13 +88,15 @@ export function commentRoutes(db: Db, decisions: readonly string[]): Router {
       return fail(response, 403, 'not allowed to decide here');
     }
 
+    // Looked up here and never read from the body, so no comment lands in another room's stream.
+    const about = await aboutOf(db, anchor);
     response.status(201).json(
       await createComment(db, {
         kind,
         anchor,
         createdBy: actor.actorId,
         body: content,
-        ...defined({ parentId, state }),
+        ...defined({ parentId, state, about }),
       }),
     );
   });
@@ -161,11 +164,12 @@ export function commentRoutes(db: Db, decisions: readonly string[]): Router {
     }
 
     // The words first, so a state moved in the same request answers with the new words.
+    const about = await aboutOf(db, comment.anchor);
     if (content !== undefined) {
       await setCommentBody(db, id, {
         body: content,
         changedBy: actor.actorId,
-        ...defined({ reason }),
+        ...defined({ reason, about }),
       });
     }
     response.json(
@@ -174,7 +178,7 @@ export function commentRoutes(db: Db, decisions: readonly string[]): Router {
         : await setCommentState(db, id, {
             state,
             changedBy: actor.actorId,
-            ...defined({ reason }),
+            ...defined({ reason, about }),
           }),
     );
   });
@@ -196,7 +200,8 @@ export function commentRoutes(db: Db, decisions: readonly string[]): Router {
     }
 
     // Deleting twice is no mistake, it only leaves no second trace.
-    await deleteComment(db, id, { deletedBy: actor.actorId, ...defined({ reason }) });
+    const about = await aboutOf(db, comment.anchor);
+    await deleteComment(db, id, { deletedBy: actor.actorId, ...defined({ reason, about }) });
     response.json(await findComment(db, id));
   });
 

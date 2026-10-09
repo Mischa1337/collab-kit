@@ -10,12 +10,20 @@ import {
 import { defined } from '../../utils/optional.ts';
 import type { CollectionDefinition } from '../apply.ts';
 
+/** Where a chain of comments and tasks ends: the thing it is all about. */
+export interface About {
+  kind: 'room' | 'workpiece' | 'group';
+  id: ObjectId;
+}
+
 /** That something happened, by whom, where and when; append only, never changed afterwards. */
 export interface EventRecord {
   _id: ObjectId;
   kind: string;
   createdBy: string;
   anchor: Anchor;
+  /** Only at a comment or task: what it hangs on in the end, so a room finds it. */
+  about?: About;
   /** A place in the update stream, for a reading mark or a checkpoint. */
   at?: ObjectId;
   /** Only set when a person named this moment. */
@@ -39,6 +47,15 @@ export const eventsDefinition: CollectionDefinition = {
       },
       createdBy: { bsonType: 'string' },
       anchor: anchorSchema,
+      about: {
+        bsonType: 'object',
+        required: ['kind', 'id'],
+        description: 'only at a comment or task: what it hangs on in the end',
+        properties: {
+          kind: { enum: ['room', 'workpiece', 'group'] },
+          id: { bsonType: 'objectId' },
+        },
+      },
       at: { bsonType: 'objectId', description: 'a place in the update stream' },
       label: { bsonType: 'string', description: 'only when a person named this moment' },
       reason: { bsonType: 'string', description: 'the why, D6.6, can only come from a person' },
@@ -46,7 +63,10 @@ export const eventsDefinition: CollectionDefinition = {
       createdAt: { bsonType: 'date' },
     },
   },
-  indexes: [{ key: { 'anchor.id': 1, kind: 1, _id: -1 }, name: 'anchor_id_kind' }],
+  indexes: [
+    { key: { 'anchor.id': 1, kind: 1, _id: -1 }, name: 'anchor_id_kind' },
+    { key: { 'about.id': 1, kind: 1, _id: -1 }, name: 'about_id_kind' },
+  ],
 };
 
 /** Kinds only the service writes, each the proof of a change it made; add every new one here. */
@@ -62,6 +82,8 @@ export const SERVICE_KINDS: ReadonlySet<string> = new Set([
   'assignee-added',
   'assignee-removed',
   'comment-state',
+  'comment-created',
+  'task-created',
   'grant-set',
   'grant-removed',
   'comment-edited',
@@ -76,6 +98,7 @@ export interface NewEvent {
   readonly kind: string;
   readonly createdBy: string;
   readonly anchor: Anchor;
+  readonly about?: About;
   readonly at?: ObjectId;
   readonly label?: string;
   readonly reason?: string;
@@ -103,13 +126,19 @@ function recordOf(input: NewEvent, now: Date): EventRecord {
     createdBy: input.createdBy,
     anchor: input.anchor,
     createdAt: now,
-    ...defined({ at: input.at, label: input.label, reason: input.reason, detail: input.detail }),
+    ...defined({
+      about: input.about,
+      at: input.at,
+      label: input.label,
+      reason: input.reason,
+      detail: input.detail,
+    }),
   };
 }
 
 export interface EventQuery {
   readonly anchor?: AnchorQuery;
-  /** Anchors on any of these things, by kind and id; how a room asks about what it bundles. */
+  /** Anchored at or about any of these things; how a room asks about what it bundles. */
   readonly references?: readonly [Reference, ...Reference[]];
   readonly createdBy?: string;
   readonly kind?: string;
@@ -128,7 +157,12 @@ function filterOf(query: EventQuery): Filter<EventRecord> {
     ...(query.anchor === undefined ? {} : anchoredAt(query.anchor)),
     ...(query.references === undefined
       ? {}
-      : { $or: query.references.map((reference) => anchoredAt(reference)) }),
+      : {
+          $or: query.references.flatMap((reference) => [
+            anchoredAt(reference),
+            { 'about.kind': reference.kind, 'about.id': reference.id },
+          ]),
+        }),
     ...defined({ createdBy: query.createdBy, kind: query.kind }),
     ...(Object.keys(window).length === 0 ? {} : { _id: window }),
   } as Filter<EventRecord>;

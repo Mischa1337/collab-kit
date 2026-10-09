@@ -2,6 +2,7 @@ import { Router } from 'express';
 import type { Db } from 'mongodb';
 
 import { maySee } from '../auth/access.ts';
+import { aboutOf } from '../db/about.ts';
 import {
   readEvents,
   readEventsSince,
@@ -85,12 +86,15 @@ export function eventRoutes(db: Db): Router {
       return fail(response, 404, 'unknown anchor');
     }
 
+    // Only the service says what a comment or task is about, so no report lands in another room.
+    const about =
+      anchor.kind === 'comment' || anchor.kind === 'task' ? await aboutOf(db, anchor) : undefined;
     response.status(201).json(
       await recordEvent(db, {
         kind,
         createdBy: actor.actorId,
         anchor,
-        ...defined({ at, label, reason, detail }),
+        ...defined({ about, at, label, reason, detail }),
       }),
     );
   });

@@ -3,7 +3,7 @@ import { ObjectId, type Db, type Document, type Filter } from 'mongodb';
 import { anchorSchema, anchoredAt, type Anchor, type AnchorQuery } from '../../model/anchor.ts';
 import { defined, matchOptional } from '../../utils/optional.ts';
 import type { CollectionDefinition } from '../apply.ts';
-import { changeWithEvent, writeWithEvents, type NewEvent } from './events.ts';
+import { changeWithEvent, writeWithEvents, type About, type NewEvent } from './events.ts';
 
 /** Something a person said about a place; feedback, chat and reactions differ only in kind. */
 export interface CommentRecord {
@@ -60,8 +60,11 @@ export interface NewComment {
   readonly body: Document;
   readonly parentId?: ObjectId;
   readonly state?: string;
+  /** What its anchor hangs on in the end, for the trace; the route looks it up. */
+  readonly about?: About;
 }
 
+/** Stores the comment and records comment-created in one transaction, the words not in it. */
 export async function createComment(
   db: Db,
   input: NewComment,
@@ -77,7 +80,15 @@ export async function createComment(
     ...defined({ parentId: input.parentId, state: input.state }),
   };
 
-  await db.collection<CommentRecord>('comments').insertOne(comment);
+  await writeWithEvents(
+    db,
+    async (session) => {
+      await db.collection<CommentRecord>('comments').insertOne(comment, { session });
+      return true;
+    },
+    [commentEvent('comment-created', comment._id, input.createdBy, input.about)],
+    now,
+  );
   return comment;
 }
 
@@ -89,6 +100,7 @@ export interface CommentStateChange {
   readonly state: string;
   readonly changedBy: string;
   readonly reason?: string;
+  readonly about?: About;
 }
 
 /** Moves the state and records who moved it, D8.16, in one transaction. */
@@ -110,7 +122,7 @@ export async function setCommentState(
         createdBy: input.changedBy,
         anchor: { kind: 'comment', id: commentId },
         detail: { to: input.state },
-        ...defined({ reason: input.reason }),
+        ...defined({ about: input.about, reason: input.reason }),
       },
     },
     now,
@@ -121,6 +133,7 @@ export interface CommentBodyChange {
   readonly body: Document;
   readonly changedBy: string;
   readonly reason?: string;
+  readonly about?: About;
 }
 
 /** Replaces the words and records who did, never what stood there; answers whether they changed. */
@@ -143,7 +156,7 @@ export async function setCommentBody(
         );
       return result.modifiedCount === 1;
     },
-    [commentEvent('comment-edited', commentId, input.changedBy, input.reason)],
+    [commentEvent('comment-edited', commentId, input.changedBy, input.about, input.reason)],
     now,
   );
 }
@@ -151,6 +164,7 @@ export async function setCommentBody(
 export interface CommentDeletion {
   readonly deletedBy: string;
   readonly reason?: string;
+  readonly about?: About;
 }
 
 /** Takes the words away for good and leaves the shell; answers whether it was still there. */
@@ -172,18 +186,24 @@ export async function deleteComment(
         );
       return result.modifiedCount === 1;
     },
-    [commentEvent('comment-deleted', commentId, input.deletedBy, input.reason)],
+    [commentEvent('comment-deleted', commentId, input.deletedBy, input.about, input.reason)],
     now,
   );
 }
 
 /** The trace of a change to the words, at the comment, without the words themselves. */
-function commentEvent(kind: string, commentId: ObjectId, by: string, reason?: string): NewEvent {
+function commentEvent(
+  kind: string,
+  commentId: ObjectId,
+  by: string,
+  about: About | undefined,
+  reason?: string,
+): NewEvent {
   return {
     kind,
     createdBy: by,
     anchor: { kind: 'comment', id: commentId },
-    ...defined({ reason }),
+    ...defined({ about, reason }),
   };
 }
 

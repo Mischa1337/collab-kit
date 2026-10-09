@@ -99,6 +99,16 @@ describe('saying something', () => {
   it('answers with null for a comment nobody wrote', async () => {
     await expect(findComment(storage.db, new ObjectId())).resolves.toBeNull();
   });
+
+  it('records who said it and what it is about, but not the words', async () => {
+    const about = { kind: 'workpiece' as const, id: workpieceId };
+    const comment = await said({ about });
+
+    const history = await readEvents(storage.db, { anchor: { kind: 'comment', id: comment._id } });
+    expect(history).toHaveLength(1);
+    expect(history[0]).toMatchObject({ kind: 'comment-created', createdBy: 'alice', about });
+    expect(history[0]).not.toHaveProperty('detail');
+  });
 });
 
 describe('the state of a piece of feedback', () => {
@@ -132,7 +142,10 @@ describe('the state of a piece of feedback', () => {
     await setCommentState(storage.db, comment._id, { state: 'beantwortet', changedBy: 'carol' });
     await setCommentState(storage.db, comment._id, { state: 'umgesetzt', changedBy: 'carol' });
 
-    const history = await readEvents(storage.db, { anchor: { kind: 'comment', id: comment._id } });
+    const history = await readEvents(storage.db, {
+      anchor: { kind: 'comment', id: comment._id },
+      kind: 'comment-state',
+    });
     expect(history.map((event) => event.detail?.['to'])).toEqual([
       'umgesetzt',
       'beantwortet',
@@ -146,7 +159,10 @@ describe('the state of a piece of feedback', () => {
     await setCommentState(storage.db, comment._id, { state: 'umgesetzt', changedBy: 'bob' });
     await setCommentState(storage.db, comment._id, { state: 'umgesetzt', changedBy: 'bob' });
 
-    const history = await readEvents(storage.db, { anchor: { kind: 'comment', id: comment._id } });
+    const history = await readEvents(storage.db, {
+      anchor: { kind: 'comment', id: comment._id },
+      kind: 'comment-state',
+    });
     expect(history).toHaveLength(1);
   });
 

@@ -10,6 +10,7 @@ import {
   maySee,
   maySetTaskState,
 } from '../auth/access.ts';
+import { aboutOf, aboutOfTask } from '../db/about.ts';
 import {
   addAssignee,
   createTask,
@@ -108,13 +109,15 @@ export function taskRoutes(db: Db, decisions: readonly string[]): Router {
       return fail(response, 409, 'an assigned group may not see what the task is about');
     }
 
+    // Looked up here and never read from the body, so no task lands in another room's stream.
+    const about = await aboutOfTask(db, { anchor, parentId });
     response.status(201).json(
       await createTask(db, {
         kind,
         title,
         state,
         createdBy: actor.actorId,
-        ...defined({ anchor, parentId, assignees, order, detail }),
+        ...defined({ anchor, parentId, assignees, order, detail, about }),
       }),
     );
   });
@@ -184,11 +187,12 @@ export function taskRoutes(db: Db, decisions: readonly string[]): Router {
       return fail(response, 403, 'not allowed to change this task');
     }
 
+    const about = await aboutOfTask(db, task);
     response.json(
       await setTaskState(db, id, {
         state,
         changedBy: actor.actorId,
-        ...defined({ reason }),
+        ...defined({ reason, about }),
       }),
     );
   });
@@ -217,10 +221,11 @@ export function taskRoutes(db: Db, decisions: readonly string[]): Router {
       return fail(response, 409, 'the group may not see what the task is about');
     }
 
+    const about = await aboutOf(db, { kind: 'task', id });
     const added = await addAssignee(db, id, {
       assignee,
       changedBy: actor.actorId,
-      ...defined({ reason }),
+      ...defined({ reason, about }),
     });
 
     // 200 if it was already there: giving it twice is no error, it just changes nothing.
@@ -242,10 +247,11 @@ export function taskRoutes(db: Db, decisions: readonly string[]): Router {
 
     // No mayAssignTo, as in rooms: taking an entry off hands nothing out.
     const id = idOf(request);
+    const about = await aboutOf(db, { kind: 'task', id });
     await removeAssignee(db, id, {
       assignee,
       changedBy: actorOf(request).actorId,
-      ...defined({ reason }),
+      ...defined({ reason, about }),
     });
     response.json(await findTask(db, id));
   });

@@ -470,6 +470,143 @@ describe('the room as a channel', () => {
   });
 });
 
+/** A task as POST /tasks takes it, on an anchor, under a parent or on nothing. */
+const plainTask = (anchor?: object, parentId?: string) => ({
+  kind: 'task',
+  title: 'Entwurf',
+  state: 'offen',
+  ...(anchor === undefined ? {} : { anchor }),
+  ...(parentId === undefined ? {} : { parentId }),
+});
+
+describe('comments and tasks in the room stream', () => {
+  type Trace = { kind: string; createdBy: string; anchor: { id: string }; about?: object };
+  const send = (token: string, path: string, body: object) =>
+    request(server).post(path).set(as(token)).send(body);
+  const change = (token: string, path: string, body: object) =>
+    request(server).patch(path).set(as(token)).send(body);
+  /** The kinds the room shows at one comment or task, oldest first. */
+  const kindsAt = async (roomId: string, token: string, id: string) => {
+    const events = await request(server).get(`/rooms/${roomId}/events`).set(as(token));
+    return (events.body as Trace[])
+      .filter((event) => event.anchor.id === id)
+      .map((event) => event.kind);
+  };
+
+  it('shows a comment and its answer as they are said, and the state they move to', async () => {
+    const { roomId, workpieceId } = await setUp();
+    const anchor = onWorkpiece(workpieceId, 'statement-3');
+    const comment = await send(alice, '/comments', { kind: 'feedback', anchor, body: {} });
+    const id = comment.body._id as string;
+    const answer = await send(bob, '/comments', {
+      kind: 'comment',
+      anchor: onWorkpiece(workpieceId),
+      body: {},
+      parentId: id,
+    });
+    await change(bob, `/comments/${id}`, { state: 'gelesen' });
+
+    expect(await kindsAt(roomId, bob, id)).toEqual(['comment-created', 'comment-state']);
+    expect(await kindsAt(roomId, bob, answer.body._id as string)).toEqual(['comment-created']);
+
+    const events = await request(server).get(`/rooms/${roomId}/events`).set(as(bob));
+    const created = (events.body as Trace[]).find((event) => event.anchor.id === id);
+    expect(created).toMatchObject({
+      createdBy: 'alice',
+      about: { kind: 'workpiece', id: workpieceId },
+    });
+  });
+
+  it('shows a task as it is planned, moved and given', async () => {
+    const { roomId, workpieceId } = await setUp();
+    const task = await send(alice, '/tasks', plainTask(onWorkpiece(workpieceId)));
+    const id = task.body._id as string;
+    await change(bob, `/tasks/${id}`, { state: 'in Arbeit' });
+    await send(bob, `/tasks/${id}/assignees`, { kind: 'actor', id: 'carol' });
+
+    expect(await kindsAt(roomId, bob, id)).toEqual([
+      'task-created',
+      'task-state',
+      'assignee-added',
+    ]);
+  });
+
+  it('shows a subtask without an anchor of its own through its parent', async () => {
+    const { roomId, workpieceId } = await setUp();
+    const top = await send(alice, '/tasks', plainTask(onWorkpiece(workpieceId)));
+    const child = await send(alice, '/tasks', plainTask(undefined, top.body._id as string));
+
+    expect(await kindsAt(roomId, bob, child.body._id as string)).toEqual(['task-created']);
+  });
+
+  it('shows a comment on a task through what the task hangs on', async () => {
+    const { roomId, workpieceId } = await setUp();
+    const task = await send(alice, '/tasks', plainTask(onWorkpiece(workpieceId)));
+    const anchor = { kind: 'task', id: task.body._id as string };
+    const comment = await send(bob, '/comments', { kind: 'comment', anchor, body: {} });
+
+    expect(await kindsAt(roomId, bob, comment.body._id as string)).toEqual(['comment-created']);
+  });
+
+  it('keeps a task that hangs on nothing out of every room', async () => {
+    const { roomId } = await setUp();
+    const task = await send(alice, '/tasks', plainTask());
+    const id = task.body._id as string;
+
+    expect(await kindsAt(roomId, alice, id)).toEqual([]);
+    const traces = await request(server)
+      .get('/events')
+      .query({ anchorKind: 'task', anchorId: id })
+      .set(as(alice));
+    expect(traces.body).toEqual([expect.objectContaining({ kind: 'task-created' })]);
+    expect(traces.body[0]).not.toHaveProperty('about');
+  });
+
+  it('files a report at a comment under its own room, whatever about the body names', async () => {
+    const { roomId, workpieceId } = await setUp();
+    const other = await setUp();
+    const comment = await send(alice, '/comments', {
+      kind: 'comment',
+      anchor: onWorkpiece(workpieceId),
+      body: {},
+    });
+    const id = comment.body._id as string;
+
+    const read = await send(bob, '/events', {
+      kind: 'read',
+      anchor: { kind: 'comment', id },
+      about: { kind: 'workpiece', id: other.workpieceId },
+    });
+    expect(read.body.about).toEqual({ kind: 'workpiece', id: workpieceId });
+
+    expect(await kindsAt(roomId, bob, id)).toEqual(['comment-created', 'read']);
+    expect(await kindsAt(other.roomId, bob, id)).toEqual([]);
+  });
+
+  it('keeps what hangs on a group of the room from whoever may not see that group', async () => {
+    const { roomId, groupId } = await setUp();
+    const carol = tokenFor('carol');
+    const others = await send(alice, '/groups', { name: 'Andere', members: ['carol'] });
+    await request(server)
+      .put('/grants')
+      .set(as(alice))
+      .send({
+        groupId: others.body._id as string,
+        scope: { kind: 'room', id: roomId },
+        rights: ['see'],
+      });
+    const comment = await send(alice, '/comments', {
+      kind: 'comment',
+      anchor: { kind: 'group', id: groupId },
+      body: {},
+    });
+    const id = comment.body._id as string;
+
+    expect(await kindsAt(roomId, bob, id)).toEqual(['comment-created']);
+    expect(await kindsAt(roomId, carol, id)).toEqual([]);
+  });
+});
+
 /** A workpiece of its own, so nothing but what a test reports sits at it. */
 async function untouched(): Promise<{ kind: string; id: string }> {
   const workpiece = await request(server)
@@ -496,6 +633,8 @@ describe('traces and marks', () => {
 
     expect((await report('member-added')).status).toBe(400);
     expect((await report('checkpoint')).status).toBe(400);
+    expect((await report('comment-created')).status).toBe(400);
+    expect((await report('task-created')).status).toBe(400);
     expect((await report('visit')).status).toBe(201);
   });
 
@@ -958,6 +1097,7 @@ describe('saying something about a thing', () => {
         createdBy: 'bob',
         reason: 'im Entwurf nachgezogen',
       }),
+      expect.objectContaining({ kind: 'comment-created', createdBy: 'alice' }),
     ]);
 
     expect((await mark(bob, {})).status).toBe(400);
@@ -1212,6 +1352,7 @@ describe('work to be done', () => {
       ['assignee-added', 'bob'],
       ['assignee-added', 'bob'],
       ['task-state', 'bob'],
+      ['task-created', 'alice'],
     ]);
     expect(traces.body[0]).toMatchObject({ reason: 'reicht allein', detail: group });
     expect(traces.body[2]).toMatchObject({ reason: 'kennt sich aus', detail: carol });

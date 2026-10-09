@@ -35,8 +35,11 @@ const plain = (over: Partial<Parameters<typeof createTask>[1]> = {}) =>
     ...over,
   });
 
-const historyOf = (task: TaskRecord) =>
-  readEvents(storage.db, { anchor: { kind: 'task', id: task._id } });
+/** What happened to the task after it was created, newest first. */
+const historyOf = async (task: TaskRecord) =>
+  (await readEvents(storage.db, { anchor: { kind: 'task', id: task._id } })).filter(
+    (event) => event.kind !== 'task-created',
+  );
 
 beforeAll(async () => {
   storage = await connect({ uri, database });
@@ -113,6 +116,16 @@ describe('creating a task', () => {
 
   it('answers with null for a task nobody created', async () => {
     await expect(findTask(storage.db, new ObjectId())).resolves.toBeNull();
+  });
+
+  it('records who created it and what it is about, but not its content', async () => {
+    const about = { kind: 'room' as const, id: new ObjectId() };
+    const task = await plain({ about, detail: { hinweis: 'erst lesen' } });
+
+    const history = await readEvents(storage.db, { anchor: { kind: 'task', id: task._id } });
+    expect(history).toHaveLength(1);
+    expect(history[0]).toMatchObject({ kind: 'task-created', createdBy: 'alice', about });
+    expect(history[0]).not.toHaveProperty('detail');
   });
 });
 
