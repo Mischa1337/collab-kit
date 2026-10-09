@@ -1,10 +1,16 @@
 import { ObjectId, type Db, type Document } from 'mongodb';
 
-import { referenceProperties, type Reference } from '../../model/anchor.ts';
+import type { Reference } from '../../model/anchor.ts';
 import { defined } from '../../utils/optional.ts';
 import type { CollectionDefinition } from '../apply.ts';
 import { writeReturningEvents, writeWithEvents, type NewEvent } from './events.ts';
 import { removeGrantsAt } from './grants.ts';
+
+/** What a room references: a workpiece only, as only to it rights flow down from the room. */
+export interface RoomReference {
+  kind: 'workpiece';
+  id: ObjectId;
+}
 
 /** Bundles without owning: what it references lives on its own and may sit in several rooms. */
 export interface RoomRecord {
@@ -13,7 +19,7 @@ export interface RoomRecord {
   /** Switch positions of the docking tool. The service never reads them. */
   settings: Document;
   /** Whole things only, so no unit; who put them in or took them out, and when, is in events. */
-  references: Reference[];
+  references: RoomReference[];
   createdAt: Date;
   createdBy: string;
 }
@@ -32,7 +38,11 @@ export const roomsDefinition: CollectionDefinition = {
       references: {
         bsonType: 'array',
         description: 'what the room bundles, pointed at and never owned',
-        items: { bsonType: 'object', required: ['kind', 'id'], properties: referenceProperties },
+        items: {
+          bsonType: 'object',
+          required: ['kind', 'id'],
+          properties: { kind: { enum: ['workpiece'] }, id: { bsonType: 'objectId' } },
+        },
       },
       createdAt: { bsonType: 'date' },
       createdBy: { bsonType: 'string' },
@@ -65,18 +75,18 @@ export async function findRoom(db: Db, id: ObjectId): Promise<RoomRecord | null>
   return db.collection<RoomRecord>('rooms').findOne({ _id: id });
 }
 
-export interface Addition extends Reference {
+export interface Addition extends RoomReference {
   readonly addedBy: string;
 }
 
-/** Adds a reference if new and records it; not checked, as the kind may be the tool's own. */
+/** Adds a reference if new and records it; whether the workpiece is there the route checks. */
 export async function addToRoom(
   db: Db,
   roomId: ObjectId,
   input: Addition,
   now = new Date(),
 ): Promise<boolean> {
-  const reference: Reference = { kind: input.kind, id: input.id };
+  const reference: RoomReference = { kind: input.kind, id: input.id };
 
   return writeWithEvents(
     db,
@@ -96,7 +106,7 @@ export async function addToRoom(
   );
 }
 
-export interface Removal extends Reference {
+export interface Removal extends RoomReference {
   readonly removedBy: string;
 }
 
@@ -107,7 +117,7 @@ export async function removeFromRoom(
   input: Removal,
   now = new Date(),
 ): Promise<boolean> {
-  const reference: Reference = { kind: input.kind, id: input.id };
+  const reference: RoomReference = { kind: input.kind, id: input.id };
 
   return writeWithEvents(
     db,
@@ -123,7 +133,7 @@ export async function removeFromRoom(
   );
 }
 
-/** Every room this thing sits in, which is the way back from a workpiece or a group. */
+/** Every room this thing sits in, which is the way back from a workpiece. */
 export async function roomsContaining(db: Db, what: Reference): Promise<RoomRecord[]> {
   return db
     .collection<RoomRecord>('rooms')
@@ -233,6 +243,6 @@ function roomEvent(
 }
 
 /** The trace of a change to what the room references, anchored at the room. */
-function referenceEvent(kind: string, roomId: ObjectId, what: Reference, by: string): NewEvent {
+function referenceEvent(kind: string, roomId: ObjectId, what: RoomReference, by: string): NewEvent {
   return { kind, createdBy: by, anchor: { kind: 'room', id: roomId }, detail: { ...what } };
 }

@@ -124,25 +124,6 @@ describe('what someone may do with a workpiece over the socket', () => {
     await expect(workpieceAccess(storage.db, actor('bob'), workpieceId)).resolves.toBe('write');
   });
 
-  it('opens nothing through a group that still lies in the room from before', async () => {
-    const workpiece = await createWorkpiece(storage.db, { name: 'Entwurf', createdBy: 'alice' });
-    const room = await createRoom(storage.db, { name: 'Alt', createdBy: 'alice' });
-    const group = await createGroup(storage.db, {
-      name: 'Alt',
-      createdBy: 'alice',
-      members: ['alice'],
-    });
-
-    await addToRoom(storage.db, room._id, {
-      kind: 'workpiece',
-      id: workpiece._id,
-      addedBy: 'alice',
-    });
-    await addToRoom(storage.db, room._id, { kind: 'group', id: group._id, addedBy: 'alice' });
-
-    await expect(workpieceAccess(storage.db, actor('alice'), workpiece._id)).resolves.toBe('none');
-  });
-
   it('lets the top into every workpiece there is, and into none that is not', async () => {
     const workpiece = await createWorkpiece(storage.db, { name: 'Entwurf', createdBy: 'alice' });
     const top = { actorId: 'dozent', top: true } as const;

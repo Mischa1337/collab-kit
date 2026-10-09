@@ -1,8 +1,8 @@
 import { Router } from 'express';
-import { ObjectId, type Db } from 'mongodb';
+import type { Db } from 'mongodb';
 
 import { may, maySee, roomsVisibleTo } from '../auth/access.ts';
-import { grantsAt, isScopeKind } from '../db/collections/grants.ts';
+import { grantsAt } from '../db/collections/grants.ts';
 import { readEventsSince } from '../db/collections/events.ts';
 import {
   addToRoom,
@@ -13,9 +13,14 @@ import {
   renameRoom,
   setRoomSettings,
 } from '../db/collections/rooms.ts';
+import type { Reference } from '../model/anchor.ts';
 import { asActorId, asCount, asObject, asObjectId, asReference, asText } from '../utils/input.ts';
 import { defined } from '../utils/optional.ts';
 import { actorOf, bodyOf, fail, guard, idOf, requireId, unusableField } from './http.ts';
+
+/** What a reference in a room needs, for the 400 of the routes that move one. */
+const ROOM_REFERENCE_RULE =
+  'a room references only kind workpiece, with an id of 24 hex characters';
 
 /** A room bundles: these routes move references, never create or delete what they point at. */
 export function roomRoutes(db: Db, recheckAccess: () => Promise<void>): Router {
@@ -116,26 +121,29 @@ export function roomRoutes(db: Db, recheckAccess: () => Promise<void>): Router {
   routes.post('/rooms/:id/references', seeing, changing, async (request, response) => {
     const reference = asReference(bodyOf(request));
 
-    if (reference === undefined) {
-      return fail(response, 400, 'kind and id are needed, both as text');
-    }
     // Who may into a room stands in its grants, a group in here would open nothing.
-    if (reference.kind === 'group') {
+    if (reference?.kind === 'group') {
       return fail(response, 400, 'a group gets into a room through PUT /grants');
+    }
+    if (reference?.kind !== 'workpiece') {
+      return fail(response, 400, ROOM_REFERENCE_RULE);
     }
 
     const actor = actorOf(request);
     if (!(await maySee(db, actor, reference))) {
       return fail(response, 404, 'unknown reference');
     }
-    // In here it gets the rights of the room, so a thing of the service takes manage at it too.
-    const own = isScopeKind(reference.kind) && reference.id instanceof ObjectId;
-    if (own && !(await may(db, actor, 'manage', reference))) {
+    // In here it gets the rights of the room, so it takes manage at it too.
+    if (!(await may(db, actor, 'manage', reference))) {
       return fail(response, 403, 'not allowed to hand this on');
     }
 
     const id = idOf(request);
-    const added = await addToRoom(db, id, { ...reference, addedBy: actor.actorId });
+    const added = await addToRoom(db, id, {
+      kind: 'workpiece',
+      id: reference.id,
+      addedBy: actor.actorId,
+    });
 
     // 200 if it was already in: adding it twice is no error, it just changes nothing.
     response.status(added ? 201 : 200).json(await findRoom(db, id));
@@ -145,12 +153,16 @@ export function roomRoutes(db: Db, recheckAccess: () => Promise<void>): Router {
   routes.delete('/rooms/:id/references', seeing, changing, async (request, response) => {
     const reference = asReference(request.query);
 
-    if (reference === undefined) {
-      return fail(response, 400, 'kind and id are needed, both as text');
+    if (reference?.kind !== 'workpiece') {
+      return fail(response, 400, ROOM_REFERENCE_RULE);
     }
 
     const id = idOf(request);
-    await removeFromRoom(db, id, { ...reference, removedBy: actorOf(request).actorId });
+    await removeFromRoom(db, id, {
+      kind: 'workpiece',
+      id: reference.id,
+      removedBy: actorOf(request).actorId,
+    });
     // Without the reference, open connections to what it opened would carry on as before.
     await recheckAccess();
     response.json(await findRoom(db, id));
@@ -172,9 +184,9 @@ export function roomRoutes(db: Db, recheckAccess: () => Promise<void>): Router {
     const room = await findRoom(db, id);
     // The groups that may into the room belong to its stream, as when they lay in it.
     const holders = await grantsAt(db, { kind: 'room', id });
-    const bundled = [
+    const bundled: Reference[] = [
       ...(room?.references ?? []),
-      ...holders.map((grant) => ({ kind: 'group', id: grant.groupId })),
+      ...holders.map((grant) => ({ kind: 'group' as const, id: grant.groupId })),
     ];
     // Only what the actor may see, so the room shows no more than /events would.
     const actor = actorOf(request);

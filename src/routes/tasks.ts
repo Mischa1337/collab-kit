@@ -90,7 +90,7 @@ export function taskRoutes(db: Db, decisions: readonly string[]): Router {
     // Planning takes plan where it hangs, or everywhere at nothing; a first decision, decide too.
     const places = [
       ...(anchor === undefined ? [] : [anchor]),
-      ...(parentId === undefined ? [] : [{ kind: 'task', id: parentId }]),
+      ...(parentId === undefined ? [] : [{ kind: 'task' as const, id: parentId }]),
     ];
     if (!(await mayCreateAt(db, actor, 'plan', places))) {
       return fail(response, 403, 'not allowed to plan here');

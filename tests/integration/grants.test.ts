@@ -12,6 +12,7 @@ import { addToRoom, createRoom } from '../../src/db/collections/rooms.ts';
 import { createTask } from '../../src/db/collections/tasks.ts';
 import { createWorkpiece } from '../../src/db/collections/workpieces.ts';
 import { collectionDefinitions } from '../../src/db/schemas.ts';
+import type { Reference } from '../../src/model/anchor.ts';
 
 const actor = (actorId: string) => ({ actorId });
 
@@ -53,7 +54,7 @@ async function world(members: readonly string[]): Promise<World> {
   const workpiece = await createWorkpiece(db, { name: 'Modell', createdBy: 'tutor' });
   await addToRoom(db, room._id, { kind: 'workpiece', id: workpiece._id, addedBy: 'tutor' });
 
-  const anchor = { kind: 'workpiece', id: workpiece._id };
+  const anchor = { kind: 'workpiece' as const, id: workpiece._id };
   const task = await createTask(db, {
     kind: 'task',
     title: 'Entwurf',
@@ -191,7 +192,7 @@ describe('may', () => {
       setBy: 'tutor',
     });
 
-    const below = [
+    const below: Reference[] = [
       { kind: 'room', id: places.room },
       { kind: 'workpiece', id: places.workpiece },
       { kind: 'task', id: places.task },
@@ -273,7 +274,7 @@ describe('may', () => {
     ).resolves.toBe(false);
   });
 
-  it('holds everywhere without a place, kinds of the tool included', async () => {
+  it('holds everywhere without a place', async () => {
     const { db } = storage;
     const tutors = await world(['erin']);
     const elsewhere = await world([]);
@@ -282,9 +283,6 @@ describe('may', () => {
     await expect(
       may(db, actor('erin'), 'manage', { kind: 'comment', id: elsewhere.answer }),
     ).resolves.toBe(true);
-    await expect(may(db, actor('erin'), 'manage', { kind: 'diagram', id: 'd-1' })).resolves.toBe(
-      true,
-    );
     await expect(may(db, actor('erin'), 'see', { kind: 'room', id: elsewhere.room })).resolves.toBe(
       false,
     );

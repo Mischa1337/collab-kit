@@ -2,9 +2,15 @@
 
 import { ObjectId, type Document } from 'mongodb';
 
-import { isScopeKind, type Scope } from '../db/collections/grants.ts';
 import type { Assignee } from '../db/collections/tasks.ts';
-import { WHOLE, type Anchor, type AnchorQuery, type Reference } from '../model/anchor.ts';
+import {
+  isReferenceKind,
+  REFERENCE_KINDS,
+  WHOLE,
+  type Anchor,
+  type AnchorQuery,
+  type Reference,
+} from '../model/anchor.ts';
 import { RIGHTS, type Right } from '../model/right.ts';
 import { defined } from './optional.ts';
 
@@ -13,14 +19,6 @@ const HEX24 = /^[0-9a-f]{24}$/i;
 /** Exactly 24 hex characters become an ObjectId, anything else undefined. */
 export function asObjectId(raw: unknown): ObjectId | undefined {
   return typeof raw === 'string' && HEX24.test(raw) ? new ObjectId(raw) : undefined;
-}
-
-/** Text only, as an object would reach MongoDB as an operator; ObjectId if it looks like one. */
-export function asReferenceId(raw: unknown): ObjectId | string | undefined {
-  if (typeof raw !== 'string' || raw === '') {
-    return undefined;
-  }
-  return asObjectId(raw) ?? raw;
 }
 
 /** An actor key as the token gives it: text kept as it is, or a finite number as text. */
@@ -58,27 +56,19 @@ export function asCount(raw: unknown): number | undefined {
   return Number.isInteger(value) && value > 0 ? value : undefined;
 }
 
-/** Kind and id of a reference, from a body or a query; undefined if either does not fit. */
+/** The kinds as a sentence names them, for every rule that takes a reference. */
+const KINDS_NAMED = `${REFERENCE_KINDS.slice(0, -1).join(', ')} or ${REFERENCE_KINDS.at(-1)}`;
+
+/** What asReference needs, for the 400 of a route that takes a place. */
+export const REFERENCE_RULE = `a place needs kind ${KINDS_NAMED} and an id of 24 hex characters`;
+
+/** One of the service's own kinds and its key, from a body or a query; else undefined. */
 export function asReference(raw: unknown): Reference | undefined {
   const fields = asObject(raw);
-  const kind = asText(fields?.['kind']);
-  const id = asReferenceId(fields?.['id']);
+  const kind = fields?.['kind'];
+  const id = asObjectId(fields?.['id']);
 
-  return kind === undefined || id === undefined ? undefined : { kind, id };
-}
-
-/** What asScope needs, for the 400 of a route that takes a place. */
-export const SCOPE_RULE =
-  'a place needs a kind of room, workpiece, task, comment or group and its key';
-
-/** A place a grant can hold at: one of the service's own kinds and a key it keeps. */
-export function asScope(raw: unknown): Scope | undefined {
-  const reference = asReference(raw);
-
-  if (reference === undefined || !isScopeKind(reference.kind)) {
-    return undefined;
-  }
-  return reference.id instanceof ObjectId ? { kind: reference.kind, id: reference.id } : undefined;
+  return isReferenceKind(kind) && id !== undefined ? { kind, id } : undefined;
 }
 
 /** What asRights needs, for the 400 of a route that takes rights. */
@@ -99,10 +89,10 @@ export function asRights(raw: unknown): [Right, ...Right[]] | undefined {
 }
 
 /** What asAnchor needs, for the 400 of a route that takes an anchor in its body. */
-export const ANCHOR_RULE = 'anchor needs kind and id, and a unit only as text';
+export const ANCHOR_RULE = `anchor needs kind ${KINDS_NAMED}, an id of 24 hex characters, and a unit only as text`;
 
 /** What asAnchorQuery needs, for the 400 of a route that reads an anchor from the query. */
-export const ANCHOR_QUERY_RULE = 'anchorKind and anchorId are needed, then unit or scope=whole';
+export const ANCHOR_QUERY_RULE = `anchorKind must be ${KINDS_NAMED} and anchorId 24 hex characters, then unit or scope=whole`;
 
 /** A reference with an optional unit; a unit sent but unusable makes the anchor unusable. */
 export function asAnchor(raw: unknown): Anchor | undefined {

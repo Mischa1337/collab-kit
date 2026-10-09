@@ -157,17 +157,17 @@ describe('setting a room up', () => {
   });
 
   it('takes a reference out again, named in the query', async () => {
-    const { roomId, groupId } = await setUp();
+    const { roomId, workpieceId } = await setUp();
     const unnamed = await request(server).delete(`/rooms/${roomId}/references`).set(as(alice));
     expect(unnamed.status).toBe(400);
 
     const removed = await request(server)
       .delete(`/rooms/${roomId}/references`)
-      .query({ kind: 'group', id: groupId })
+      .query({ kind: 'workpiece', id: workpieceId })
       .set(as(alice));
 
     expect(removed.status).toBe(200);
-    expect(removed.body.references).toEqual([{ kind: 'workpiece', id: expect.any(String) }]);
+    expect(removed.body.references).toEqual([]);
   });
 
   it('answers a malformed key with 400 and an unknown one with 404', async () => {
@@ -388,7 +388,7 @@ describe('the room as a channel', () => {
     expect(events.body.map((event: { kind: string }) => event.kind)).toContain('note');
   });
 
-  it('keeps out a trace of a made-up kind that borrows the id of the room', async () => {
+  it('refuses a trace of a made-up kind that borrows the id of the room', async () => {
     const { roomId } = await setUp();
     const carol = tokenFor('carol');
 
@@ -396,11 +396,8 @@ describe('the room as a channel', () => {
       .post('/events')
       .set(as(carol))
       .send({ kind: 'planted', anchor: { kind: 'made-up', id: roomId } });
-    expect(planted.status).toBe(201);
 
-    const events = await request(server).get(`/rooms/${roomId}/events`).set(as(bob));
-
-    expect(events.body.map((event: { kind: string }) => event.kind)).not.toContain('planted');
+    expect(planted.status).toBe(400);
   });
 
   it('shows who joined a group of the room only to whoever may see that group', async () => {
@@ -473,8 +470,14 @@ describe('the room as a channel', () => {
   });
 });
 
-/** An anchor of a kind the tool made up, so nothing but what a test reports sits at it. */
-const board = () => ({ kind: 'board', id: `b-${new ObjectId().toHexString()}` });
+/** A workpiece of its own, so nothing but what a test reports sits at it. */
+async function untouched(): Promise<{ kind: string; id: string }> {
+  const workpiece = await request(server)
+    .post('/workpieces')
+    .set(as(alice))
+    .send({ name: 'Tafel' });
+  return { kind: 'workpiece', id: workpiece.body._id as string };
+}
 
 describe('traces and marks', () => {
   const readAt = (anchor: { kind: string; id: string }, query: Record<string, string>) =>
@@ -497,7 +500,7 @@ describe('traces and marks', () => {
   });
 
   it('pages back through a history with before, and cuts a window with both', async () => {
-    const anchor = board();
+    const anchor = await untouched();
     const report = async (kind: string) => {
       const event = await request(server).post('/events').set(as(alice)).send({ kind, anchor });
       return event.body._id as string;
@@ -514,17 +517,17 @@ describe('traces and marks', () => {
   });
 
   it('refuses a cut it cannot read instead of turning the stream around', async () => {
-    const anchor = board();
+    const anchor = await untouched();
 
     expect((await readAt(anchor, { since: 'undefined' })).status).toBe(400);
     expect((await readAt(anchor, { before: 'undefined' })).status).toBe(400);
   });
 
   it('filters by an actor key exactly as the token gave it', async () => {
-    const anchor = board();
+    const anchor = await untouched();
     await request(server)
       .post('/events')
-      .set(as(tokenFor('u-17 ')))
+      .set(as(tokenFor('u-17 ', { globalRole: 'ADMIN' })))
       .send({ kind: 'visit', anchor });
 
     expect((await readAt(anchor, { createdBy: 'u-17 ' })).body).toHaveLength(1);
@@ -534,7 +537,7 @@ describe('traces and marks', () => {
 describe('a value that was sent but cannot be used', () => {
   it('is refused instead of dropped unnoticed, in queries and in bodies', async () => {
     const { roomId, workpieceId } = await setUp();
-    const anchor = board();
+    const anchor = onWorkpiece(workpieceId);
     const read = (path: string, query: Record<string, string>) =>
       request(server).get(path).query(query).set(as(bob));
     const send = (path: string, body: object) => request(server).post(path).set(as(bob)).send(body);
@@ -557,9 +560,9 @@ describe('a value that was sent but cannot be used', () => {
   });
 
   it('takes a unit only as text, in a body as in a query', async () => {
-    const anchor = board();
+    const { workpieceId } = await setUp();
+    const anchor = onWorkpiece(workpieceId);
     const at = { anchorKind: anchor.kind, anchorId: anchor.id };
-    // alice at the top may speak at a kind of the tool, which is no place a grant could reach.
     const say = (unit: unknown) =>
       request(server)
         .post('/comments')
@@ -579,6 +582,61 @@ describe('a value that was sent but cannot be used', () => {
 
     const trace = { kind: 'note', anchor: { ...anchor, unit: { row: 4 } } };
     expect((await request(server).post('/events').set(as(bob)).send(trace)).status).toBe(400);
+  });
+});
+
+describe('an anchor only at a thing of the service', () => {
+  it('refuses a kind of the tool and a key that is no ObjectId, even to the top', async () => {
+    const { workpieceId } = await setUp();
+    const foreign = [
+      { kind: 'board', id: workpieceId },
+      { kind: 'workpiece', id: 'b-1' },
+    ];
+    const tries = foreign.flatMap((anchor) => {
+      const at = { anchorKind: anchor.kind, anchorId: anchor.id };
+      const send = (path: string, body: object) =>
+        request(server).post(path).set(as(alice)).send(body);
+      const read = (path: string) => request(server).get(path).query(at).set(as(alice));
+      return [
+        () => send('/comments', { kind: 'comment', anchor, body: {} }),
+        () => send('/tasks', { title: 'x', anchor }),
+        () => send('/events', { kind: 'visit', anchor }),
+        () => read('/comments'),
+        () => read('/tasks'),
+        () => read('/events'),
+      ];
+    });
+
+    // One after another, as each request opens and closes the server for itself.
+    const answers = [];
+    for (const attempt of tries) {
+      // eslint-disable-next-line no-await-in-loop
+      answers.push(await attempt());
+    }
+    expect(answers.map((answer) => answer.status)).toEqual(tries.map(() => 400));
+    expect(answers[0]?.body.error).toContain('room, workpiece, group, comment or task');
+  });
+
+  it('puts only a workpiece into a room', async () => {
+    const { roomId } = await setUp();
+    const task = await request(server).post('/tasks').set(as(alice)).send({ title: 'x' });
+
+    const added = await request(server)
+      .post(`/rooms/${roomId}/references`)
+      .set(as(alice))
+      .send({ kind: 'task', id: task.body._id as string });
+
+    expect(added.status).toBe(400);
+    expect(added.body.error).toContain('only kind workpiece');
+  });
+
+  it('refuses a kind of the tool when asked for rights', async () => {
+    const rights = await request(server)
+      .get('/me/rights')
+      .query({ kind: 'board', id: new ObjectId().toHexString() })
+      .set(as(bob));
+
+    expect(rights.status).toBe(400);
   });
 });
 
@@ -1055,7 +1113,8 @@ describe('work to be done', () => {
     expect((await plan(alice, { title: 'x', order: 'erster' })).status).toBe(400);
     expect((await plan(alice, { title: 'x', detail: 'frei' })).status).toBe(400);
     expect((await plan(alice, { title: 'x', parentId: 'oben' })).status).toBe(400);
-    expect((await plan(alice, { title: 'x', anchor: { ...board(), unit: 4 } })).status).toBe(400);
+    const anchor = { kind: 'workpiece', id: new ObjectId().toHexString(), unit: 4 };
+    expect((await plan(alice, { title: 'x', anchor })).status).toBe(400);
   });
 
   it('lists at an anchor or under a parent, the tops alone, in their order', async () => {
@@ -1092,7 +1151,7 @@ describe('work to be done', () => {
   it('needs an anchor or a parent, so nobody lists every task of the service', async () => {
     const read = (query: Record<string, string>) =>
       request(server).get('/tasks').query(query).set(as(bob));
-    const anchor = board();
+    const anchor = { kind: 'workpiece', id: new ObjectId().toHexString() };
 
     expect((await read({})).status).toBe(400);
     expect((await read({ parentId: 'none' })).status).toBe(400);

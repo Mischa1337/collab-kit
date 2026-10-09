@@ -1,19 +1,13 @@
 /** Every rule on who may see or change what; routes and the gateway only ask. */
 
-import { ObjectId, type Db } from 'mongodb';
+import type { Db, ObjectId } from 'mongodb';
 
 import type { Actor } from '../model/actor.ts';
 import type { Reference } from '../model/anchor.ts';
 import { RIGHTS, type Right } from '../model/right.ts';
 import { findWorkpieces, workpieceExists, type Workpiece } from '../db/collections/workpieces.ts';
 import { findComment, type CommentRecord } from '../db/collections/comments.ts';
-import {
-  grantsOf,
-  isScopeKind,
-  placesWhere,
-  rightsHeld,
-  type Scope,
-} from '../db/collections/grants.ts';
+import { grantsOf, placesWhere, rightsHeld } from '../db/collections/grants.ts';
 import {
   findGroup,
   findGroups,
@@ -50,7 +44,7 @@ export async function rightsAt(
     return new Set();
   }
 
-  const places = new Map<string, Scope>();
+  const places = new Map<string, Reference>();
   if (target !== undefined) {
     await collectPlaces(db, target, places);
   }
@@ -66,7 +60,7 @@ export async function rightsAt(
 export async function mayHandOn(
   db: Db,
   actor: Actor,
-  scope: Scope | undefined,
+  scope: Reference | undefined,
   rights: readonly Right[],
 ): Promise<boolean> {
   const held = await rightsAt(db, actor, scope);
@@ -91,19 +85,15 @@ export async function mayAddMember(db: Db, actor: Actor, groupId: ObjectId): Pro
 async function collectPlaces(
   db: Db,
   reference: Reference,
-  places: Map<string, Scope>,
+  places: Map<string, Reference>,
 ): Promise<void> {
-  // A kind of the tool is no place, as the service could not enforce a right there.
-  if (!isScopeKind(reference.kind) || !(reference.id instanceof ObjectId)) {
-    return;
-  }
   const key = `${reference.kind}:${reference.id.toHexString()}`;
   if (places.has(key)) {
     return;
   }
 
   // Taken before the first await, so the parents searched side by side never add it twice.
-  const place: Scope = { kind: reference.kind, id: reference.id };
+  const place: Reference = { kind: reference.kind, id: reference.id };
   places.set(key, place);
 
   const parents = await parentsOf(db, place);
@@ -111,7 +101,7 @@ async function collectPlaces(
 }
 
 /** Right above a place: the rooms of a workpiece, the parent and anchor of a task or comment. */
-async function parentsOf(db: Db, place: Scope): Promise<Reference[]> {
+async function parentsOf(db: Db, place: Reference): Promise<Reference[]> {
   if (place.kind === 'workpiece') {
     const rooms = await roomsContaining(db, place);
     return rooms.map((room) => ({ kind: 'room', id: room._id }));
@@ -145,7 +135,7 @@ export async function workpieceAccess(
   actor: Actor,
   workpieceId: ObjectId,
 ): Promise<'none' | 'read' | 'write'> {
-  const workpiece: Scope = { kind: 'workpiece', id: workpieceId };
+  const workpiece: Reference = { kind: 'workpiece', id: workpieceId };
 
   if (!(await placeExists(db, workpiece))) {
     return 'none';
@@ -188,9 +178,7 @@ export async function workpiecesVisibleTo(db: Db, actor: Actor): Promise<Workpie
     placesWhere(db, groups, 'see', 'room'),
   ]);
   const inRooms = (await findRooms(db, roomIds)).flatMap((room) =>
-    room.references.flatMap((reference) =>
-      reference.kind === 'workpiece' && reference.id instanceof ObjectId ? [reference.id] : [],
-    ),
+    room.references.map((reference) => reference.id),
   );
   return findWorkpieces(db, [...direct, ...inRooms]);
 }
@@ -226,7 +214,7 @@ export async function nameableAmong(
 }
 
 /** Whether a place of the service is there, so no rule answers yes about a key nothing has. */
-export async function placeExists(db: Db, place: Scope): Promise<boolean> {
+export async function placeExists(db: Db, place: Reference): Promise<boolean> {
   if (place.kind === 'room') {
     return (await findRoom(db, place.id)) !== null;
   }
@@ -253,15 +241,11 @@ export async function maySeeGroup(
   );
 }
 
-/** May the actor see what a reference names? Only the service's own kinds are decided. */
+/** May the actor see what a reference names? What is not there nobody sees. */
 export async function maySee(db: Db, actor: Actor, target: Reference): Promise<boolean> {
-  if (!(target.id instanceof ObjectId)) {
-    return true;
-  }
   if (target.kind === 'workpiece' || target.kind === 'room') {
     // Seen from a grant at it or above; creating it gives nothing.
-    const place: Scope = { kind: target.kind, id: target.id };
-    return (await placeExists(db, place)) && may(db, actor, 'see', place);
+    return (await placeExists(db, target)) && may(db, actor, 'see', target);
   }
   if (target.kind === 'group') {
     const group = await findGroup(db, target.id);
@@ -279,7 +263,8 @@ export async function maySee(db: Db, actor: Actor, target: Reference): Promise<b
     const task = await findTask(db, target.id);
     return task !== null && maySeeTask(db, actor, task);
   }
-  return true;
+  // A kind the service does not keep is seen by nobody.
+  return false;
 }
 
 /** A task is seen by whom it is given to, by a grant at it, and through its anchor or parent. */
@@ -376,7 +361,7 @@ export async function assigneeSees(
     return true;
   }
 
-  const places = new Map<string, Scope>();
+  const places = new Map<string, Reference>();
   await collectPlaces(db, anchor, places);
   return (await rightsHeld(db, [assignee.id], [...places.values()])).has('see');
 }

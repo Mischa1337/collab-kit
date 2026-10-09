@@ -25,7 +25,7 @@ let storage: Storage;
 let workpieceId: ObjectId;
 
 const on = (unit?: string) => ({
-  kind: 'workpiece',
+  kind: 'workpiece' as const,
   id: workpieceId,
   ...(unit === undefined ? {} : { unit }),
 });

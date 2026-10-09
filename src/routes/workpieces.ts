@@ -47,7 +47,7 @@ export function workpieceRoutes(db: Db, hub: WorkpieceHub): Router {
 
     // In a room it takes manage there; outside every room it lies in nothing, so manage everywhere.
     const actor = actorOf(request);
-    const room = roomId === undefined ? undefined : { kind: 'room', id: roomId };
+    const room = roomId === undefined ? undefined : { kind: 'room' as const, id: roomId };
     if (room !== undefined && !(await maySee(db, actor, room))) {
       return fail(response, 404, 'unknown room');
     }

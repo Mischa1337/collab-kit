@@ -709,17 +709,6 @@ describe('tasks and comments under grants', () => {
     expect((await mark(tutor, id, 'accepted')).status).toBe(403);
     expect((await mark(dozent, id, 'accepted')).status).toBe(200);
   });
-
-  it('keeps a kind of the tool, which no grant reaches, to whoever may speak everywhere', async () => {
-    const say = (token: string) =>
-      request(server)
-        .post('/comments')
-        .set(as(token))
-        .send({ kind: 'comment', anchor: { kind: 'board', id: 'b-1' }, body: {} });
-
-    expect((await say(alice)).status).toBe(403);
-    expect((await say(dozent)).status).toBe(201);
-  });
 });
 
 describe('changing and deleting comments', () => {

@@ -75,7 +75,10 @@ export function commentRoutes(db: Db, decisions: readonly string[]): Router {
       return fail(response, 400, 'an answer hangs on the same thing as the comment it answers');
     }
     // Saying something takes speak where it hangs, a first state that is a decision decide too.
-    const places = [anchor, ...(parentId === undefined ? [] : [{ kind: 'comment', id: parentId }])];
+    const places = [
+      anchor,
+      ...(parentId === undefined ? [] : [{ kind: 'comment' as const, id: parentId }]),
+    ];
     if (!(await mayCreateAt(db, actor, 'speak', places))) {
       return fail(response, 403, 'not allowed to say something here');
     }
@@ -202,5 +205,5 @@ export function commentRoutes(db: Db, decisions: readonly string[]): Router {
 
 /** Whether two references name the same thing, whatever unit inside it they point at. */
 function sameThing(one: Reference, other: Reference): boolean {
-  return one.kind === other.kind && String(one.id) === String(other.id);
+  return one.kind === other.kind && one.id.equals(other.id);
 }

@@ -271,7 +271,7 @@ describe('reading tasks back', () => {
 
   it('tells the kinds apart', async () => {
     const workpieceId = new ObjectId();
-    const anchor = { kind: 'workpiece', id: workpieceId };
+    const anchor = { kind: 'workpiece' as const, id: workpieceId };
 
     await plain({ anchor, kind: 'review', title: 'begutachten' });
     await plain({ anchor, kind: 'revision', title: 'überarbeiten' });

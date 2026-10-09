@@ -76,7 +76,7 @@ const quiet = (actorId: string): Connection => ({
   close: () => {},
 });
 
-const on = (workpieceId: ObjectId) => ({ kind: 'workpiece', id: workpieceId });
+const on = (workpieceId: ObjectId) => ({ kind: 'workpiece' as const, id: workpieceId });
 
 const traced = (workpieceId: ObjectId, kind: string, createdBy: string) =>
   waitFor(

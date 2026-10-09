@@ -1,27 +1,17 @@
 import { ObjectId, type ClientSession, type Db, type Filter } from 'mongodb';
 
-import type { Reference } from '../../model/anchor.ts';
+import { referenceProperties, type Reference, type ReferenceKind } from '../../model/anchor.ts';
 import { RIGHTS, type Right } from '../../model/right.ts';
 import { defined } from '../../utils/optional.ts';
 import type { CollectionDefinition } from '../apply.ts';
 import { writeWithEvents, type NewEvent } from './events.ts';
 
-/** The kinds the service keeps itself; only there can it enforce a right. */
-export const SCOPE_KINDS = ['room', 'workpiece', 'task', 'comment', 'group'] as const;
-
-export type ScopeKind = (typeof SCOPE_KINDS)[number];
-
-/** A place a grant holds at, and with it everything below that place. */
-export interface Scope {
-  kind: ScopeKind;
-  id: ObjectId;
-}
-
 /** A group holds these rights at one place; without a scope, in the whole instance. */
 export interface GrantRecord {
   _id: ObjectId;
   groupId: ObjectId;
-  scope?: Scope;
+  /** The place it holds at, and with it everything below that place. */
+  scope?: Reference;
   /** Replaced as a whole; who changed them, when and why is kept in events. */
   rights: Right[];
   createdAt: Date;
@@ -39,10 +29,7 @@ export const grantsDefinition: CollectionDefinition = {
         bsonType: 'object',
         required: ['kind', 'id'],
         description: 'left out, the grant holds in the whole instance',
-        properties: {
-          kind: { enum: [...SCOPE_KINDS] },
-          id: { bsonType: 'objectId' },
-        },
+        properties: referenceProperties,
       },
       rights: {
         bsonType: 'array',
@@ -62,15 +49,10 @@ export const grantsDefinition: CollectionDefinition = {
   ],
 };
 
-/** Whether a reference names a kind a grant can hold at. */
-export function isScopeKind(kind: string): kind is ScopeKind {
-  return (SCOPE_KINDS as readonly string[]).includes(kind);
-}
-
 export interface GrantChange {
   readonly groupId: ObjectId;
   /** Left out, the rights hold in the whole instance. */
-  readonly scope?: Scope;
+  readonly scope?: Reference;
   readonly rights: readonly [Right, ...Right[]];
   readonly setBy: string;
   readonly reason?: string;
@@ -101,7 +83,7 @@ export async function setGrant(db: Db, input: GrantChange, now = new Date()): Pr
 
 export interface GrantRemoval {
   readonly groupId: ObjectId;
-  readonly scope?: Scope;
+  readonly scope?: Reference;
   readonly removedBy: string;
   readonly reason?: string;
 }
@@ -125,7 +107,7 @@ export async function removeGrant(db: Db, input: GrantRemoval, now = new Date())
 /** Takes every grant at the place away, in the caller's transaction; answers with their traces. */
 export async function removeGrantsAt(
   db: Db,
-  scope: Scope,
+  scope: Reference,
   removal: Pick<GrantRemoval, 'removedBy' | 'reason'>,
   session: ClientSession,
 ): Promise<NewEvent[]> {
@@ -165,7 +147,7 @@ async function removeGrantsWhere(
 }
 
 /** Who holds what at one place; without a place, what holds in the whole instance. */
-export async function grantsAt(db: Db, scope?: Scope): Promise<GrantRecord[]> {
+export async function grantsAt(db: Db, scope?: Reference): Promise<GrantRecord[]> {
   const filter = scope === undefined ? { scope: { $exists: false } } : atPlace(scope);
 
   return db.collection<GrantRecord>('grants').find(filter).toArray();
@@ -180,7 +162,7 @@ export async function grantsOf(db: Db, groupId: ObjectId): Promise<GrantRecord[]
 export async function findGrant(
   db: Db,
   groupId: ObjectId,
-  scope?: Scope,
+  scope?: Reference,
 ): Promise<GrantRecord | null> {
   return db.collection<GrantRecord>('grants').findOne(grantAt(groupId, scope));
 }
@@ -189,7 +171,7 @@ export async function findGrant(
 export async function rightsHeld(
   db: Db,
   groupIds: readonly ObjectId[],
-  places: readonly Scope[],
+  places: readonly Reference[],
 ): Promise<Set<Right>> {
   if (groupIds.length === 0) {
     return new Set();
@@ -214,7 +196,7 @@ export async function placesWhere(
   db: Db,
   groupIds: readonly ObjectId[],
   right: Right,
-  kind: ScopeKind,
+  kind: ReferenceKind,
 ): Promise<ObjectId[]> {
   if (groupIds.length === 0) {
     return [];
@@ -234,7 +216,7 @@ export async function placesWhere(
 }
 
 /** The one grant of a group at a place, or the one it holds everywhere. */
-function grantAt(groupId: ObjectId, scope: Scope | undefined): Filter<GrantRecord> {
+function grantAt(groupId: ObjectId, scope: Reference | undefined): Filter<GrantRecord> {
   return {
     groupId,
     ...(scope === undefined ? { scope: { $exists: false } } : atPlace(scope)),
@@ -242,14 +224,14 @@ function grantAt(groupId: ObjectId, scope: Scope | undefined): Filter<GrantRecor
 }
 
 /** Matches a scope by kind and id, as the unique index holds them. */
-function atPlace(scope: Scope): Filter<GrantRecord> {
+function atPlace(scope: Reference): Filter<GrantRecord> {
   return { 'scope.kind': scope.kind, 'scope.id': scope.id } as Filter<GrantRecord>;
 }
 
 /** The trace of a grant change at its place; one held everywhere has none, so at the group. */
 function grantEvent(
   kind: string,
-  input: { readonly groupId: ObjectId; readonly scope?: Scope; readonly reason?: string },
+  input: { readonly groupId: ObjectId; readonly scope?: Reference; readonly reason?: string },
   by: string,
   extra: { readonly rights?: Right[] } = {},
 ): NewEvent {

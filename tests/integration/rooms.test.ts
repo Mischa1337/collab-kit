@@ -90,38 +90,13 @@ describe('what a room bundles', () => {
     const room = await createRoom(storage.db, { name: 'Seminar', createdBy: 'alice' });
     const id = new ObjectId();
 
-    await addToRoom(storage.db, room._id, { kind: 'group', id, addedBy: 'alice' });
+    await addToRoom(storage.db, room._id, { kind: 'workpiece', id, addedBy: 'alice' });
     await expect(
-      addToRoom(storage.db, room._id, { kind: 'group', id, addedBy: 'bob' }),
+      addToRoom(storage.db, room._id, { kind: 'workpiece', id, addedBy: 'bob' }),
     ).resolves.toBe(false);
 
     expect((await findRoom(storage.db, room._id))?.references).toHaveLength(1);
     await expect(traces(room._id, 'reference-added')).resolves.toHaveLength(1);
-  });
-
-  it('tells the kinds apart, even under the same id', async () => {
-    const room = await createRoom(storage.db, { name: 'Seminar', createdBy: 'alice' });
-    const id = new ObjectId();
-
-    await addToRoom(storage.db, room._id, { kind: 'workpiece', id, addedBy: 'alice' });
-    await addToRoom(storage.db, room._id, { kind: 'group', id, addedBy: 'alice' });
-
-    expect((await findRoom(storage.db, room._id))?.references).toHaveLength(2);
-  });
-
-  it('carries a kind the service has never heard of', async () => {
-    const room = await createRoom(storage.db, { name: 'Seminar', createdBy: 'alice' });
-
-    await addToRoom(storage.db, room._id, {
-      kind: 'whatever-the-tool-brings',
-      id: 'a key of its own',
-      addedBy: 'alice',
-    });
-
-    expect((await findRoom(storage.db, room._id))?.references[0]).toMatchObject({
-      kind: 'whatever-the-tool-brings',
-      id: 'a key of its own',
-    });
   });
 
   it('takes a reference out again and leaves the rest alone', async () => {
@@ -132,7 +107,7 @@ describe('what a room bundles', () => {
     await addToRoom(storage.db, room._id, { kind: 'workpiece', id: going, addedBy: 'alice' });
     await addToRoom(storage.db, room._id, { kind: 'workpiece', id: staying, addedBy: 'alice' });
 
-    const removal = { kind: 'workpiece', id: going, removedBy: 'alice' };
+    const removal = { kind: 'workpiece' as const, id: going, removedBy: 'alice' };
     await expect(removeFromRoom(storage.db, room._id, removal)).resolves.toBe(true);
     await expect(removeFromRoom(storage.db, room._id, removal)).resolves.toBe(false);
 
