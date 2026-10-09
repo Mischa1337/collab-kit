@@ -380,12 +380,13 @@ describe('telling it at once', () => {
     await stored(workpieceId, 3);
     const [event] = await lost(workpieceId, 1);
 
-    // As the routes give it: ids as hex.
+    // As the routes give it: ids as hex, with the names of both.
     const told = {
       _id: event?._id.toHexString(),
       kind: 'work-lost',
       affects: ['alice', 'bob'],
       anchor: { kind: 'workpiece', id: workpieceId.toHexString() },
+      names: { alice: 'alice', bob: 'bob' },
     };
     expect(await waitFor(() => carol.events.length === 1 && back.events.length === 1)).toBe(true);
     expect(carol.events[0]).toMatchObject(told);

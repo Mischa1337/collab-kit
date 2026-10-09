@@ -4,6 +4,7 @@ import type { Db } from 'mongodb';
 import { may, mayHandOn, maySeeGroup, placeExists, rightsAt } from '../auth/access.ts';
 import { findGrant, grantsAt, grantsOf, removeGrant, setGrant } from '../db/collections/grants.ts';
 import { findGroup } from '../db/collections/groups.ts';
+import { withNames } from '../db/names.ts';
 import type { Actor } from '../model/actor.ts';
 import type { Reference } from '../model/anchor.ts';
 import { RIGHTS } from '../model/right.ts';
@@ -67,7 +68,7 @@ export function grantRoutes(db: Db, recheckAccess: () => Promise<void>): Router 
     if (changed) {
       await recheckAccess();
     }
-    response.json(await findGrant(db, groupId, scope));
+    response.json(await withNames(db, await findGrant(db, groupId, scope)));
   });
 
   // In the query and not the body: a body on DELETE may get lost on the way.
@@ -127,7 +128,8 @@ export function grantRoutes(db: Db, recheckAccess: () => Promise<void>): Router 
       return fail(response, 403, 'not allowed to read these grants');
     }
 
-    response.json(groupId === undefined ? await grantsAt(db, scope) : await grantsOf(db, groupId));
+    const grants = groupId === undefined ? await grantsAt(db, scope) : await grantsOf(db, groupId);
+    response.json(await withNames(db, grants));
   });
 
   /** What this token may do at a thing, or everywhere without one, so a tool can shape its view. */

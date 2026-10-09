@@ -4,6 +4,7 @@ import { loadKeySet } from './auth/jwks.ts';
 import { createTokenCheck } from './auth/token.ts';
 import { applyDefinitions } from './db/apply.ts';
 import { connect } from './db/client.ts';
+import { createActorNotes } from './db/collections/actors.ts';
 import { collectionDefinitions } from './db/schemas.ts';
 import { createWorkpieceHub } from './realtime/hub.ts';
 import { attachGateway } from './realtime/gateway.ts';
@@ -32,8 +33,10 @@ const checkToken = createTokenCheck({
   labelClaim: config.labelClaim,
   ...defined({ issuer: config.jwtIssuer, audience: config.jwtAudience, top: config.top }),
 });
+// One memory of the names written, so REST and WebSocket do not each write them again.
+const noteActor = createActorNotes(storage.db, log);
 // Keeps the open workpieces in memory for real-time work.
-const hub = createWorkpieceHub({ db: storage.db, logger: log });
+const hub = createWorkpieceHub({ db: storage.db, logger: log, noteActor });
 const server = createServer({
   logger: log,
   api: createApi({
@@ -41,6 +44,7 @@ const server = createServer({
     hub,
     checkToken,
     logger: log,
+    noteActor,
     // The gateway is attached below; it needs this server, and these routes need it.
     recheckAccess: () => gateway.recheck(),
     ...defined({ decisionStates: config.decisionStates }),

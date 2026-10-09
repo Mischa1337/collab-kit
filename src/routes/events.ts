@@ -11,6 +11,7 @@ import {
   type EventQuery,
   type EventRecord,
 } from '../db/collections/events.ts';
+import { eventKeysOf, withNames } from '../db/names.ts';
 import type { Actor } from '../model/actor.ts';
 import {
   ANCHOR_QUERY_RULE,
@@ -53,11 +54,11 @@ export function eventRoutes(db: Db): Router {
     const query = { anchor, ...defined({ kind, createdBy, before, limit }) };
 
     // With a cut a stream, read forwards; without one a history, read backwards.
-    response.json(
+    const events =
       since === undefined
         ? await readEvents(db, query)
-        : await readEventsSince(db, { ...query, since }),
-    );
+        : await readEventsSince(db, { ...query, since });
+    response.json(await withNames(db, events, eventKeysOf));
   });
 
   /** What concerns this token, such as its work somebody removed, wherever it may still see. */
@@ -73,12 +74,11 @@ export function eventRoutes(db: Db): Router {
     }
 
     const actor = actorOf(request);
-    response.json(
-      await readVisible(db, actor, {
-        affects: actor.actorId,
-        ...defined({ since, before, kind, limit }),
-      }),
-    );
+    const events = await readVisible(db, actor, {
+      affects: actor.actorId,
+      ...defined({ since, before, kind, limit }),
+    });
+    response.json(await withNames(db, events, eventKeysOf));
   });
 
   /** What the tool reports itself, a visit or a reading mark; the kind is free. */
@@ -113,14 +113,13 @@ export function eventRoutes(db: Db): Router {
     // Only the service says what a comment or task is about, so no report lands in another room.
     const about =
       anchor.kind === 'comment' || anchor.kind === 'task' ? await aboutOf(db, anchor) : undefined;
-    response.status(201).json(
-      await recordEvent(db, {
-        kind,
-        createdBy: actor.actorId,
-        anchor,
-        ...defined({ about, at, label, reason, detail }),
-      }),
-    );
+    const event = await recordEvent(db, {
+      kind,
+      createdBy: actor.actorId,
+      anchor,
+      ...defined({ about, at, label, reason, detail }),
+    });
+    response.status(201).json(await withNames(db, event, eventKeysOf));
   });
 
   return routes;

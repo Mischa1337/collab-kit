@@ -20,6 +20,7 @@ import {
   setTaskState,
   type TaskQuery,
 } from '../db/collections/tasks.ts';
+import { withNames } from '../db/names.ts';
 import {
   ANCHOR_QUERY_RULE,
   ASSIGNEE_RULE,
@@ -111,19 +112,18 @@ export function taskRoutes(db: Db, decisions: readonly string[]): Router {
 
     // Looked up here and never read from the body, so no task lands in another room's stream.
     const about = await aboutOfTask(db, { anchor, parentId });
-    response.status(201).json(
-      await createTask(db, {
-        kind,
-        title,
-        state,
-        createdBy: actor.actorId,
-        ...defined({ anchor, parentId, assignees, order, detail, about }),
-      }),
-    );
+    const task = await createTask(db, {
+      kind,
+      title,
+      state,
+      createdBy: actor.actorId,
+      ...defined({ anchor, parentId, assignees, order, detail, about }),
+    });
+    response.status(201).json(await withNames(db, task));
   });
 
   routes.get('/tasks/:id', seeing, async (request, response) => {
-    response.json(await findTask(db, idOf(request)));
+    response.json(await withNames(db, await findTask(db, idOf(request))));
   });
 
   /** Tasks at an anchor or under a parent; whoever sees that entry sees all that is found. */
@@ -163,7 +163,8 @@ export function taskRoutes(db: Db, decisions: readonly string[]): Router {
     }
 
     const assignees: TaskQuery['assignees'] = assignee === undefined ? undefined : [assignee];
-    response.json(await readTasks(db, defined({ anchor, parentId, assignees, kind, state })));
+    const tasks = await readTasks(db, defined({ anchor, parentId, assignees, kind, state }));
+    response.json(await withNames(db, tasks));
   });
 
   /** Moves the state; who moved it and why land in the events of the task. */
@@ -188,13 +189,12 @@ export function taskRoutes(db: Db, decisions: readonly string[]): Router {
     }
 
     const about = await aboutOfTask(db, task);
-    response.json(
-      await setTaskState(db, id, {
-        state,
-        changedBy: actor.actorId,
-        ...defined({ reason, about }),
-      }),
-    );
+    const changed = await setTaskState(db, id, {
+      state,
+      changedBy: actor.actorId,
+      ...defined({ reason, about }),
+    });
+    response.json(await withNames(db, changed));
   });
 
   /** Gives the task to one more person or group; who gave it to whom and why land in its events. */
@@ -229,7 +229,7 @@ export function taskRoutes(db: Db, decisions: readonly string[]): Router {
     });
 
     // 200 if it was already there: giving it twice is no error, it just changes nothing.
-    response.status(added ? 201 : 200).json(await findTask(db, id));
+    response.status(added ? 201 : 200).json(await withNames(db, await findTask(db, id)));
   });
 
   // In the query and not the body: a body on DELETE may get lost on the way.
@@ -253,7 +253,7 @@ export function taskRoutes(db: Db, decisions: readonly string[]): Router {
       changedBy: actorOf(request).actorId,
       ...defined({ reason, about }),
     });
-    response.json(await findTask(db, id));
+    response.json(await withNames(db, await findTask(db, id)));
   });
 
   /** Where a client finds its work: tasks given to this token or to one of its groups. */
@@ -266,7 +266,7 @@ export function taskRoutes(db: Db, decisions: readonly string[]): Router {
     }
 
     const assignees = await assigneesFor(db, actorOf(request));
-    response.json(await readTasks(db, { assignees, ...defined({ state }) }));
+    response.json(await withNames(db, await readTasks(db, { assignees, ...defined({ state }) })));
   });
 
   return routes;

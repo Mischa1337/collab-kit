@@ -4,7 +4,9 @@ import type { Db } from 'mongodb';
 import { may, maySee, workpiecesVisibleTo } from '../auth/access.ts';
 import { addToRoom } from '../db/collections/rooms.ts';
 import { createWorkpiece, findWorkpiece } from '../db/collections/workpieces.ts';
+import { latestPerActor } from '../db/collections/events.ts';
 import { isUpdateOf, summarizeUpdatesSince } from '../db/collections/updates.ts';
+import { eventKeysOf, withNames } from '../db/names.ts';
 import type { WorkpieceHub } from '../realtime/hub.ts';
 import { readStateAt } from '../realtime/persistence.ts';
 import { asCount, asObject, asObjectId, asText } from '../utils/input.ts';
@@ -64,12 +66,12 @@ export function workpieceRoutes(db: Db, hub: WorkpieceHub): Router {
       await addToRoom(db, roomId, { kind: 'workpiece', id: workpiece._id, addedBy: actor.actorId });
     }
 
-    response.status(201).json(workpiece);
+    response.status(201).json(await withNames(db, workpiece));
   });
 
   /** Every workpiece this token may see, so a tool can offer them, say for a room. */
   routes.get('/workpieces', async (request, response) => {
-    response.json(await workpiecesVisibleTo(db, actorOf(request)));
+    response.json(await withNames(db, await workpiecesVisibleTo(db, actorOf(request))));
   });
 
   routes.get('/workpieces/:id', async (request, response) => {
@@ -80,7 +82,7 @@ export function workpieceRoutes(db: Db, hub: WorkpieceHub): Router {
       return fail(response, 404, 'unknown workpiece');
     }
 
-    response.json(workpiece);
+    response.json(await withNames(db, workpiece));
   });
 
   /** The chain of changes, oldest first after since: who and when, the bytes only as a size. */
@@ -93,7 +95,15 @@ export function workpieceRoutes(db: Db, hub: WorkpieceHub): Router {
       return fail(response, 400, `${unusable} is unusable`);
     }
 
-    response.json(await summarizeUpdatesSince(db, idOf(request), since, limit));
+    response.json(
+      await withNames(db, await summarizeUpdatesSince(db, idOf(request), since, limit)),
+    );
+  });
+
+  /** Per person the last trace at the workpiece and its comments and tasks, newest first. */
+  routes.get('/workpieces/:id/activity', seeing, async (request, response) => {
+    const activity = await latestPerActor(db, [{ kind: 'workpiece', id: idOf(request) }]);
+    response.json(await withNames(db, activity));
   });
 
   /** The stored state as Yjs bytes after the change at, or the newest; restoring is the tool's. */
@@ -129,12 +139,11 @@ export function workpieceRoutes(db: Db, hub: WorkpieceHub): Router {
       return fail(response, 400, `${unusable} is unusable`);
     }
 
-    response.status(201).json(
-      await hub.checkpoint(idOf(request), {
-        createdBy: actorOf(request).actorId,
-        ...defined({ label, reason }),
-      }),
-    );
+    const checkpoint = await hub.checkpoint(idOf(request), {
+      createdBy: actorOf(request).actorId,
+      ...defined({ label, reason }),
+    });
+    response.status(201).json(await withNames(db, checkpoint, eventKeysOf));
   });
 
   return routes;

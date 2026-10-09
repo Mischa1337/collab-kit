@@ -5,10 +5,11 @@ import type * as Y from 'yjs';
 
 import type { Actor } from '../model/actor.ts';
 import type { Anchor } from '../model/anchor.ts';
-import { touchActor } from '../db/collections/actors.ts';
+import { createActorNotes, type ActorNotes } from '../db/collections/actors.ts';
 import { workpieceExists } from '../db/collections/workpieces.ts';
 import { recordEvent, type EventRecord } from '../db/collections/events.ts';
 import { creatorsOf, newestUpdateId } from '../db/collections/updates.ts';
+import { eventKeysOf, withNames } from '../db/names.ts';
 import { defined } from '../utils/optional.ts';
 import {
   deleterOf,
@@ -106,11 +107,14 @@ export interface HubOptions {
   readonly logger: Logger;
   /** Changes that may pile up before folding again; only a matter of loading time. */
   readonly foldEvery?: number;
+  /** Shared with the routes, so a name is written once; left out, the hub keeps its own. */
+  readonly noteActor?: ActorNotes;
 }
 
 /** Keeps one Y.Doc per open workpiece, passes changes on and keeps traces of who was there. */
 export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
   const foldEvery = options.foldEvery ?? 400;
+  const noteActor = options.noteActor ?? createActorNotes(options.db, options.logger);
   // Every held workpiece by its hex key; counting never has to wait for it to load.
   const heldByKey = new Map<string, Held>();
   // Closed for everyone after a change could not be stored; nothing more is done with them.
@@ -187,19 +191,14 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
     }
   }
 
-  /** Leaves the trace joined or left and notes the person as seen; neither fails the caller. */
+  /** Leaves the trace joined or left and keeps the name of the person; neither fails the caller. */
   async function notePresence(
     workpieceId: ObjectId,
     kind: 'joined' | 'left',
     actor: Actor,
     at?: ObjectId,
   ): Promise<void> {
-    await Promise.all([
-      trace(workpieceId, kind, actor.actorId, at),
-      touchActor(options.db, actor).catch((error: unknown) => {
-        options.logger.error({ err: error }, 'could not record the actor');
-      }),
-    ]);
+    await Promise.all([trace(workpieceId, kind, actor.actorId, at), noteActor(actor)]);
   }
 
   /** Whose pieces these clients brought; asked of the database once, remembered from then on. */
@@ -299,7 +298,7 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
         events.map(async (event) => {
           const record = await recordEvent(options.db, event);
           // Only what is written goes out, so nobody hears of an event that is nowhere kept.
-          notify(loaded.workpiece, encodeEvent(record));
+          notify(loaded.workpiece, encodeEvent(await withNames(options.db, record, eventKeysOf)));
         }),
       );
     } catch (error) {

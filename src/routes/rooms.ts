@@ -1,9 +1,9 @@
 import { Router } from 'express';
-import type { Db } from 'mongodb';
+import type { Db, ObjectId } from 'mongodb';
 
 import { may, maySee, roomsVisibleTo } from '../auth/access.ts';
 import { grantsAt } from '../db/collections/grants.ts';
-import { readEventsSince } from '../db/collections/events.ts';
+import { latestPerActor, readEventsSince } from '../db/collections/events.ts';
 import {
   addToRoom,
   createRoom,
@@ -13,6 +13,8 @@ import {
   renameRoom,
   setRoomSettings,
 } from '../db/collections/rooms.ts';
+import { eventKeysOf, withNames } from '../db/names.ts';
+import type { Actor } from '../model/actor.ts';
 import type { Reference } from '../model/anchor.ts';
 import { asActorId, asCount, asObject, asObjectId, asReference, asText } from '../utils/input.ts';
 import { defined } from '../utils/optional.ts';
@@ -62,11 +64,11 @@ export function roomRoutes(db: Db, recheckAccess: () => Promise<void>): Router {
       ...defined({ settings }),
     });
 
-    response.status(201).json(room);
+    response.status(201).json(await withNames(db, room));
   });
 
   routes.get('/rooms/:id', seeing, async (request, response) => {
-    response.json(await findRoom(db, idOf(request)));
+    response.json(await withNames(db, await findRoom(db, idOf(request))));
   });
 
   routes.patch('/rooms/:id', seeing, changing, async (request, response) => {
@@ -95,7 +97,7 @@ export function roomRoutes(db: Db, recheckAccess: () => Promise<void>): Router {
     if (settings !== undefined) {
       await setRoomSettings(db, id, settings);
     }
-    response.json(await findRoom(db, id));
+    response.json(await withNames(db, await findRoom(db, id)));
   });
 
   // The reason in the query, as a body on DELETE may get lost on the way.
@@ -146,7 +148,7 @@ export function roomRoutes(db: Db, recheckAccess: () => Promise<void>): Router {
     });
 
     // 200 if it was already in: adding it twice is no error, it just changes nothing.
-    response.status(added ? 201 : 200).json(await findRoom(db, id));
+    response.status(added ? 201 : 200).json(await withNames(db, await findRoom(db, id)));
   });
 
   // In the query and not the body: a body on DELETE may get lost on the way.
@@ -165,7 +167,7 @@ export function roomRoutes(db: Db, recheckAccess: () => Promise<void>): Router {
     });
     // Without the reference, open connections to what it opened would carry on as before.
     await recheckAccess();
-    response.json(await findRoom(db, id));
+    response.json(await withNames(db, await findRoom(db, id)));
   });
 
   /** The room and all it bundles, oldest first after since; hub traces anchor at workpieces. */
@@ -180,31 +182,38 @@ export function roomRoutes(db: Db, recheckAccess: () => Promise<void>): Router {
       return fail(response, 400, `${unusable} is unusable`);
     }
 
-    const id = idOf(request);
-    const room = await findRoom(db, id);
-    // The groups that may into the room belong to its stream, as when they lay in it.
-    const holders = await grantsAt(db, { kind: 'room', id });
-    const bundled: Reference[] = [
-      ...(room?.references ?? []),
-      ...holders.map((grant) => ({ kind: 'group' as const, id: grant.groupId })),
-    ];
-    // Only what the actor may see, so the room shows no more than /events would.
-    const actor = actorOf(request);
-    const visible = await Promise.all(bundled.map((reference) => maySee(db, actor, reference)));
-    const seen = bundled.filter((_, index) => visible[index]);
+    const references = await bundledIn(db, actorOf(request), idOf(request));
+    const events = await readEventsSince(db, {
+      references,
+      ...defined({ since, kind, createdBy, limit }),
+    });
+    response.json(await withNames(db, events, eventKeysOf));
+  });
 
-    response.json(
-      await readEventsSince(db, {
-        references: [{ kind: 'room', id }, ...seen],
-        ...defined({ since, kind, createdBy, limit }),
-      }),
-    );
+  /** Per person the last trace in the room and all it bundles, newest first (D1.10). */
+  routes.get('/rooms/:id/activity', seeing, async (request, response) => {
+    const references = await bundledIn(db, actorOf(request), idOf(request));
+    response.json(await withNames(db, await latestPerActor(db, references)));
   });
 
   /** Where a client starts: every room this token may see. */
   routes.get('/me/rooms', async (request, response) => {
-    response.json(await roomsVisibleTo(db, actorOf(request)));
+    response.json(await withNames(db, await roomsVisibleTo(db, actorOf(request))));
   });
 
   return routes;
+}
+
+/** The room and what it bundles, as far as the actor sees it: where its stream reads. */
+async function bundledIn(db: Db, actor: Actor, id: ObjectId): Promise<[Reference, ...Reference[]]> {
+  const room = await findRoom(db, id);
+  // The groups that may into the room belong to its stream, as when they lay in it.
+  const holders = await grantsAt(db, { kind: 'room', id });
+  const bundled: Reference[] = [
+    ...(room?.references ?? []),
+    ...holders.map((grant) => ({ kind: 'group' as const, id: grant.groupId })),
+  ];
+  // Only what the actor may see, so the room shows no more than /events would.
+  const visible = await Promise.all(bundled.map((reference) => maySee(db, actor, reference)));
+  return [{ kind: 'room', id }, ...bundled.filter((_, index) => visible[index])];
 }

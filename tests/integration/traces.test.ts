@@ -133,32 +133,10 @@ describe('presence', () => {
     const actors = storage.db.collection<ActorRecord>('actors');
     expect(await waitFor(async () => (await actors.findOne({ _id: 'alice' })) !== null)).toBe(true);
 
-    const stored = await actors.findOne({ _id: 'alice' });
-    expect(stored).toMatchObject({ _id: 'alice', label: 'alice' });
-    expect(stored?.lastSeenAt).toBeInstanceOf(Date);
+    // Only the name: when somebody was last there is read from the events of a place.
+    expect(await actors.findOne({ _id: 'alice' })).toEqual({ _id: 'alice', label: 'alice' });
 
     await alice.close();
-  });
-
-  it('moves lastSeenAt again on the way out', async () => {
-    const workpieceId = await freshWorkpiece();
-    const carol = await open(workpieceId, 'carol');
-    await carol.synced;
-
-    const actors = storage.db.collection<ActorRecord>('actors');
-    expect(await waitFor(async () => (await actors.findOne({ _id: 'carol' })) !== null)).toBe(true);
-    const arrived = (await actors.findOne({ _id: 'carol' }))?.lastSeenAt;
-
-    // Lets the clock move on, so the second timestamp can be told apart from the first.
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    await carol.close();
-
-    expect(
-      await waitFor(async () => {
-        const left = (await actors.findOne({ _id: 'carol' }))?.lastSeenAt;
-        return arrived !== undefined && left !== undefined && left > arrived;
-      }),
-    ).toBe(true);
   });
 
   it('marks where in the stream somebody left', async () => {

@@ -7,7 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createTokenCheck } from '../../src/auth/token.ts';
 import { applyDefinitions } from '../../src/db/apply.ts';
 import { connect, type Storage } from '../../src/db/client.ts';
-import { touchActor } from '../../src/db/collections/actors.ts';
+import { noteActor } from '../../src/db/collections/actors.ts';
 import type { EventRecord } from '../../src/db/collections/events.ts';
 import { collectionDefinitions } from '../../src/db/schemas.ts';
 import { createWorkpieceHub } from '../../src/realtime/hub.ts';
@@ -390,21 +390,14 @@ describe('names to actor keys', () => {
   }
 
   it('names oneself and the members of every group one sees, everyone at the top', async () => {
-    await Promise.all([
-      touchActor(storage.db, { actorId: 'ida', label: 'Ida' }),
-      touchActor(storage.db, { actorId: 'jan' }),
-      touchActor(storage.db, { actorId: 'kim', label: 'Kim' }),
-    ]);
+    await Promise.all([noteActor(storage.db, 'ida', 'Ida'), noteActor(storage.db, 'kim', 'Kim')]);
     await group(['alice', 'ida', 'jan']);
     const kims = await group(['kim']);
     const leads = await group(['bob']);
     await grant(leads, { kind: 'group', id: kims }, ['see']);
 
-    // kim is in no group alice sees, and ghost was never seen; jan has no name yet.
-    expect(await names(alice, 'ida, jan,kim,ghost')).toEqual([
-      { actorId: 'ida', label: 'Ida' },
-      { actorId: 'jan' },
-    ]);
+    // kim is in no group alice sees, ghost was never seen, and jan came without a name.
+    expect(await names(alice, 'ida, jan,kim,ghost')).toEqual([{ actorId: 'ida', label: 'Ida' }]);
     expect(await names(bob, 'kim,ida')).toEqual([{ actorId: 'kim', label: 'Kim' }]);
     expect(await names(dozent, 'kim,ida,ghost')).toEqual([
       { actorId: 'ida', label: 'Ida' },

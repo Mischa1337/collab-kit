@@ -11,6 +11,7 @@ import {
   setCommentBody,
   setCommentState,
 } from '../db/collections/comments.ts';
+import { withNames } from '../db/names.ts';
 import {
   ANCHOR_QUERY_RULE,
   ANCHOR_RULE,
@@ -90,19 +91,18 @@ export function commentRoutes(db: Db, decisions: readonly string[]): Router {
 
     // Looked up here and never read from the body, so no comment lands in another room's stream.
     const about = await aboutOf(db, anchor);
-    response.status(201).json(
-      await createComment(db, {
-        kind,
-        anchor,
-        createdBy: actor.actorId,
-        body: content,
-        ...defined({ parentId, state, about }),
-      }),
-    );
+    const comment = await createComment(db, {
+      kind,
+      anchor,
+      createdBy: actor.actorId,
+      body: content,
+      ...defined({ parentId, state, about }),
+    });
+    response.status(201).json(await withNames(db, comment));
   });
 
   routes.get('/comments/:id', seeing, async (request, response) => {
-    response.json(await findComment(db, idOf(request)));
+    response.json(await withNames(db, await findComment(db, idOf(request))));
   });
 
   /** Everything said about one thing, oldest first; with since only what came after it. */
@@ -125,9 +125,11 @@ export function commentRoutes(db: Db, decisions: readonly string[]): Router {
       return fail(response, 404, 'unknown anchor');
     }
 
-    response.json(
-      await readComments(db, { anchor, ...defined({ parentId, kind, state, createdBy, since }) }),
-    );
+    const comments = await readComments(db, {
+      anchor,
+      ...defined({ parentId, kind, state, createdBy, since }),
+    });
+    response.json(await withNames(db, comments));
   });
 
   /** Moves the state; who moved it and why land in the events of the comment, D8.16. */
@@ -172,15 +174,15 @@ export function commentRoutes(db: Db, decisions: readonly string[]): Router {
         ...defined({ reason, about }),
       });
     }
-    response.json(
+    const changed =
       state === undefined
         ? await findComment(db, id)
         : await setCommentState(db, id, {
             state,
             changedBy: actor.actorId,
             ...defined({ reason, about }),
-          }),
-    );
+          });
+    response.json(await withNames(db, changed));
   });
 
   /** Takes the words away for good; the shell stays, so the answers keep their thread. */
@@ -202,7 +204,7 @@ export function commentRoutes(db: Db, decisions: readonly string[]): Router {
     // Deleting twice is no mistake, it only leaves no second trace.
     const about = await aboutOf(db, comment.anchor);
     await deleteComment(db, id, { deletedBy: actor.actorId, ...defined({ reason, about }) });
-    response.json(await findComment(db, id));
+    response.json(await withNames(db, await findComment(db, id)));
   });
 
   return routes;

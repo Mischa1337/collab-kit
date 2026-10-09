@@ -197,6 +197,32 @@ export async function readEventsSince(db: Db, query: EventQuery = {}): Promise<E
   return query.limit === undefined ? found.toArray() : found.limit(query.limit).toArray();
 }
 
+/** The last trace a person left among some places; reading alone leaves none. */
+export interface Activity {
+  actorId: string;
+  /** When the newest event of this person happened. */
+  at: Date;
+  kind: string;
+}
+
+/** The newest event per person among these places, newest first (D1.10). */
+export async function latestPerActor(
+  db: Db,
+  references: readonly [Reference, ...Reference[]],
+): Promise<Activity[]> {
+  return db
+    .collection<EventRecord>('events')
+    .aggregate<Activity>([
+      // work-lost names the other side, who need not have been there when it was written.
+      { $match: { ...filterOf({ references }), kind: { $ne: 'work-lost' } } },
+      { $sort: { _id: -1 } },
+      { $group: { _id: '$createdBy', at: { $first: '$createdAt' }, kind: { $first: '$kind' } } },
+      { $sort: { at: -1, _id: 1 } },
+      { $project: { _id: 0, actorId: '$_id', at: 1, kind: 1 } },
+    ])
+    .toArray();
+}
+
 /** Only the newest; a reading mark is no stored field but the last event of kind read. */
 export async function latestEvent(db: Db, query: EventQuery): Promise<EventRecord | null> {
   return db.collection<EventRecord>('events').findOne(filterOf(query), { sort: { _id: -1 } });
