@@ -5,17 +5,17 @@ import {
   latestMerge,
   recordEvent,
   type EventRecord,
-} from '../db/collections/events.ts';
-import { addToRoom } from '../db/collections/rooms.ts';
-import { copyUpdates, readUpdatesSince, readUpdatesUntil } from '../db/collections/updates.ts';
+} from '../../db/collections/events.ts';
+import { addToRoom } from '../../db/collections/rooms.ts';
+import { copyUpdates, readUpdatesSince, readUpdatesUntil } from '../../db/collections/updates.ts';
 import {
   createWorkpiece,
   findWorkpiece,
   type WorkpieceRecord,
-} from '../db/collections/workpieces.ts';
-import { WHOLE } from '../model/anchor.ts';
-import { defined } from '../utils/optional.ts';
-import type { WorkpieceHub } from './hub.ts';
+} from '../../db/collections/workpieces.ts';
+import { WHOLE } from '../../model/anchor.ts';
+import { defined } from '../../utils/optional.ts';
+import type { WorkpieceHub } from '../hub/hub.ts';
 
 /** What a person gives a fork: its name, where to fork, where to put it and why. */
 export interface NewFork {

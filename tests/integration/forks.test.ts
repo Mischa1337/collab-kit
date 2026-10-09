@@ -22,9 +22,13 @@ import {
 } from '../../src/db/collections/workpieces.ts';
 import { collectionDefinitions } from '../../src/db/schemas.ts';
 import type { Right } from '../../src/model/right.ts';
-import { attachGateway, type Gateway } from '../../src/realtime/gateway.ts';
-import { createWorkpieceHub, type Connection } from '../../src/realtime/hub.ts';
-import { readStateAt } from '../../src/realtime/persistence.ts';
+import {
+  attachGateway,
+  createWorkpieceHub,
+  readStateAt,
+  type Gateway,
+  type Connection,
+} from '../../src/realtime/index.ts';
 import { createApi } from '../../src/routes/index.ts';
 import { createServer } from '../../src/routes/server.ts';
 import { connectClient, waitFor } from './yjs-client.ts';

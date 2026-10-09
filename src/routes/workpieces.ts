@@ -8,9 +8,12 @@ import { latestPerActor } from '../db/collections/events.ts';
 import { isUpdateOf, summarizeUpdatesSince } from '../db/collections/updates.ts';
 import { eventKeysOf, withNames } from '../db/names.ts';
 import type { Actor } from '../model/actor.ts';
-import { forkWorkpiece, mergeWorkpiece } from '../realtime/forks.ts';
-import type { WorkpieceHub } from '../realtime/hub.ts';
-import { readStateAt } from '../realtime/persistence.ts';
+import {
+  forkWorkpiece,
+  mergeWorkpiece,
+  readStateAt,
+  type WorkpieceHub,
+} from '../realtime/index.ts';
 import { asCount, asObject, asObjectId, asText, asUnits } from '../utils/input.ts';
 import { defined } from '../utils/optional.ts';
 import { actorOf, bodyOf, fail, guard, idOf, requireId, unusableField } from './http.ts';

@@ -5,7 +5,7 @@ import type { Logger } from 'pino';
 import type { Actor } from '../model/actor.ts';
 import { requireActor } from '../auth/middleware.ts';
 import { createActorNotes, type ActorNotes } from '../db/collections/actors.ts';
-import type { WorkpieceHub } from '../realtime/hub.ts';
+import type { WorkpieceHub } from '../realtime/index.ts';
 import { actorRoutes } from './actors.ts';
 import { roomRoutes } from './rooms.ts';
 import { groupRoutes } from './groups.ts';

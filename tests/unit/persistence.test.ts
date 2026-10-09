@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { enqueue } from '../../src/realtime/persistence.ts';
+import { enqueue } from '../../src/realtime/hub/persistence.ts';
 
 describe('enqueue', () => {
   it('runs work one after another, in the order it was queued', async () => {

@@ -11,7 +11,7 @@ import type { ActorRecord } from '../../src/db/collections/actors.ts';
 import { createComment } from '../../src/db/collections/comments.ts';
 import { recordEvent } from '../../src/db/collections/events.ts';
 import { collectionDefinitions } from '../../src/db/schemas.ts';
-import { createWorkpieceHub } from '../../src/realtime/hub.ts';
+import { createWorkpieceHub } from '../../src/realtime/index.ts';
 import { createApi } from '../../src/routes/index.ts';
 import { createServer } from '../../src/routes/server.ts';
 

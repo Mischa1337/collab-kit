@@ -3,14 +3,14 @@ import type { Logger } from 'pino';
 import * as awarenessProtocol from 'y-protocols/awareness';
 import type * as Y from 'yjs';
 
-import type { Actor } from '../model/actor.ts';
-import type { Anchor } from '../model/anchor.ts';
-import { createActorNotes, type ActorNotes } from '../db/collections/actors.ts';
-import { workpieceExists } from '../db/collections/workpieces.ts';
-import { recordEvent, type EventRecord, type NewEvent } from '../db/collections/events.ts';
-import { creatorsOf, newestUpdateId, type UpdateRecord } from '../db/collections/updates.ts';
-import { eventKeysOf, withNames } from '../db/names.ts';
-import { defined } from '../utils/optional.ts';
+import type { Actor } from '../../model/actor.ts';
+import type { Anchor } from '../../model/anchor.ts';
+import { createActorNotes, type ActorNotes } from '../../db/collections/actors.ts';
+import { workpieceExists } from '../../db/collections/workpieces.ts';
+import { recordEvent, type EventRecord, type NewEvent } from '../../db/collections/events.ts';
+import { creatorsOf, newestUpdateId, type UpdateRecord } from '../../db/collections/updates.ts';
+import { eventKeysOf, withNames } from '../../db/names.ts';
+import { defined } from '../../utils/optional.ts';
 import {
   deleterOf,
   enqueue,
@@ -25,7 +25,7 @@ import {
   encodeEvent,
   encodeSyncUpdate,
   SENDER_DELETES,
-} from './protocol.ts';
+} from '../connection/protocol.ts';
 import {
   containersOf,
   deletionsIn,
@@ -36,7 +36,7 @@ import {
   type Deletions,
   type Loss,
   type Removal,
-} from './removals.ts';
+} from '../conflicts/removals.ts';
 
 /** Key in transaction.meta for what the change deleted, read while it still could be. */
 const DELETIONS = Symbol('deletions');

@@ -11,7 +11,7 @@ import {
   encodeSyncUpdate,
   handleMessage,
   MessageRefused,
-} from '../../src/realtime/protocol.ts';
+} from '../../src/realtime/connection/protocol.ts';
 
 // Every Awareness runs a timer until it is destroyed.
 const awarenesses: Awareness[] = [];

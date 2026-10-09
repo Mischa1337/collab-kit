@@ -16,8 +16,12 @@ import { addToRoom, createRoom } from '../../src/db/collections/rooms.ts';
 import { appendUpdate, creatorsOf, readUpdatesSince } from '../../src/db/collections/updates.ts';
 import { createWorkpiece } from '../../src/db/collections/workpieces.ts';
 import { collectionDefinitions } from '../../src/db/schemas.ts';
-import { attachGateway, type Gateway } from '../../src/realtime/gateway.ts';
-import { createWorkpieceHub, type WorkpieceHub } from '../../src/realtime/hub.ts';
+import {
+  attachGateway,
+  createWorkpieceHub,
+  type Gateway,
+  type WorkpieceHub,
+} from '../../src/realtime/index.ts';
 import { createServer } from '../../src/routes/server.ts';
 import { connectClient, waitFor } from './yjs-client.ts';
 

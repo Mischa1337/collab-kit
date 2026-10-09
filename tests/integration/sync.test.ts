@@ -18,8 +18,7 @@ import { setGrant } from '../../src/db/collections/grants.ts';
 import { addToRoom, createRoom } from '../../src/db/collections/rooms.ts';
 import { createWorkpiece } from '../../src/db/collections/workpieces.ts';
 import { collectionDefinitions } from '../../src/db/schemas.ts';
-import { createWorkpieceHub } from '../../src/realtime/hub.ts';
-import { attachGateway, type Gateway } from '../../src/realtime/gateway.ts';
+import { createWorkpieceHub, attachGateway, type Gateway } from '../../src/realtime/index.ts';
 import { createServer } from '../../src/routes/server.ts';
 import { connectClient, waitFor } from './yjs-client.ts';
 

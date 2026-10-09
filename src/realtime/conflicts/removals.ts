@@ -1,10 +1,10 @@
 import type { ObjectId } from 'mongodb';
 import * as Y from 'yjs';
 
-import type { NewEvent } from '../db/collections/events.ts';
-import type { UnitContainer } from '../db/collections/workpieces.ts';
-import type { Anchor } from '../model/anchor.ts';
-import { defined } from '../utils/optional.ts';
+import type { NewEvent } from '../../db/collections/events.ts';
+import type { UnitContainer } from '../../db/collections/workpieces.ts';
+import type { Anchor } from '../../model/anchor.ts';
+import { defined } from '../../utils/optional.ts';
 
 /** At most this many stretches go into one event; beyond that only how many there were. */
 const MAX_RANGES = 100;

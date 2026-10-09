@@ -5,11 +5,11 @@ import type { Db, ObjectId } from 'mongodb';
 import type { Logger } from 'pino';
 import { WebSocketServer, type WebSocket } from 'ws';
 
-import type { Actor } from '../model/actor.ts';
-import { workpieceAccess } from '../auth/access.ts';
-import { asObjectId } from '../utils/input.ts';
-import { isAllowedOrigin } from '../utils/origin.ts';
-import type { Connection, WorkpieceHub, OpenWorkpiece } from './hub.ts';
+import type { Actor } from '../../model/actor.ts';
+import { workpieceAccess } from '../../auth/access.ts';
+import { asObjectId } from '../../utils/input.ts';
+import { isAllowedOrigin } from '../../utils/origin.ts';
+import type { Connection, WorkpieceHub, OpenWorkpiece } from '../hub/hub.ts';
 import { encodeAwareness, encodeSyncStep1, handleMessage, MessageRefused } from './protocol.ts';
 
 /** The client announces two subprotocols: this marker and the token itself. */

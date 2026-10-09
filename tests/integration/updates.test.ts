@@ -15,9 +15,8 @@ import { addToRoom, createRoom } from '../../src/db/collections/rooms.ts';
 import { createWorkpiece, findWorkpieceWithFold } from '../../src/db/collections/workpieces.ts';
 import { collectionDefinitions } from '../../src/db/schemas.ts';
 import { appendUpdate, readUpdatesSince } from '../../src/db/collections/updates.ts';
-import { createWorkpieceHub } from '../../src/realtime/hub.ts';
-import { foldNow, loadWorkpiece, storeUpdate } from '../../src/realtime/persistence.ts';
-import { attachGateway, type Gateway } from '../../src/realtime/gateway.ts';
+import { createWorkpieceHub, attachGateway, type Gateway } from '../../src/realtime/index.ts';
+import { foldNow, loadWorkpiece, storeUpdate } from '../../src/realtime/hub/persistence.ts';
 import { createServer } from '../../src/routes/server.ts';
 import { connectClient, waitFor } from './yjs-client.ts';
 

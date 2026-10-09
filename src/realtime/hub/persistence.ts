@@ -5,14 +5,14 @@ import {
   findWorkpieceWithFold,
   foldState,
   type UnitContainer,
-} from '../db/collections/workpieces.ts';
+} from '../../db/collections/workpieces.ts';
 import {
   appendUpdate,
   readUpdatesDeleting,
   readUpdatesSince,
   readUpdatesUntil,
-} from '../db/collections/updates.ts';
-import { defined } from '../utils/optional.ts';
+} from '../../db/collections/updates.ts';
+import { defined } from '../../utils/optional.ts';
 
 /** How far a workpiece is stored, and the queue its writes run through. */
 export interface Stored {

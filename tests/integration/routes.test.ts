@@ -17,7 +17,7 @@ import { createTask, type NewTask } from '../../src/db/collections/tasks.ts';
 import { appendUpdate } from '../../src/db/collections/updates.ts';
 import { foldState } from '../../src/db/collections/workpieces.ts';
 import { collectionDefinitions } from '../../src/db/schemas.ts';
-import { createWorkpieceHub } from '../../src/realtime/hub.ts';
+import { createWorkpieceHub } from '../../src/realtime/index.ts';
 import { createApi } from '../../src/routes/index.ts';
 import { createServer } from '../../src/routes/server.ts';
 
