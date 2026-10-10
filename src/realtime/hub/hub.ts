@@ -1,42 +1,20 @@
-import type { Db, Document, ObjectId } from 'mongodb';
+import type { Db, ObjectId } from 'mongodb';
 import type { Logger } from 'pino';
 import * as awarenessProtocol from 'y-protocols/awareness';
 import type * as Y from 'yjs';
 
 import type { Actor } from '../../model/actor.ts';
-import type { Anchor } from '../../model/anchor.ts';
 import { createActorNotes, type ActorNotes } from '../../db/collections/actors.ts';
 import { workpieceExists } from '../../db/collections/workpieces.ts';
-import { recordEvent, type EventRecord, type NewEvent } from '../../db/collections/events.ts';
-import { creatorsOf, newestUpdateId, type UpdateRecord } from '../../db/collections/updates.ts';
-import { eventKeysOf, withNames } from '../../db/names.ts';
+import { recordEvent, type EventRecord } from '../../db/collections/events.ts';
+import { newestUpdateId } from '../../db/collections/updates.ts';
 import { defined } from '../../utils/optional.ts';
-import {
-  deleterOf,
-  enqueue,
-  foldNow,
-  loadWorkpiece,
-  storeUpdate,
-  type Stored,
-} from './persistence.ts';
-import {
-  applyAsSent,
-  encodeAwareness,
-  encodeEvent,
-  encodeSyncUpdate,
-  SENDER_DELETES,
-} from '../connection/protocol.ts';
-import {
-  containersOf,
-  deletionsIn,
-  idKey,
-  lossEvents,
-  removalEvents,
-  type DeleteSet,
-  type Deletions,
-  type Loss,
-  type Removal,
-} from '../conflicts/removals.ts';
+import { enqueue, foldNow, loadWorkpiece, storeUpdate, type Stored } from './persistence.ts';
+import { encodeAwareness, encodeSyncUpdate, SENDER_DELETES } from '../connection/protocol.ts';
+import { deletionsIn, type DeleteSet, type Deletions } from '../conflicts/deletions.ts';
+import { anchorOf, createTracing } from '../conflicts/tracing.ts';
+import { containersOf } from '../conflicts/units.ts';
+import { collect, isReplayer, recordMerge, replay, type Merge } from '../forks/replay.ts';
 
 /** Key in transaction.meta for what the change deleted, read while it still could be. */
 const DELETIONS = Symbol('deletions');
@@ -68,18 +46,6 @@ export interface OpenWorkpiece {
 export interface NewCheckpoint {
   readonly createdBy: string;
   readonly label?: string;
-  readonly reason?: string;
-}
-
-/** What a merge replays: the changes of another workpiece after the mark, and on whose behalf. */
-export interface Merge {
-  /** The workpiece the changes come from. */
-  readonly from: ObjectId;
-  /** Its changes after the mark, oldest first, each still under its author. */
-  readonly rows: readonly UpdateRecord[];
-  /** The last change of from the target holds afterwards, the mark for the next merge. */
-  readonly upTo?: ObjectId;
-  readonly createdBy: string;
   readonly reason?: string;
 }
 
@@ -127,20 +93,6 @@ interface Loaded {
   readonly merges: MergeCount;
 }
 
-/** What a merge found while replaying, per author, to be told once it is done. */
-interface Found {
-  readonly removals: Map<string, Removal[]>;
-  readonly losses: Map<string, Loss[]>;
-  /** How many changes brought the target anything, and by whom. */
-  stored: number;
-  readonly authors: Set<string>;
-}
-
-/** Stands in for the author of a replayed change: no socket, nothing to send, it only collects. */
-interface Replayer extends Connection {
-  readonly found: Found;
-}
-
 /** What an awareness update reports: the client ids added, updated and removed. */
 interface AwarenessChange {
   readonly added: number[];
@@ -161,6 +113,7 @@ export interface HubOptions {
 export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
   const foldEvery = options.foldEvery ?? 400;
   const noteActor = options.noteActor ?? createActorNotes(options.db, options.logger);
+  const tracing = createTracing(options.db, options.logger);
   // Every held workpiece by its hex key; counting never has to wait for it to load.
   const heldByKey = new Map<string, Held>();
   // Closed for everyone after a change could not be stored; nothing more is done with them.
@@ -256,116 +209,6 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
     await Promise.all([trace(workpieceId, kind, actor.actorId, at), noteActor(actor)]);
   }
 
-  /** Whose pieces these clients brought; asked of the database once, remembered from then on. */
-  async function authorsOf(
-    loaded: Loaded,
-    clients: readonly number[],
-  ): Promise<ReadonlyMap<number, string>> {
-    const workpieceId = loaded.workpiece.workpieceId;
-    const missing = [...new Set(clients)].filter((client) => !loaded.authors.has(client));
-    if (missing.length > 0) {
-      for (const [client, author] of await creatorsOf(options.db, workpieceId, missing)) {
-        loaded.authors.set(client, author);
-      }
-    }
-
-    // Whose author no stored change names stays out of the events.
-    const unknown = missing.filter((client) => !loaded.authors.has(client));
-    if (unknown.length > 0) {
-      options.logger.warn(
-        { workpieceId: workpieceId.toHexString(), clients: unknown },
-        'deleted pieces whose author no stored change names, left out',
-      );
-    }
-    return loaded.authors;
-  }
-
-  /** Tells whose work a change removed or replaced; a failure is only logged, like any trace. */
-  async function traceRemovals(
-    loaded: Loaded,
-    removals: readonly Removal[],
-    createdBy: string,
-    at: ObjectId,
-    extra: Document = {},
-  ): Promise<void> {
-    const workpieceId = loaded.workpiece.workpieceId;
-
-    try {
-      const authors = await authorsOf(
-        loaded,
-        removals.map((removal) => removal.client),
-      );
-      const events = removalEvents(removals, authors, {
-        createdBy,
-        anchor: anchorOf(workpieceId),
-        at,
-      });
-      await Promise.all(events.map((event) => recordEvent(options.db, withDetail(event, extra))));
-    } catch (error) {
-      options.logger.error(
-        { err: error, workpieceId: workpieceId.toHexString() },
-        'could not tell whose work was removed, the work carries on without it',
-      );
-    }
-  }
-
-  /** Tells who lost work to whom, at once to whoever asked; a failure is only logged. */
-  async function traceLosses(
-    loaded: Loaded,
-    losses: readonly Loss[],
-    sender: string,
-    at: ObjectId,
-    extra: Document = {},
-  ): Promise<void> {
-    const workpieceId = loaded.workpiece.workpieceId;
-
-    try {
-      // Whose the lost pieces are, and whose the values that took their keys.
-      const authors = await authorsOf(
-        loaded,
-        losses.flatMap((loss) =>
-          loss.cause === 'overwritten' ? [loss.client, loss.other.client] : [loss.client],
-        ),
-      );
-
-      // Who deleted each place: the sender, if this change did, else whoever stored it.
-      const places = new Map(
-        losses
-          .filter((loss) => loss.cause === 'place-removed')
-          .map((loss) => [idKey(loss.other), loss]),
-      );
-      const deleters = new Map<string, string>();
-      await Promise.all(
-        [...places].map(async ([key, loss]) => {
-          const deleter = loss.removedNow
-            ? sender
-            : await deleterOf(options.db, workpieceId, loss.other);
-          if (deleter !== undefined) {
-            deleters.set(key, deleter);
-          }
-        }),
-      );
-
-      const events = lossEvents(losses, authors, deleters, {
-        anchor: anchorOf(workpieceId),
-        at,
-        sender,
-      });
-      await Promise.all(
-        events.map(async (event) => {
-          const record = await recordEvent(options.db, withDetail(event, extra));
-          // Only what is written goes out, so nobody hears of an event that is nowhere kept.
-          notify(loaded.workpiece, encodeEvent(await withNames(options.db, record, eventKeysOf)));
-        }),
-      );
-    } catch (error) {
-      options.logger.error(
-        { err: error, workpieceId: workpieceId.toHexString() },
-        'could not tell whose work was lost, the work carries on without it',
-      );
-    }
-  }
-
   /** Stores first, distributes second: nobody shall see a change that is nowhere kept. */
   function onUpdate(
     loaded: Loaded,
@@ -404,10 +247,10 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
       } else {
         // Only once stored and passed on, so telling of it never holds up the work.
         if (deletions.removals.length > 0) {
-          await traceRemovals(loaded, deletions.removals, from.actor.actorId, updateId);
+          await tracing.traceRemovals(loaded, deletions.removals, from.actor.actorId, updateId);
         }
         if (deletions.losses.length > 0) {
-          await traceLosses(loaded, deletions.losses, from.actor.actorId, updateId);
+          await tracing.traceLosses(loaded, deletions.losses, from.actor.actorId, updateId);
         }
       }
 
@@ -564,8 +407,8 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
         throw error;
       }
 
-      const found = await replay(loaded, input.rows);
-      return await recordMerge(loaded, input, found);
+      const found = await replay(loaded, input.rows, discarded);
+      return await recordMerge(options.db, tracing, loaded, input, found);
     } finally {
       held.merges.running -= 1;
       // Nobody connected and no other merge running: let go, as the last one out would.
@@ -577,67 +420,6 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
         await release(key, loaded);
       }
     }
-  }
-
-  /** Applies each change as its author sent it, one stored before the next; a failed store ends. */
-  async function replay(loaded: Loaded, rows: readonly UpdateRecord[]): Promise<Found> {
-    const found: Found = { removals: new Map(), losses: new Map(), stored: 0, authors: new Set() };
-
-    for (const row of rows) {
-      // Closed after a failed store: the merge stops, asking again goes on from the mark.
-      if (discarded.has(loaded)) {
-        throw new Error('a change could not be stored, so the merge stopped');
-      }
-      // A sender without a socket: stored under the author, passed on to everyone connected.
-      const sender: Replayer = {
-        actor: { actorId: row.createdBy },
-        wantsEvents: false,
-        send: () => {},
-        close: () => {},
-        found,
-      };
-      applyAsSent(loaded.workpiece.doc, new Uint8Array(row.bytes.buffer), sender);
-      // Stored before the next one, so a long history does not hold up the others.
-      // eslint-disable-next-line no-await-in-loop
-      await loaded.stored.queue;
-    }
-
-    if (discarded.has(loaded)) {
-      throw new Error('a change could not be stored, so the merge stopped');
-    }
-    return found;
-  }
-
-  /** Writes workpiece-merged, then per author what the replay found; work-lost goes out at once. */
-  async function recordMerge(loaded: Loaded, input: Merge, found: Found): Promise<EventRecord> {
-    const workpieceId = loaded.workpiece.workpieceId;
-    // The state afterwards; every replayed change is stored by now.
-    const at = loaded.stored.lastUpdateId;
-    // Whose work came in, besides whoever merged it.
-    const affects = [...found.authors].filter((author) => author !== input.createdBy);
-
-    // First, so the events of what it found can name it.
-    const merged = await recordEvent(options.db, {
-      kind: 'workpiece-merged',
-      createdBy: input.createdBy,
-      anchor: anchorOf(workpieceId),
-      ...defined({ at, reason: input.reason, affects: affects.length > 0 ? affects : undefined }),
-      detail: { from: input.from, ...defined({ upTo: input.upTo }), count: found.stored },
-    });
-
-    // Bundled over the whole merge: one event per kind, author, person and unit, as live.
-    if (at !== undefined) {
-      const extra = { merge: merged._id };
-      await Promise.all([
-        ...[...found.removals].map(([author, removals]) =>
-          traceRemovals(loaded, removals, author, at, extra),
-        ),
-        ...[...found.losses].map(([author, losses]) =>
-          traceLosses(loaded, losses, author, at, extra),
-        ),
-      ]);
-    }
-    return merged;
   }
 
   /** Takes a connection out, removes its presence and writes left; the last one out releases. */
@@ -763,40 +545,6 @@ function broadcast(
       connection.send(message);
     }
   }
-}
-
-/** Sends a message to every connection on the workpiece that asked for events. */
-function notify(workpiece: OpenWorkpiece, message: Uint8Array): void {
-  for (const connection of workpiece.connections) {
-    if (connection.wantsEvents) {
-      connection.send(message);
-    }
-  }
-}
-
-/** Keeps what a replayed change deleted under its author, and that it brought something. */
-function collect(found: Found, author: string, deletions: Deletions): void {
-  found.stored += 1;
-  found.authors.add(author);
-  found.removals.set(author, [...(found.removals.get(author) ?? []), ...deletions.removals]);
-  found.losses.set(author, [...(found.losses.get(author) ?? []), ...deletions.losses]);
-}
-
-/** Whether a sender stands in for the author of a replayed change. */
-function isReplayer(connection: Connection): connection is Replayer {
-  return 'found' in connection;
-}
-
-/** An event with more in its detail, such as the merge it came from. */
-function withDetail(event: NewEvent, extra: Document): NewEvent {
-  return Object.keys(extra).length === 0
-    ? event
-    : { ...event, detail: { ...event.detail, ...extra } };
-}
-
-/** The anchor that the events of a workpiece hang on. */
-function anchorOf(workpieceId: ObjectId): Anchor {
-  return { kind: 'workpiece', id: workpieceId };
 }
 
 /** The origin of a change as a connection, undefined if it did not come from one. */
