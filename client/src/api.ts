@@ -1,8 +1,5 @@
 /** What the client library shows, and the source of v1.d.ts: nothing of the library inside. */
 
-import type { Awareness } from 'y-protocols/awareness';
-import type { Doc } from 'yjs';
-
 /** Where CK runs and how the tool gets a token. */
 export interface CollabKitOptions {
   /** Address of CK as http or https; the socket is the same address with ws or wss and /ws. */
@@ -56,8 +53,8 @@ export interface Session<Value = unknown> {
   disconnect(): void;
   /** Connects again after disconnect or closed. */
   connect(): void;
-  /** Yjs itself, for what units and presence do not cover; never a second Yjs beside it. */
-  readonly yjs: { readonly doc: Doc; readonly awareness: Awareness };
+  /** Yjs itself, unknown so v1.d.ts needs no Yjs; who uses it names the type with import type. */
+  readonly yjs: { readonly doc: unknown; readonly awareness: unknown };
   /** Ends the session for good and lets go of the doc. */
   close(): void;
 }
