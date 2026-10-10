@@ -13,7 +13,7 @@ import {
   setGroupSettings,
 } from '../db/collections/groups.ts';
 import { withNames } from '../db/names.ts';
-import { asActorId, asObject, asText } from '../utils/input.ts';
+import { asActorId, asEvery, asObject, asText } from '../utils/input.ts';
 import { defined } from '../utils/optional.ts';
 import { actorOf, bodyOf, fail, guard, idOf, requireId, unusableField } from './http.ts';
 
@@ -183,10 +183,5 @@ function asMembers(raw: unknown): readonly string[] | undefined {
   if (raw === undefined) {
     return [];
   }
-  if (!Array.isArray(raw)) {
-    return undefined;
-  }
-
-  const members = raw.map((entry: unknown) => asActorId(entry));
-  return members.every((member): member is string => member !== undefined) ? members : undefined;
+  return asEvery(raw, asActorId);
 }

@@ -30,10 +30,7 @@ export function asObjectId(raw: unknown): ObjectId | undefined {
 
 /** An actor key as the token gives it: text kept as it is, or a finite number as text. */
 export function asActorId(raw: unknown): string | undefined {
-  if (typeof raw === 'string') {
-    return raw.trim() === '' ? undefined : raw;
-  }
-  return typeof raw === 'number' && Number.isFinite(raw) ? String(raw) : undefined;
+  return typeof raw === 'number' && Number.isFinite(raw) ? String(raw) : asNonBlank(raw);
 }
 
 /** A trimmed string that is not empty, otherwise undefined. */
@@ -45,11 +42,26 @@ export function asText(raw: unknown): string | undefined {
   return trimmed === '' ? undefined : trimmed;
 }
 
+/** A string that is not blank, kept as it is: trimmed, a key might no longer match. */
+export function asNonBlank(raw: unknown): string | undefined {
+  return typeof raw === 'string' && raw.trim() !== '' ? raw : undefined;
+}
+
 /** A plain object (not null, not an array), otherwise undefined. */
 export function asObject(raw: unknown): Document | undefined {
   return typeof raw === 'object' && raw !== null && !Array.isArray(raw)
     ? (raw as Document)
     : undefined;
+}
+
+/** A list read entry by entry; one entry that does not fit spoils the whole list. */
+export function asEvery<T>(raw: unknown, read: (entry: unknown) => T | undefined): T[] | undefined {
+  if (!Array.isArray(raw)) {
+    return undefined;
+  }
+
+  const entries = raw.map((entry: unknown) => read(entry));
+  return entries.every((entry): entry is T => entry !== undefined) ? entries : undefined;
 }
 
 /** A finite number as sent in a body, fractions and negatives included, otherwise undefined. */
@@ -105,7 +117,7 @@ export const ANCHOR_QUERY_RULE = `anchorKind must be ${KINDS_NAMED} and anchorId
 export function asAnchor(raw: unknown): Anchor | undefined {
   const reference = asReference(raw);
   const sentUnit = asObject(raw)?.['unit'];
-  const unit = asUnit(sentUnit);
+  const unit = asNonBlank(sentUnit);
 
   if (reference === undefined || (sentUnit !== undefined && unit === undefined)) {
     return undefined;
@@ -127,7 +139,7 @@ export function asAnchorQuery(query: Record<string, unknown>): AnchorQuery | und
     return sentScope === 'whole' ? { ...reference, unit: WHOLE } : undefined;
   }
   if (sentUnit !== undefined) {
-    const unit = asUnit(sentUnit);
+    const unit = asNonBlank(sentUnit);
     return unit === undefined ? undefined : { ...reference, unit };
   }
   return reference;
@@ -159,24 +171,15 @@ export function asAssignee(raw: unknown): Assignee | undefined {
 
 /** A list of assignees as asAssignee reads each; one entry that does not fit spoils the list. */
 export function asAssignees(raw: unknown): Assignee[] | undefined {
-  if (!Array.isArray(raw)) {
-    return undefined;
-  }
-
-  const assignees = raw.map((entry: unknown) => asAssignee(entry));
-  return assignees.every((entry): entry is Assignee => entry !== undefined) ? assignees : undefined;
+  return asEvery(raw, asAssignee);
 }
 
 /** Where the units lie: up to 20 maps, none also fine; one that does not fit spoils the list. */
 export function asUnits(raw: unknown): UnitContainer[] | undefined {
-  if (!Array.isArray(raw) || raw.length > MAX_CONTAINERS) {
+  if (Array.isArray(raw) && raw.length > MAX_CONTAINERS) {
     return undefined;
   }
-
-  const containers = raw.map((entry: unknown) => asUnitContainer(entry));
-  return containers.every((entry): entry is UnitContainer => entry !== undefined)
-    ? containers
-    : undefined;
+  return asEvery(raw, asUnitContainer);
 }
 
 /** One map by its path of 1 to 10 keys; another field too, and a later version would go unheard. */
@@ -191,11 +194,6 @@ function asUnitContainer(raw: unknown): UnitContainer | undefined {
   }
 
   // Each key exactly as sent: trimmed, it would no longer match the one in the Y.Doc.
-  const keys = (path as unknown[]).map((key) => asUnit(key));
-  return keys.every((key): key is string => key !== undefined) ? { path: keys } : undefined;
-}
-
-/** The key the tool gives a place: text kept as it is, not blank. A query can send nothing else. */
-function asUnit(raw: unknown): string | undefined {
-  return typeof raw === 'string' && raw.trim() !== '' ? raw : undefined;
+  const keys = asEvery(path, asNonBlank);
+  return keys === undefined ? undefined : { path: keys };
 }

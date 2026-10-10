@@ -3,7 +3,7 @@ import type { Db } from 'mongodb';
 
 import { nameableAmong } from '../auth/access.ts';
 import { findNames } from '../db/collections/actors.ts';
-import { asActorId } from '../utils/input.ts';
+import { asActorId, asEvery } from '../utils/input.ts';
 import { actorOf, fail } from './http.ts';
 
 /** Names to actor keys, so a tool shows people where the service keeps only keys. */
@@ -37,8 +37,9 @@ function asActorIds(raw: unknown): string[] | undefined {
     return undefined;
   }
 
-  const actorIds = raw.split(',').map((part) => asActorId(part.trim()));
-  return actorIds.every((actorId): actorId is string => actorId !== undefined)
-    ? [...new Set(actorIds)]
-    : undefined;
+  const actorIds = asEvery(
+    raw.split(',').map((part) => part.trim()),
+    asActorId,
+  );
+  return actorIds === undefined ? undefined : [...new Set(actorIds)];
 }

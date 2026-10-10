@@ -1,6 +1,7 @@
 import * as Y from 'yjs';
 
 import type { UnitContainer } from '../../db/collections/workpieces.ts';
+import { asNonBlank } from '../../utils/input.ts';
 
 /** The maps whose keys are units, each by its path, ready to be looked up. */
 export type Containers = ReadonlySet<string>;
@@ -17,7 +18,7 @@ export function unitOf(item: Y.Item, containers: Containers): string | undefined
     const key = piece.parentSub;
     if (key !== null && isContainer(piece.parent, containers)) {
       // A blank key could never be asked for, so it names no unit.
-      return key.trim() === '' ? undefined : key;
+      return asNonBlank(key);
     }
   }
   return undefined;

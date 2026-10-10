@@ -1,7 +1,7 @@
 import { createPublicKey, createSecretKey, type KeyObject } from 'node:crypto';
 import jwt from 'jsonwebtoken';
 import type { Actor } from '../model/actor.ts';
-import { asActorId } from '../utils/input.ts';
+import { asActorId, asNonBlank } from '../utils/input.ts';
 import { defined } from '../utils/optional.ts';
 
 /** Every algorithm a docking tool may sign with. `none` is left out on purpose. */
@@ -107,8 +107,7 @@ export function createTokenCheck(options: TokenOptions): (token: string) => Prom
       throw new TokenRejected(new Error(`claim ${actorClaim} holds no usable key`));
     }
 
-    const name = claims[labelClaim];
-    const label = typeof name === 'string' && name.trim() !== '' ? name : undefined;
+    const label = asNonBlank(claims[labelClaim]);
 
     return { actorId, ...defined({ label, top: topOf(claims, options.top) }) };
   };
