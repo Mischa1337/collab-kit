@@ -10,6 +10,7 @@ import {
   type CollabEvent,
   type Conflict,
   type Me,
+  type Named,
   type OpenOptions,
   type Person,
   type PresenceClient,
@@ -216,7 +217,7 @@ export function openSession<Value>(
 
   provider.messageHandlers[MESSAGE_EVENT] = (_encoder, decoder) => {
     // Nothing goes into the encoder, or y-websocket would send it back.
-    const event = JSON.parse(decoding.readVarString(decoder)) as CollabEvent;
+    const event = JSON.parse(decoding.readVarString(decoder)) as Named<CollabEvent>;
     if (event.kind === 'work-lost') {
       emit('conflict', conflictOf(event, me?.actorId));
     }
@@ -320,7 +321,7 @@ export function openSession<Value>(
 }
 
 /** A work-lost event from the view of this person: the loser comes first in affects. */
-function conflictOf(event: CollabEvent, self: string | undefined): Conflict {
+function conflictOf(event: Named<CollabEvent>, self: string | undefined): Conflict {
   const loser = event.affects?.[0] ?? event.createdBy;
   const unit = event.anchor.unit;
 

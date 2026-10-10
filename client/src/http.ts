@@ -3,7 +3,7 @@
 import { CollabKitError } from './api.ts';
 
 /** Query parameters of a call; one left undefined is not sent. */
-export type Query = Readonly<Record<string, string | undefined>>;
+export type Query = Readonly<Record<string, string | number | undefined>>;
 
 /** What a call sends besides method and path. */
 export interface CallOptions {
@@ -19,11 +19,23 @@ export async function callRoute<Answer>(
   path: string,
   options: CallOptions = {},
 ): Promise<Answer> {
+  const response = await fetchRoute(baseUrl, token, method, path, options);
+  return (await response.json()) as Answer;
+}
+
+/** One call with this token, the answer as it came; a refusal as CollabKitError. */
+export async function fetchRoute(
+  baseUrl: string,
+  token: string,
+  method: string,
+  path: string,
+  options: CallOptions = {},
+): Promise<Response> {
   // Only the parameters that carry something go into the address.
   const query = new URLSearchParams();
   for (const [name, value] of Object.entries(options.query ?? {})) {
     if (value !== undefined) {
-      query.set(name, value);
+      query.set(name, String(value));
     }
   }
   const search = query.toString();
@@ -40,7 +52,7 @@ export async function callRoute<Answer>(
   if (!response.ok) {
     throw new CollabKitError(response.status, await reasonOf(response));
   }
-  return (await response.json()) as Answer;
+  return response;
 }
 
 /** The reason CK names in a refusal, or the status text where it names none. */

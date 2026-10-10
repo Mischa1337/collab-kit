@@ -2,6 +2,7 @@
 
 import type * as Api from './api.ts';
 import { callRoute } from './http.ts';
+import { createRoutes } from './rest.ts';
 import { openSession, type SessionContext } from './session.ts';
 
 export { CollabKitError } from './api.ts';
@@ -10,13 +11,15 @@ export { CollabKitError } from './api.ts';
 export const createCollabKitApi: typeof Api.createCollabKitApi = (options) => {
   // One address for both: the routes at it, the socket at the same with ws and /ws.
   const url = options.url.replace(/\/+$/, '');
+  const getToken = () => options.getToken();
   const context: SessionContext = {
     socketUrl: `${url.replace(/^http/, 'ws')}/ws`,
-    getToken: () => options.getToken(),
+    getToken,
     read: (token, path, query) => callRoute(url, token, 'GET', path, query ? { query } : {}),
   };
 
   return {
+    ...createRoutes(url, getToken),
     open: (workpieceId, openOptions) => openSession(context, workpieceId, openOptions),
   };
 };
