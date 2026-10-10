@@ -1,71 +1,26 @@
-import type { Db, ObjectId } from 'mongodb';
-import type { Logger } from 'pino';
+import type { ObjectId } from 'mongodb';
 import * as awarenessProtocol from 'y-protocols/awareness';
 import type * as Y from 'yjs';
 
 import type { Actor } from '../../model/actor.ts';
-import { createActorNotes, type ActorNotes } from '../../db/collections/actors.ts';
+import { createActorNotes } from '../../db/collections/actors.ts';
 import { workpieceExists } from '../../db/collections/workpieces.ts';
 import { recordEvent, type EventRecord } from '../../db/collections/events.ts';
 import { newestUpdateId } from '../../db/collections/updates.ts';
 import { defined } from '../../utils/optional.ts';
 import { enqueue, foldNow, loadWorkpiece, storeUpdate, type Stored } from './persistence.ts';
+import type { Connection, HubOptions, Merge, OpenWorkpiece, WorkpieceHub } from './types.ts';
 import { encodeAwareness, encodeSyncUpdate, SENDER_DELETES } from '../connection/protocol.ts';
 import { deletionsIn, type DeleteSet, type Deletions } from '../conflicts/deletions.ts';
 import { anchorOf, createTracing } from '../conflicts/tracing.ts';
 import { containersOf } from '../conflicts/units.ts';
-import { collect, isReplayer, recordMerge, replay, type Merge } from '../forks/replay.ts';
+import { collect, isReplayer, recordMerge, replay } from '../forks/replay.ts';
 
 /** Key in transaction.meta for what the change deleted, read while it still could be. */
 const DELETIONS = Symbol('deletions');
 
 /** What a change without a sender deleted: nothing anybody needs to hear about. */
 const NO_DELETIONS: Deletions = { removals: [], losses: [] };
-
-/** What the hub needs from a connection, so it does not depend on the transport. */
-export interface Connection {
-  readonly actor: Actor;
-  /** Whether it asked with ?events=1 to hear of events as they happen, as message 101. */
-  readonly wantsEvents: boolean;
-  send(message: Uint8Array): void;
-  /** Ends the connection; a client that comes back syncs again from the stored state. */
-  close(code: number, reason: string): void;
-}
-
-/** A workpiece while somebody holds it: its Y.Doc, who is present and who is connected. */
-export interface OpenWorkpiece {
-  readonly workpieceId: ObjectId;
-  readonly doc: Y.Doc;
-  readonly awareness: awarenessProtocol.Awareness;
-  readonly connections: Set<Connection>;
-  /** Whether a connection may speak for an awareness client: never for another person's. */
-  mayAnnounce(connection: Connection, clientId: number): boolean;
-}
-
-/** What a person gives a checkpoint: who sets it, a name and the why. */
-export interface NewCheckpoint {
-  readonly createdBy: string;
-  readonly label?: string;
-  readonly reason?: string;
-}
-
-/** What the gateway and the routes may ask of the hub. */
-export interface WorkpieceHub {
-  /** Adds a connection, loading the workpiece if it is the first. */
-  join(workpieceId: ObjectId, connection: Connection): Promise<OpenWorkpiece>;
-  /** Removes a connection and leaves a trace; the last one out closes the workpiece. */
-  leave(workpieceId: ObjectId, connection: Connection): Promise<void>;
-  /** Marks this state as worth coming back to; reason is the only place for the why. */
-  checkpoint(workpieceId: ObjectId, input: NewCheckpoint): Promise<EventRecord>;
-  /** The newest stored change, after whatever is on its way; undefined while there is none. */
-  storedUpTo(workpieceId: ObjectId): Promise<ObjectId | undefined>;
-  /** Replays the changes of another workpiece as their authors' and writes workpiece-merged. */
-  merge(workpieceId: ObjectId, input: Merge): Promise<EventRecord>;
-  /** How many connections hold this workpiece right now. */
-  count(workpieceId: ObjectId): number;
-  /** Lets go of every workpiece, for the shutdown. */
-  close(): Promise<void>;
-}
 
 /** How many merges run into a workpiece; held and loaded side share it, as its connections. */
 interface MergeCount {
@@ -100,15 +55,6 @@ interface AwarenessChange {
   readonly removed: number[];
 }
 
-export interface HubOptions {
-  readonly db: Db;
-  readonly logger: Logger;
-  /** Changes that may pile up before folding again; only a matter of loading time. */
-  readonly foldEvery?: number;
-  /** Shared with the routes, so a name is written once; left out, the hub keeps its own. */
-  readonly noteActor?: ActorNotes;
-}
-
 /** Keeps one Y.Doc per open workpiece, passes changes on and keeps traces of who was there. */
 export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
   const foldEvery = options.foldEvery ?? 400;
@@ -118,10 +64,9 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
   const heldByKey = new Map<string, Held>();
   // Closed for everyone after a change could not be stored; nothing more is done with them.
   const discarded = new WeakSet<Loaded>();
-  // Leaves still being written; close waits for them, so everyone connected gets a left.
-  const leaving = new Set<Promise<void>>();
-  // Merges still running; close waits for them, so none goes on in a released Y.Doc.
-  const merging = new Set<Promise<unknown>>();
+  // Leaves still being written and merges still running; close waits for them, so everyone
+  // connected gets a left and no merge goes on in a released Y.Doc.
+  const running = new Set<Promise<unknown>>();
 
   /** Loads the workpiece and wires its Y.Doc and awareness to this hub. */
   async function load(
@@ -303,6 +248,13 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
     return held;
   }
 
+  /** Forgets a held workpiece, but never a newer one that took its key meanwhile. */
+  function forget(key: string, connections: Set<Connection>): void {
+    if (heldByKey.get(key)?.connections === connections) {
+      heldByKey.delete(key);
+    }
+  }
+
   /** Folds; a failure is only logged, every change is stored and it costs only load time. */
   async function tryFold(loaded: Loaded): Promise<void> {
     try {
@@ -319,10 +271,7 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
   async function discard(loaded: Loaded): Promise<void> {
     // Passing on what comes after the lost change would leave the others waiting for it.
     discarded.add(loaded);
-    const key = loaded.workpiece.workpieceId.toHexString();
-    if (heldByKey.get(key)?.connections === loaded.workpiece.connections) {
-      heldByKey.delete(key);
-    }
+    forget(loaded.workpiece.workpieceId.toHexString(), loaded.workpiece.connections);
 
     // Emptied first, so the leave that each closing connection sends finds nothing to do.
     const disconnected = [...loaded.workpiece.connections];
@@ -367,9 +316,7 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
     loaded.workpiece.awareness.destroy();
     loaded.workpiece.doc.destroy();
     // A second release of the same workpiece must not drop a newer one under the same key.
-    if (heldByKey.get(key)?.connections === loaded.workpiece.connections) {
-      heldByKey.delete(key);
-    }
+    forget(key, loaded.workpiece.connections);
   }
 
   /** The newest stored change; queued like a change, so one still being written lands before it. */
@@ -401,9 +348,7 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
         loaded = await held.loaded;
       } catch (error) {
         // Loading failed: forget it, so the next one tries again.
-        if (heldByKey.get(key) === held) {
-          heldByKey.delete(key);
-        }
+        forget(key, held.connections);
         throw error;
       }
 
@@ -463,6 +408,16 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
     }
   }
 
+  /** Keeps work in running until it ends, so close can wait for it. */
+  async function tracked<T>(work: Promise<T>): Promise<T> {
+    running.add(work);
+    try {
+      return await work;
+    } finally {
+      running.delete(work);
+    }
+  }
+
   return {
     join: async (workpieceId, connection) => {
       const key = workpieceId.toHexString();
@@ -477,22 +432,12 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
         return workpiece;
       } catch (error) {
         // Loading failed: forget it, so the next join tries again.
-        if (heldByKey.get(key) === held) {
-          heldByKey.delete(key);
-        }
+        forget(key, held.connections);
         throw error;
       }
     },
 
-    leave: async (workpieceId, connection) => {
-      const done = leaveNow(workpieceId, connection);
-      leaving.add(done);
-      try {
-        await done;
-      } finally {
-        leaving.delete(done);
-      }
-    },
+    leave: (workpieceId, connection) => tracked(leaveNow(workpieceId, connection)),
 
     checkpoint: async (workpieceId, input) => {
       const at = await storedUpTo(workpieceId);
@@ -507,21 +452,13 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
 
     storedUpTo,
 
-    merge: async (workpieceId, input) => {
-      const done = mergeNow(workpieceId, input);
-      merging.add(done);
-      try {
-        return await done;
-      } finally {
-        merging.delete(done);
-      }
-    },
+    merge: (workpieceId, input) => tracked(mergeNow(workpieceId, input)),
 
     count: (workpieceId) => heldByKey.get(workpieceId.toHexString())?.connections.size ?? 0,
 
     close: async () => {
       // Every left still being written and every merge still running ends before the workpieces go.
-      await Promise.allSettled([...leaving, ...merging]);
+      await Promise.allSettled(running);
 
       // Copied first, because releasing removes the entry it is standing on.
       const snapshot = Array.from(heldByKey);

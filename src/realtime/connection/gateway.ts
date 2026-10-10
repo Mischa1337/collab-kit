@@ -9,7 +9,7 @@ import type { Actor } from '../../model/actor.ts';
 import { workpieceAccess } from '../../auth/access.ts';
 import { asObjectId } from '../../utils/input.ts';
 import { isAllowedOrigin } from '../../utils/origin.ts';
-import type { Connection, WorkpieceHub, OpenWorkpiece } from '../hub/hub.ts';
+import type { Connection, WorkpieceHub, OpenWorkpiece } from '../hub/types.ts';
 import { encodeAwareness, encodeSyncStep1, handleMessage, MessageRefused } from './protocol.ts';
 
 /** The client announces two subprotocols: this marker and the token itself. */

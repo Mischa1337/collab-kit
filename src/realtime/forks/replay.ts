@@ -1,4 +1,4 @@
-import type { Db, ObjectId } from 'mongodb';
+import type { Db } from 'mongodb';
 import type * as Y from 'yjs';
 
 import { recordEvent, type EventRecord } from '../../db/collections/events.ts';
@@ -7,20 +7,8 @@ import { defined } from '../../utils/optional.ts';
 import { applyAsSent } from '../connection/protocol.ts';
 import type { Deletions, Loss, Removal } from '../conflicts/deletions.ts';
 import { anchorOf, type TraceTarget, type Tracing } from '../conflicts/tracing.ts';
-import type { Connection } from '../hub/hub.ts';
 import type { Stored } from '../hub/persistence.ts';
-
-/** What a merge replays: the changes of another workpiece after the mark, and on whose behalf. */
-export interface Merge {
-  /** The workpiece the changes come from. */
-  readonly from: ObjectId;
-  /** Its changes after the mark, oldest first, each still under its author. */
-  readonly rows: readonly UpdateRecord[];
-  /** The last change of from the target holds afterwards, the mark for the next merge. */
-  readonly upTo?: ObjectId;
-  readonly createdBy: string;
-  readonly reason?: string;
-}
+import type { Connection, Merge } from '../hub/types.ts';
 
 /** What a merge needs of the workpiece: what tracing needs, its Y.Doc, its queue and newest change. */
 interface MergeTarget extends TraceTarget {

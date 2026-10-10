@@ -15,7 +15,7 @@ import {
 } from '../../db/collections/workpieces.ts';
 import { WHOLE } from '../../model/anchor.ts';
 import { defined } from '../../utils/optional.ts';
-import type { WorkpieceHub } from '../hub/hub.ts';
+import type { WorkpieceHub } from '../hub/types.ts';
 
 /** What a person gives a fork: its name, where to fork, where to put it and why. */
 export interface NewFork {
