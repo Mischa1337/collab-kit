@@ -115,6 +115,23 @@ describe('keeping the name', () => {
   });
 });
 
+describe('who the token names', () => {
+  it('gives key and name, without the tool knowing which claim holds them', async () => {
+    const response = await request(server).get('/me').set(as(carol));
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ actorId: 'carol', label: 'Carol' });
+  });
+
+  it('gives only the key of a token without a name', async () => {
+    const response = await request(server)
+      .get('/me')
+      .set(as(tokenFor('hank')));
+
+    expect(response.body).toEqual({ actorId: 'hank' });
+  });
+});
+
 describe('names in the answers', () => {
   it('names whoever wrote a comment, also to another team in the same room', async () => {
     const { workpieceId } = await twoTeams();

@@ -1,6 +1,7 @@
 import { createServer as createHttpServer, type Server } from 'node:http';
+import { fileURLToPath } from 'node:url';
 
-import express, { type ErrorRequestHandler, type RequestHandler, type Router } from 'express';
+import express, { Router, type ErrorRequestHandler, type RequestHandler } from 'express';
 import helmet from 'helmet';
 import { pinoHttp } from 'pino-http';
 import type { Logger } from 'pino';
@@ -14,7 +15,12 @@ export interface ServerOptions {
   readonly api?: Router;
   /** Web origins whose pages may call the routes; left out, every origin may. */
   readonly allowedOrigins?: readonly string[];
+  /** Where the built client library lies; left out, client/dist of this repository. */
+  readonly clientDir?: string;
 }
+
+/** client/dist, found alike from src/routes and from dist/routes, which lie equally deep. */
+const CLIENT_DIR = fileURLToPath(new URL('../../client/dist/', import.meta.url));
 
 /** Builds the HTTP server around the routes handed in; the WebSocket gateway attaches to it. */
 export function createServer(options: ServerOptions): Server {
@@ -28,6 +34,9 @@ export function createServer(options: ServerOptions): Server {
   app.get('/health', (_request, response) => {
     response.json({ status: 'ok' });
   });
+
+  // The client library is public, so it comes before the routes that ask for a token.
+  app.use('/client', serveClient(options.clientDir ?? CLIENT_DIR));
 
   if (options.api !== undefined) {
     app.use(options.api);
@@ -65,6 +74,29 @@ function allowCrossOrigin(allowed?: readonly string[]): RequestHandler {
     });
     response.status(204).end();
   };
+}
+
+/** The files of the client library, asked again on every load so a rollout arrives at once. */
+function serveClient(directory: string): Router {
+  const client = Router();
+
+  // ETag and max-age=0 are what express.static does by itself.
+  client.use(
+    express.static(directory, {
+      index: false,
+      redirect: false,
+      setHeaders: (response, path) => {
+        // Left alone, .ts would go out as a video stream.
+        if (path.endsWith('.d.ts')) {
+          response.setHeader('Content-Type', 'text/plain; charset=utf-8');
+        }
+      },
+    }),
+  );
+  // Anything else here is unknown, not a route that wants a token.
+  client.use((_request, response) => fail(response, 404, 'unknown route'));
+
+  return client;
 }
 
 /** Own words for what went wrong reading a body; never the message, which may echo the input. */

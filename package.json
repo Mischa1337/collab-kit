@@ -9,9 +9,10 @@
   },
   "scripts": {
     "dev": "node --watch --env-file-if-exists=.env src/main.ts",
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json && npm run client:build",
+    "client:build": "vite build client && tsc -p client/tsconfig.build.json && node -e \"fs.renameSync('client/dist/api.d.ts', 'client/dist/v1.d.ts')\"",
     "start": "node --env-file-if-exists=.env dist/main.js",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p client",
     "lint": "oxlint",
     "lint:fix": "oxlint --fix",
     "format": "prettier --write .",

@@ -1,4 +1,7 @@
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import type { Server } from 'node:http';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import express, { Router } from 'express';
 import pino from 'pino';
@@ -166,5 +169,55 @@ describe('cross-origin calls', () => {
 
     expect(response.status).toBe(204);
     expect(response.headers['access-control-allow-origin']).toBe('https://elsewhere.example');
+  });
+});
+
+describe('the client library', () => {
+  const TOOL = 'https://tool.example';
+  // Stands in for client/dist, which the integration job does not build.
+  const clientDir = mkdtempSync(join(tmpdir(), 'collab-kit-client-'));
+  writeFileSync(join(clientDir, 'v1.js'), 'export const version = 1;\n');
+  writeFileSync(join(clientDir, 'v1.d.ts'), 'export declare const version: number;\n');
+  // Stands in for requireActor: whatever reaches it without a token is turned away.
+  const api = Router();
+  api.use((_incoming, response) => {
+    response.status(401).json({ error: 'unauthorized' });
+  });
+  const serving = createServer({ logger: silent, api, allowedOrigins: [TOOL], clientDir });
+
+  it('serves v1.js without a token, as JavaScript, asked again on every load', async () => {
+    const response = await request(serving).get('/client/v1.js');
+
+    expect(response.status).toBe(200);
+    expect(response.headers['content-type']).toMatch(/^text\/javascript/);
+    expect(response.headers['cache-control']).toBe('public, max-age=0');
+    expect(response.text).toBe('export const version = 1;\n');
+
+    // Unchanged since the last load: the ETag spares sending it again.
+    const again = await request(serving)
+      .get('/client/v1.js')
+      .set('If-None-Match', String(response.headers['etag']));
+    expect(again.status).toBe(304);
+  });
+
+  it('lets a listed origin load it', async () => {
+    const response = await request(serving).get('/client/v1.js').set('Origin', TOOL);
+
+    expect(response.status).toBe(200);
+    expect(response.headers['access-control-allow-origin']).toBe(TOOL);
+  });
+
+  it('serves v1.d.ts as text, not as the video stream .ts would be', async () => {
+    const response = await request(serving).get('/client/v1.d.ts');
+
+    expect(response.status).toBe(200);
+    expect(response.headers['content-type']).toBe('text/plain; charset=utf-8');
+  });
+
+  it('answers an unknown file with 404, not with a call for a token', async () => {
+    const response = await request(serving).get('/client/v2.js');
+
+    expect(response.status).toBe(404);
+    expect(response.body).toEqual({ error: 'unknown route' });
   });
 });

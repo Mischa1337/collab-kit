@@ -5,7 +5,7 @@
     "suspicious": "error",
     "perf": "warn"
   },
-  "ignorePatterns": ["dist/**", "coverage/**", "examples/**"],
+  "ignorePatterns": ["dist/**", "client/dist/**", "coverage/**", "examples/**"],
   "rules": {
     "eqeqeq": "error",
     "no-var": "error",

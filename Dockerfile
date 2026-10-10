@@ -7,6 +7,8 @@ RUN npm ci
 
 COPY tsconfig.json tsconfig.build.json ./
 COPY src ./src
+# The client library is built here too and served from client/dist.
+COPY client ./client
 RUN npm run build
 
 # Runtime stage: carries the compiled output and the runtime dependencies only,
@@ -19,6 +21,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 
 COPY --from=build /app/dist ./dist
+COPY --from=build /app/client/dist ./client/dist
 
 USER node
 EXPOSE 24202

@@ -10,6 +10,12 @@ import { actorOf, fail } from './http.ts';
 export function actorRoutes(db: Db): Router {
   const routes = Router();
 
+  /** Whom the token names, so a tool need not know which claim holds the key. */
+  routes.get('/me', (request, response) => {
+    const { actorId, label } = actorOf(request);
+    response.json(label === undefined ? { actorId } : { actorId, label });
+  });
+
   /** The stored names of these actors, as far as the token may put a name to them. */
   routes.get('/actors', async (request, response) => {
     const actorIds = asActorIds(request.query['ids']);

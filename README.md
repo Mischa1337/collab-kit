@@ -74,6 +74,19 @@ JWT_SECRET=ein-langes-zufaelliges-geheimnis
 
 Jede Ablehnung beantwortet der Dienst gleich mit `401`. Den Grund schreibt er nur ins Log.
 
+## Client-Bibliothek
+
+Ein Werkzeug im Browser lädt die Bibliothek vom Dienst selbst, so passt sie immer zu dieser
+Instanz:
+
+```js
+const { createCollabKitApi } = await import('https://ck.example/client/v1.js');
+```
+
+`/client/v1.js` und `/client/v1.d.ts` mit den Typen für TypeScript kommen ohne Token. Laden darf
+jede Seite, die `ALLOWED_ORIGINS` erlaubt. Die Bibliothek bringt Yjs mit, das Werkzeug braucht
+kein eigenes.
+
 ## Betrieb und Grenzen
 
 ### Genau ein Prozess
