@@ -71,6 +71,10 @@ export interface HubOptions {
   readonly logger: Logger;
   /** Changes that may pile up before folding again; only a matter of loading time. */
   readonly foldEvery?: number;
+  /** Milliseconds without a further removal before the removals of a person are written as one. */
+  readonly bundlePause?: number;
+  /** Milliseconds after the first removal of a bundle by which it is written at the latest. */
+  readonly bundleLimit?: number;
   /** Shared with the routes, so a name is written once; left out, the hub keeps its own. */
   readonly noteActor?: ActorNotes;
 }

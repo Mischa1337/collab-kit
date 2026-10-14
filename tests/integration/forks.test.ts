@@ -41,6 +41,8 @@ if (uri === undefined || uri === '') {
 const secret = 'geheimnis-des-werkzeugs';
 const database = `collab_kit_forks_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 const silent = pino({ level: 'silent' });
+/** How long removals here wait for more before they are written. */
+const PAUSE = 200;
 
 // Fixed client ids, so it is known who wins a key: the larger id.
 const ALICE = 100;
@@ -169,7 +171,7 @@ beforeAll(async () => {
   storage = await connect({ uri, database });
   await applyDefinitions(storage.db, collectionDefinitions);
 
-  const hub = createWorkpieceHub({ db: storage.db, logger: silent });
+  const hub = createWorkpieceHub({ db: storage.db, logger: silent, bundlePause: PAUSE });
   const checkToken = createTokenCheck({ key: secret, algorithm: 'HS256' });
   server = createServer({
     logger: silent,
@@ -360,13 +362,20 @@ describe('merging', () => {
       carol.doc.getMap('cells').delete('c5');
     });
     await stored(groupWork, 3);
+    const before = (await changesOf(groupWork)).at(-1)?._id;
 
     const merged = await mergeFrom('alice', groupWork, own);
 
     const at = new ObjectId(merged.at);
     const mark = { merge: new ObjectId(merged._id) };
     expect(await ofKind(groupWork, 'work-removed')).toMatchObject([
-      { createdBy: 'alice', affects: ['bob'], anchor: { unit: 'c3' }, at, detail: mark },
+      {
+        createdBy: 'alice',
+        affects: ['bob'],
+        anchor: { unit: 'c3' },
+        at,
+        detail: { ...mark, since: before },
+      },
     ]);
     const lost = await ofKind(groupWork, 'work-lost');
     expect(
@@ -388,6 +397,42 @@ describe('merging', () => {
     );
 
     await Promise.all([bob.close(), carol.close(), alice.close()]);
+  });
+
+  it('keeps a bundle still gathering live apart from what a merge finds', async () => {
+    const roomId = await team();
+    const groupWork = await workpieceIn(roomId);
+    const alice = await open(groupWork, 'alice');
+    alice.doc.getText('t').insert(0, 'abcd');
+    await stored(groupWork, 1);
+
+    // Bob deletes a of alice in his fork ...
+    const own = await forkInto('bob', groupWork, roomId);
+    const inFork = await open(own, 'bob');
+    inFork.doc.getText('t').delete(0, 1);
+    await stored(own, 2);
+
+    // ... and d of alice live in the group, then merges before his pause is over.
+    const bob = await open(groupWork, 'bob');
+    bob.doc.getText('t').delete(3, 1);
+    await stored(groupWork, 2);
+    const merged = await mergeFrom('bob', groupWork, own);
+
+    expect(await waitFor(async () => (await ofKind(groupWork, 'work-removed')).length === 2)).toBe(
+      true,
+    );
+    const events = await ofKind(groupWork, 'work-removed');
+    const live = events.find((event) => event.detail?.['merge'] === undefined);
+    const replayed = events.find((event) => event.detail?.['merge'] !== undefined);
+    expect(live?.detail?.['ranges']).toEqual([{ client: alice.doc.clientID, clock: 3, length: 1 }]);
+    expect(replayed).toMatchObject({
+      detail: {
+        merge: new ObjectId(merged._id),
+        ranges: [{ client: alice.doc.clientID, clock: 0, length: 1 }],
+      },
+    });
+
+    await Promise.all([alice.close(), inFork.close(), bob.close()]);
   });
 
   it('tells the same way when the work of the group comes into the fork', async () => {

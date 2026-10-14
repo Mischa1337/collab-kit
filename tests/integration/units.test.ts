@@ -145,7 +145,8 @@ beforeAll(async () => {
   storage = await connect({ uri, database });
   await applyDefinitions(storage.db, collectionDefinitions);
 
-  const hub = createWorkpieceHub({ db: storage.db, logger: silent });
+  // Removals wait only briefly here, the tests ask for each one.
+  const hub = createWorkpieceHub({ db: storage.db, logger: silent, bundlePause: 50 });
   const checkToken = createTokenCheck({ key: secret, algorithm: 'HS256' });
   server = createServer({
     logger: silent,
@@ -174,28 +175,33 @@ afterAll(async () => {
 describe('removed work at the unit it hit', () => {
   it('writes one event per cell, though their clocks follow on one another', async () => {
     const workpieceId = await twoCellsRemoved();
+    const [since] = await readUpdatesSince(storage.db, workpieceId);
 
     const events = byUnit(await traced(workpieceId, 'work-removed', 2));
     expect(events.map((event) => [event.anchor, event.affects, event.detail])).toEqual([
       [
         { kind: 'workpiece', id: workpieceId, unit: 'c1' },
         ['alice'],
-        { ranges: [{ client: ALICE, clock: 0, length: 1 }] },
+        { ranges: [{ client: ALICE, clock: 0, length: 1 }], since: since?._id },
       ],
       [
         { kind: 'workpiece', id: workpieceId, unit: 'c2' },
         ['alice'],
-        { ranges: [{ client: ALICE, clock: 1, length: 1 }] },
+        { ranges: [{ client: ALICE, clock: 1, length: 1 }], since: since?._id },
       ],
     ]);
   });
 
   it('without units keeps one event on the workpiece, as before', async () => {
     const workpieceId = await twoCellsRemoved([]);
+    const [since] = await readUpdatesSince(storage.db, workpieceId);
 
     const [event] = await traced(workpieceId, 'work-removed', 1);
     expect(event?.anchor).toEqual({ kind: 'workpiece', id: workpieceId });
-    expect(event?.detail).toEqual({ ranges: [{ client: ALICE, clock: 0, length: 2 }] });
+    expect(event?.detail).toEqual({
+      ranges: [{ client: ALICE, clock: 0, length: 2 }],
+      since: since?._id,
+    });
   });
 
   it('gives a character in the text of a nested cell to that cell, the innermost map', async () => {

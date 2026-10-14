@@ -256,7 +256,7 @@ function itemsIn(
 }
 
 /** Joins stretches that follow on one another in one unit and went alike; keeps the list short. */
-function merged<T extends UnitStretch>(
+export function merged<T extends UnitStretch>(
   stretches: readonly T[],
   alike: (a: T, b: T) => boolean,
 ): T[] {

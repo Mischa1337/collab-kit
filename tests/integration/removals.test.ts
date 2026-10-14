@@ -33,6 +33,8 @@ if (uri === undefined || uri === '') {
 const secret = 'geheimnis-des-werkzeugs';
 const database = `collab_kit_removals_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 const silent = pino({ level: 'silent' });
+/** How long removals here wait for more before they are written. */
+const PAUSE = 200;
 
 let storage: Storage;
 let hub: WorkpieceHub;
@@ -63,9 +65,9 @@ const tokenOf = (actor: string) =>
   jwt.sign({ sub: actor, name: actor }, secret, { expiresIn: '15m' });
 
 /** Opens the workpiece as this person; pass an earlier doc to come back with all it holds. */
-const open = async (workpieceId: ObjectId, actor: string, doc?: Y.Doc) => {
+const open = async (workpieceId: ObjectId, actor: string, doc?: Y.Doc, on = port) => {
   const client = await connectClient(
-    `ws://127.0.0.1:${port}/ws/${workpieceId.toHexString()}`,
+    `ws://127.0.0.1:${on}/ws/${workpieceId.toHexString()}`,
     ['bearer', tokenOf(actor)],
     doc,
   );
@@ -79,8 +81,11 @@ const stored = async (workpieceId: ObjectId, count: number) =>
     await waitFor(async () => (await readUpdatesSince(storage.db, workpieceId)).length === count),
   ).toBe(true);
 
-/** Waits until all work queued for the workpiece is done, events included. */
-const settled = (workpieceId: ObjectId) => hub.checkpoint(workpieceId, { createdBy: 'test' });
+/** Waits until all work queued for the workpiece is done and every bundle is written. */
+const settled = async (workpieceId: ObjectId) => {
+  await hub.checkpoint(workpieceId, { createdBy: 'test' });
+  await new Promise((resolve) => setTimeout(resolve, PAUSE * 2));
+};
 
 /** The events of removed and replaced work at the workpiece, oldest first. */
 const removals = async (workpieceId: ObjectId): Promise<EventRecord[]> =>
@@ -94,12 +99,34 @@ const traced = async (workpieceId: ObjectId, count: number): Promise<EventRecord
   return removals(workpieceId);
 };
 
+/** A server of its own whose removals wait a minute, so only a flush writes them early. */
+async function slowServer() {
+  const ownServer = createServer({ logger: silent });
+  const ownHub = createWorkpieceHub({ db: storage.db, logger: silent, bundlePause: 60_000 });
+  const ownGateway = attachGateway({
+    server: ownServer,
+    db: storage.db,
+    hub: ownHub,
+    checkToken: createTokenCheck({ key: secret, algorithm: 'HS256' }),
+    logger: silent,
+  });
+  await new Promise<void>((resolve) => ownServer.listen(0, resolve));
+
+  return {
+    port: (ownServer.address() as AddressInfo).port,
+    close: async () => {
+      await ownGateway.close();
+      await new Promise<void>((resolve) => ownServer.close(() => resolve()));
+    },
+  };
+}
+
 beforeAll(async () => {
   storage = await connect({ uri, database });
   await applyDefinitions(storage.db, collectionDefinitions);
 
   server = createServer({ logger: silent });
-  hub = createWorkpieceHub({ db: storage.db, logger: silent });
+  hub = createWorkpieceHub({ db: storage.db, logger: silent, bundlePause: PAUSE });
   gateway = attachGateway({
     server,
     db: storage.db,
@@ -283,6 +310,166 @@ describe('work of another person that somebody removes', () => {
     });
 
     await Promise.all([alice.close(), back.close()]);
+  });
+});
+
+describe('removals in quick succession', () => {
+  it('bundles bob deleting the text of alice letter by letter from the back', async () => {
+    const workpieceId = await freshWorkpiece();
+    const alice = await open(workpieceId, 'alice');
+    alice.doc.getText('t').insert(0, 'Hallo');
+    await stored(workpieceId, 1);
+
+    // Each letter its own change, as with backspace held down.
+    const bob = await open(workpieceId, 'bob');
+    for (let index = 4; index >= 0; index -= 1) {
+      bob.doc.getText('t').delete(index, 1);
+    }
+    await stored(workpieceId, 6);
+
+    const changes = await readUpdatesSince(storage.db, workpieceId);
+    const [event] = await traced(workpieceId, 1);
+    expect(event).toMatchObject({
+      kind: 'work-removed',
+      createdBy: 'bob',
+      affects: ['alice'],
+      at: changes.at(-1)?._id,
+      detail: {
+        ranges: [{ client: alice.doc.clientID, clock: 0, length: 5 }],
+        since: changes[0]?._id,
+      },
+    });
+
+    await Promise.all([alice.close(), bob.close()]);
+  });
+
+  it('says formatting when the whole bundle only took away formatting', async () => {
+    const workpieceId = await freshWorkpiece();
+    const alice = await open(workpieceId, 'alice');
+    alice.doc.transact(() => {
+      alice.doc.getText('t').insert(0, 'abcdefgh');
+      alice.doc.getText('t').format(1, 2, { bold: true });
+      alice.doc.getText('t').format(5, 2, { bold: true });
+    });
+    await stored(workpieceId, 1);
+
+    // Two changes, each taking away one of her bold stretches.
+    const bob = await open(workpieceId, 'bob');
+    bob.doc.getText('t').format(1, 2, { bold: null });
+    bob.doc.getText('t').format(5, 2, { bold: null });
+    await stored(workpieceId, 3);
+
+    const [event] = await traced(workpieceId, 1);
+    expect(event).toMatchObject({
+      kind: 'work-removed',
+      affects: ['alice'],
+      detail: { formatting: true },
+    });
+
+    await Promise.all([alice.close(), bob.close()]);
+  });
+
+  it('says nothing of formatting once the bundle also deleted text', async () => {
+    const workpieceId = await freshWorkpiece();
+    const alice = await open(workpieceId, 'alice');
+    alice.doc.transact(() => {
+      alice.doc.getText('t').insert(0, 'abcdef');
+      alice.doc.getText('t').format(1, 2, { bold: true });
+    });
+    await stored(workpieceId, 1);
+
+    // First only her bold, then a letter of hers.
+    const bob = await open(workpieceId, 'bob');
+    bob.doc.getText('t').format(1, 2, { bold: null });
+    bob.doc.getText('t').delete(4, 1);
+    await stored(workpieceId, 3);
+
+    const [event] = await traced(workpieceId, 1);
+    expect(event).toMatchObject({ kind: 'work-removed', affects: ['alice'] });
+    expect(event?.detail).not.toHaveProperty('formatting');
+
+    await Promise.all([alice.close(), bob.close()]);
+  });
+
+  it('gives alice and carol the same at and since when one bundle hit both', async () => {
+    const workpieceId = await freshWorkpiece();
+    const alice = await open(workpieceId, 'alice');
+    alice.doc.getText('t').insert(0, 'A');
+    await stored(workpieceId, 1);
+    const carol = await open(workpieceId, 'carol');
+    carol.doc.getText('t').insert(1, 'C');
+    await stored(workpieceId, 2);
+
+    // The last change of the bundle hits alice alone.
+    const bob = await open(workpieceId, 'bob');
+    bob.doc.getText('t').delete(1, 1);
+    bob.doc.getText('t').delete(0, 1);
+    await stored(workpieceId, 4);
+
+    const changes = await readUpdatesSince(storage.db, workpieceId);
+    const events = await traced(workpieceId, 2);
+    expect(events.map((event) => event.affects?.[0]).toSorted()).toEqual(['alice', 'carol']);
+    for (const event of events) {
+      expect(event).toMatchObject({ at: changes[3]?._id, detail: { since: changes[1]?._id } });
+    }
+
+    await Promise.all([alice.close(), carol.close(), bob.close()]);
+  });
+
+  it('writes two events when bob pauses between his removals', async () => {
+    const workpieceId = await freshWorkpiece();
+    const alice = await open(workpieceId, 'alice');
+    alice.doc.getText('t').insert(0, 'abc');
+    await stored(workpieceId, 1);
+
+    const bob = await open(workpieceId, 'bob');
+    bob.doc.getText('t').delete(0, 1);
+    await stored(workpieceId, 2);
+    await traced(workpieceId, 1);
+    bob.doc.getText('t').delete(0, 1);
+    await stored(workpieceId, 3);
+
+    const changes = await readUpdatesSince(storage.db, workpieceId);
+    const events = await traced(workpieceId, 2);
+    expect(events.map((event) => [event.at, event.detail?.['since']])).toEqual([
+      [changes[1]?._id, changes[0]?._id],
+      [changes[2]?._id, changes[1]?._id],
+    ]);
+
+    await Promise.all([alice.close(), bob.close()]);
+  });
+
+  it('writes what is gathered as soon as the last one leaves', async () => {
+    const slow = await slowServer();
+    const workpieceId = await freshWorkpiece();
+    const alice = await open(workpieceId, 'alice', undefined, slow.port);
+    alice.doc.getText('t').insert(0, 'von alice');
+    await stored(workpieceId, 1);
+    const bob = await open(workpieceId, 'bob', undefined, slow.port);
+    bob.doc.getText('t').delete(0, 4);
+    await stored(workpieceId, 2);
+    expect(await removals(workpieceId)).toEqual([]);
+
+    await Promise.all([alice.close(), bob.close()]);
+
+    expect(await traced(workpieceId, 1)).toMatchObject([{ createdBy: 'bob', affects: ['alice'] }]);
+    await slow.close();
+  });
+
+  it('writes what is gathered when the service shuts down', async () => {
+    const slow = await slowServer();
+    const workpieceId = await freshWorkpiece();
+    const alice = await open(workpieceId, 'alice', undefined, slow.port);
+    alice.doc.getText('t').insert(0, 'von alice');
+    await stored(workpieceId, 1);
+    const bob = await open(workpieceId, 'bob', undefined, slow.port);
+    bob.doc.getText('t').delete(0, 4);
+    await stored(workpieceId, 2);
+
+    await slow.close();
+
+    expect(await removals(workpieceId)).toMatchObject([{ createdBy: 'bob', affects: ['alice'] }]);
+    await Promise.all([alice.closed, bob.closed]);
   });
 });
 

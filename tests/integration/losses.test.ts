@@ -34,6 +34,8 @@ if (uri === undefined || uri === '') {
 const secret = 'geheimnis-des-werkzeugs';
 const database = `collab_kit_losses_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 const silent = pino({ level: 'silent' });
+/** How long removals here wait for more before they are written. */
+const PAUSE = 50;
 
 // Fixed client ids, so it is known who wins a key: the larger id.
 const ALICE = 100;
@@ -103,8 +105,11 @@ const stored = async (workpieceId: ObjectId, count: number) =>
 const newest = async (workpieceId: ObjectId) =>
   (await readUpdatesSince(storage.db, workpieceId)).at(-1)?._id;
 
-/** Waits until all work queued for the workpiece is done, events included. */
-const settled = (workpieceId: ObjectId) => hub.checkpoint(workpieceId, { createdBy: 'test' });
+/** Waits until all work queued for the workpiece is done and every bundle is written. */
+const settled = async (workpieceId: ObjectId) => {
+  await hub.checkpoint(workpieceId, { createdBy: 'test' });
+  await new Promise((resolve) => setTimeout(resolve, PAUSE * 2));
+};
 
 /** The work-lost events at the workpiece, oldest first. */
 const losses = async (workpieceId: ObjectId): Promise<EventRecord[]> =>
@@ -143,7 +148,7 @@ beforeAll(async () => {
   await applyDefinitions(storage.db, collectionDefinitions);
 
   server = createServer({ logger: silent });
-  hub = createWorkpieceHub({ db: storage.db, logger: silent });
+  hub = createWorkpieceHub({ db: storage.db, logger: silent, bundlePause: PAUSE });
   gateway = attachGateway({
     server,
     db: storage.db,

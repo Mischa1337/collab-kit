@@ -11,6 +11,7 @@ import { defined } from '../../utils/optional.ts';
 import { enqueue, foldNow, loadWorkpiece, storeUpdate, type Stored } from './persistence.ts';
 import type { Connection, HubOptions, Merge, OpenWorkpiece, WorkpieceHub } from './types.ts';
 import { encodeAwareness, encodeSyncUpdate, SENDER_DELETES } from '../connection/protocol.ts';
+import { createBundling } from '../conflicts/bundling.ts';
 import {
   deletionsIn,
   isFormatCleanup,
@@ -68,6 +69,11 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
   const foldEvery = options.foldEvery ?? 400;
   const noteActor = options.noteActor ?? createActorNotes(options.db, options.logger);
   const tracing = createTracing(options.db, options.logger);
+  // Removals wait for a pause, so deleting letter by letter does not make an event per letter.
+  const bundling = createBundling(tracing, {
+    pause: options.bundlePause ?? 5000,
+    limit: options.bundleLimit ?? 60_000,
+  });
   // Every held workpiece by its hex key; counting never has to wait for it to load.
   const heldByKey = new Map<string, Held>();
   // Closed for everyone after a change could not be stored; nothing more is done with them.
@@ -189,6 +195,8 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
         throw new Error('a change arrived without a connection to attribute it to');
       }
 
+      // The state before this change, where a bundle starting with it begins.
+      const since = loaded.stored.lastUpdateId;
       let updateId: ObjectId;
       try {
         updateId = await storeUpdate(options.db, loaded.stored, update, from.actor.actorId);
@@ -204,12 +212,13 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
 
       // A merge tells of everything at once when it is done, so here it only collects.
       if (isReplayer(from)) {
-        collect(from.found, from.actor.actorId, deletions);
+        collect(from.found, from.actor.actorId, deletions, since);
       } else {
-        // Only once stored and passed on, so telling of it never holds up the work.
+        // Gathered until the person pauses, then written as one.
         if (deletions.removals.length > 0) {
-          await tracing.traceRemovals(loaded, deletions.removals, from.actor.actorId, updateId);
+          bundling.add(loaded, from.actor.actorId, deletions.removals, since, updateId);
         }
+        // Only once stored and passed on, so telling of it never holds up the work.
         if (deletions.losses.length > 0) {
           await tracing.traceLosses(loaded, deletions.losses, from.actor.actorId, updateId);
         }
@@ -298,8 +307,10 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
     loaded.workpiece.awareness.destroy();
     loaded.workpiece.doc.destroy();
 
-    await Promise.all(
-      disconnected.map((connection) =>
+    // What is gathered is stored already; nobody would release it any more, so it goes now.
+    await Promise.all([
+      bundling.flush(loaded),
+      ...disconnected.map((connection) =>
         notePresence(
           loaded.workpiece.workpieceId,
           'left',
@@ -307,13 +318,16 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
           loaded.stored.lastUpdateId,
         ),
       ),
-    );
+    ]);
   }
 
   /** Folds and frees the workpiece after the last one left; force is for the shutdown. */
   async function release(key: string, loaded: Loaded, force = false): Promise<void> {
     // Waits until every queued change is stored.
     await loaded.stored.queue;
+
+    // What is gathered goes now, without waiting for the pause.
+    await bundling.flush(loaded);
 
     // Already closed and freed; folding it now would store the change that failed.
     if (discarded.has(loaded)) {

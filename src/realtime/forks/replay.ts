@@ -1,4 +1,4 @@
-import type { Db } from 'mongodb';
+import type { Db, ObjectId } from 'mongodb';
 import type * as Y from 'yjs';
 
 import { recordEvent, type EventRecord } from '../../db/collections/events.ts';
@@ -24,6 +24,8 @@ interface Found {
   /** How many changes brought the target anything, and by whom. */
   stored: number;
   readonly authors: Set<string>;
+  /** The last change stored in the target before the first one replayed; undefined if none. */
+  since: ObjectId | undefined;
 }
 
 /** Stands in for the author of a replayed change: no socket, nothing to send, it only collects. */
@@ -37,7 +39,13 @@ export async function replay(
   rows: readonly UpdateRecord[],
   discarded: { has(loaded: MergeTarget): boolean },
 ): Promise<Found> {
-  const found: Found = { removals: new Map(), losses: new Map(), stored: 0, authors: new Set() };
+  const found: Found = {
+    removals: new Map(),
+    losses: new Map(),
+    stored: 0,
+    authors: new Set(),
+    since: undefined,
+  };
 
   for (const row of rows) {
     // Closed after a failed store: the merge stops, asking again goes on from the mark.
@@ -89,7 +97,7 @@ export async function recordMerge(
 
   // Bundled over the whole merge: one event per kind, author, person and unit, as live.
   if (at !== undefined) {
-    const extra = { merge: merged._id };
+    const extra = { merge: merged._id, ...defined({ since: found.since }) };
     await Promise.all([
       ...[...found.removals].map(([author, removals]) =>
         tracing.traceRemovals(loaded, removals, author, at, extra),
@@ -103,7 +111,16 @@ export async function recordMerge(
 }
 
 /** Keeps what a replayed change deleted under its author, and that it brought something. */
-export function collect(found: Found, author: string, deletions: Deletions): void {
+export function collect(
+  found: Found,
+  author: string,
+  deletions: Deletions,
+  since: ObjectId | undefined,
+): void {
+  // The first one says where the merge starts.
+  if (found.stored === 0) {
+    found.since = since;
+  }
   found.stored += 1;
   found.authors.add(author);
   found.removals.set(author, [...(found.removals.get(author) ?? []), ...deletions.removals]);

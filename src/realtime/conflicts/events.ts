@@ -3,7 +3,7 @@ import type { ObjectId } from 'mongodb';
 import type { NewEvent } from '../../db/collections/events.ts';
 import type { Anchor } from '../../model/anchor.ts';
 import { defined } from '../../utils/optional.ts';
-import { idKey, type Loss, type Removal, type Stretch } from './deletions.ts';
+import { idKey, merged, type Loss, type Removal, type Stretch } from './deletions.ts';
 
 /** At most this many stretches go into one event; beyond that only how many there were. */
 const MAX_RANGES = 100;
@@ -69,20 +69,28 @@ export function removalEvents(
     groups.set(key, group);
   }
 
-  // Many stretches would only bloat the event, their count is enough then.
-  return [...groups.values()].map((group) => ({
-    kind: group.kind,
-    createdBy: base.createdBy,
-    anchor: inUnit(base.anchor, group.unit),
-    at: base.at,
-    affects: [group.affected],
-    detail: {
-      ...(group.ranges.length > MAX_RANGES
-        ? { rangeCount: group.ranges.length }
-        : { ranges: group.ranges }),
-      ...(group.formatting ? { formatting: true } : {}),
-    },
-  }));
+  return [...groups.values()].map((group) => {
+    // Sorted first, so pieces deleted from the back, as with backspace held down, join again.
+    const ranges = merged(group.ranges.toSorted(byId), () => true);
+
+    // Many stretches would only bloat the event, their count is enough then.
+    return {
+      kind: group.kind,
+      createdBy: base.createdBy,
+      anchor: inUnit(base.anchor, group.unit),
+      at: base.at,
+      affects: [group.affected],
+      detail: {
+        ...(ranges.length > MAX_RANGES ? { rangeCount: ranges.length } : { ranges }),
+        ...(group.formatting ? { formatting: true } : {}),
+      },
+    };
+  });
+}
+
+/** Orders stretches by client, then clock. */
+function byId(a: Stretch, b: Stretch): number {
+  return a.client - b.client || a.clock - b.clock;
 }
 
 /** One work-lost per cause, place or value, loser, other side and unit; none if both are one. */
