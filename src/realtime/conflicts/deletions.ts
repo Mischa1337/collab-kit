@@ -27,6 +27,8 @@ interface UnitStretch extends Stretch {
 export interface Removal extends UnitStretch {
   /** Whether its key holds another value afterwards; otherwise it is simply gone. */
   readonly replaced: boolean;
+  /** Whether it is a format mark of a text, which Yjs also deletes by itself when tidying up. */
+  readonly formatting: boolean;
 }
 
 /** A stretch of pieces lost to a change whose sender never knew them. */
@@ -80,6 +82,7 @@ export function deletionsIn(
           clock,
           length,
           replaced: isReplaced(item),
+          formatting: item.content instanceof Y.ContentFormat,
           ...defined({ unit: unitOf(item, containers) }),
         });
       }
@@ -101,13 +104,38 @@ export function deletionsIn(
   });
 
   return {
-    removals: merged(removals, (a, b) => a.replaced === b.replaced),
+    removals: merged(
+      removals,
+      (a, b) => a.replaced === b.replaced && a.formatting === b.formatting,
+    ),
     losses: merged(
       losses,
       (a, b) =>
         a.cause === b.cause && idKey(a.other) === idKey(b.other) && a.removedNow === b.removedNow,
     ),
   };
+}
+
+/** Whether a transaction added nothing and only deleted format marks, as Yjs does tidying up. */
+export function isFormatCleanup(transaction: Y.Transaction): boolean {
+  // Anything new means somebody wrote.
+  for (const [client, clock] of transaction.afterState) {
+    if (transaction.beforeState.get(client) !== clock) {
+      return false;
+    }
+  }
+
+  // Read before Yjs collects the deleted pieces and they forget what they held.
+  let marks = 0;
+  let others = 0;
+  Y.iterateDeletedStructs(transaction, transaction.deleteSet, (struct) => {
+    if (struct instanceof Y.Item && struct.content instanceof Y.ContentFormat) {
+      marks += 1;
+    } else {
+      others += 1;
+    }
+  });
+  return marks > 0 && others === 0;
 }
 
 /** The key under which a piece is looked up, as a map cannot compare ids. */

@@ -28,6 +28,8 @@ interface RemovalGroup {
   readonly affected: string;
   readonly unit: string | undefined;
   readonly ranges: Stretch[];
+  /** Whether every piece in it is a format mark; then the event says so. */
+  formatting: boolean;
 }
 
 /** One group of losses that becomes one event. */
@@ -54,8 +56,16 @@ export function removalEvents(
     }
     const kind = removal.replaced ? 'work-replaced' : 'work-removed';
     const key = JSON.stringify([kind, author, removal.unit ?? null]);
-    const group = groups.get(key) ?? { kind, affected: author, unit: removal.unit, ranges: [] };
+    const group = groups.get(key) ?? {
+      kind,
+      affected: author,
+      unit: removal.unit,
+      ranges: [],
+      formatting: true,
+    };
     group.ranges.push({ client: removal.client, clock: removal.clock, length: removal.length });
+    // One piece of text among them, and it is more than formatting.
+    group.formatting &&= removal.formatting;
     groups.set(key, group);
   }
 
@@ -66,10 +76,12 @@ export function removalEvents(
     anchor: inUnit(base.anchor, group.unit),
     at: base.at,
     affects: [group.affected],
-    detail:
-      group.ranges.length > MAX_RANGES
+    detail: {
+      ...(group.ranges.length > MAX_RANGES
         ? { rangeCount: group.ranges.length }
-        : { ranges: group.ranges },
+        : { ranges: group.ranges }),
+      ...(group.formatting ? { formatting: true } : {}),
+    },
   }));
 }
 

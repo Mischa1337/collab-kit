@@ -215,6 +215,35 @@ describe('what the service takes from a reader', () => {
     expect(refusalOf(() => handleMessage(context, stepTwoOf(deleting, doc)))).toBe(1008);
     expect(doc.getText('t').toString()).toBe('Entwurf');
   });
+
+  it('passes over format marks the copy of a reader tidied up, and applies none of it', () => {
+    const { doc, context } = reader();
+    // Made apart from each other: c made bold, and c deleted.
+    const start = written('abcdef');
+    const bolding = copyOf(start);
+    bolding.getText('t').format(2, 1, { bold: true });
+    const deleting = copyOf(start);
+    deleting.getText('t').delete(2, 1);
+
+    // The reader's copy, knowing it as a text, deletes the marks around nothing by itself.
+    const tidied: Uint8Array[] = [];
+    const copy = new Y.Doc();
+    copy.getText('t');
+    copy.on('update', (update: Uint8Array, origin: unknown) => {
+      if (origin === null) {
+        tidied.push(update);
+      }
+    });
+    for (const change of [start, bolding, deleting]) {
+      Y.applyUpdate(doc, Y.encodeStateAsUpdate(change));
+      Y.applyUpdate(copy, Y.encodeStateAsUpdate(change), 'service');
+    }
+    const before = Y.encodeStateAsUpdate(doc);
+
+    expect(tidied).toHaveLength(1);
+    expect(handleMessage(context, encodeSyncUpdate(tidied[0]!))).toBeUndefined();
+    expect(Y.encodeStateAsUpdate(doc)).toEqual(before);
+  });
 });
 
 describe('awareness', () => {

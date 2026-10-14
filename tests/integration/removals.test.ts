@@ -210,6 +210,51 @@ describe('work of another person that somebody removes', () => {
     await Promise.all([alice.close(), carol.close(), bob.close()]);
   });
 
+  it('says formatting when bob only takes away the bold alice set', async () => {
+    const workpieceId = await freshWorkpiece();
+    const alice = await open(workpieceId, 'alice');
+    alice.doc.transact(() => {
+      alice.doc.getText('t').insert(0, 'abcdef');
+      alice.doc.getText('t').format(2, 2, { bold: true });
+    });
+    await stored(workpieceId, 1);
+
+    // Taking it away deletes her two marks and adds nothing.
+    const bob = await open(workpieceId, 'bob');
+    bob.doc.getText('t').format(2, 2, { bold: null });
+    await stored(workpieceId, 2);
+
+    const [event] = await traced(workpieceId, 1);
+    expect(event).toMatchObject({
+      kind: 'work-removed',
+      createdBy: 'bob',
+      affects: ['alice'],
+      detail: { formatting: true },
+    });
+
+    await Promise.all([alice.close(), bob.close()]);
+  });
+
+  it('says nothing of formatting when bob deletes bold text of alice', async () => {
+    const workpieceId = await freshWorkpiece();
+    const alice = await open(workpieceId, 'alice');
+    alice.doc.transact(() => {
+      alice.doc.getText('t').insert(0, 'abcdef');
+      alice.doc.getText('t').format(2, 2, { bold: true });
+    });
+    await stored(workpieceId, 1);
+
+    const bob = await open(workpieceId, 'bob');
+    bob.doc.getText('t').delete(1, 4);
+    await stored(workpieceId, 2);
+
+    const [event] = await traced(workpieceId, 1);
+    expect(event).toMatchObject({ kind: 'work-removed', createdBy: 'bob', affects: ['alice'] });
+    expect(event?.detail).not.toHaveProperty('formatting');
+
+    await Promise.all([alice.close(), bob.close()]);
+  });
+
   it('counts only what bob knew of a text that grew while he was away', async () => {
     const workpieceId = await freshWorkpiece();
     const alice = await open(workpieceId, 'alice');
@@ -262,6 +307,21 @@ describe('what tells of nothing', () => {
     await later.close();
   });
 
+  it('stays quiet when bob makes text of alice bold', async () => {
+    const workpieceId = await freshWorkpiece();
+    const alice = await open(workpieceId, 'alice');
+    alice.doc.getText('t').insert(0, 'abcdef');
+    await stored(workpieceId, 1);
+
+    const bob = await open(workpieceId, 'bob');
+    bob.doc.getText('t').format(0, 3, { bold: true });
+    await stored(workpieceId, 2);
+    await settled(workpieceId);
+
+    expect(await removals(workpieceId)).toEqual([]);
+    await Promise.all([alice.close(), bob.close()]);
+  });
+
   it('stays quiet when somebody comes back with everything, and after a reload', async () => {
     const workpieceId = await freshWorkpiece();
     const alice = await open(workpieceId, 'alice');
@@ -285,6 +345,38 @@ describe('what tells of nothing', () => {
 
     expect(await removals(workpieceId)).toHaveLength(1);
     await Promise.all([aliceBack.close(), bobBack.close()]);
+  });
+});
+
+describe('formatting that Yjs tidies up', () => {
+  it('ends with the same text everywhere, also loaded again from the database', async () => {
+    const workpieceId = await freshWorkpiece();
+    const alice = await open(workpieceId, 'alice');
+    const text = alice.doc.getText('t');
+    text.insert(0, 'abcdef');
+    await stored(workpieceId, 1);
+
+    // Bob takes the text along and goes offline.
+    const away = await open(workpieceId, 'bob');
+    await away.close();
+
+    // Alice makes c bold while bob deletes it, so her marks stand around nothing.
+    text.format(2, 1, { bold: true });
+    await stored(workpieceId, 2);
+    away.doc.getText('t').delete(2, 1);
+    const back = await open(workpieceId, 'bob', away.doc);
+
+    expect(await waitFor(() => text.toString() === 'abdef')).toBe(true);
+    await settled(workpieceId);
+    expect(back.doc.getText('t').toDelta()).toEqual(text.toDelta());
+
+    // Everyone leaves, so the next one in loads the workpiece from the database.
+    await Promise.all([alice.close(), back.close()]);
+    expect(await waitFor(() => gateway.countFor(workpieceId) === 0)).toBe(true);
+    const carol = await open(workpieceId, 'carol');
+    expect(carol.doc.getText('t').toDelta()).toEqual(text.toDelta());
+
+    await carol.close();
   });
 });
 

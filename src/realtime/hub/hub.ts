@@ -11,13 +11,21 @@ import { defined } from '../../utils/optional.ts';
 import { enqueue, foldNow, loadWorkpiece, storeUpdate, type Stored } from './persistence.ts';
 import type { Connection, HubOptions, Merge, OpenWorkpiece, WorkpieceHub } from './types.ts';
 import { encodeAwareness, encodeSyncUpdate, SENDER_DELETES } from '../connection/protocol.ts';
-import { deletionsIn, type DeleteSet, type Deletions } from '../conflicts/deletions.ts';
+import {
+  deletionsIn,
+  isFormatCleanup,
+  type DeleteSet,
+  type Deletions,
+} from '../conflicts/deletions.ts';
 import { anchorOf, createTracing } from '../conflicts/tracing.ts';
 import { containersOf } from '../conflicts/units.ts';
 import { collect, isReplayer, recordMerge, replay } from '../forks/replay.ts';
 
 /** Key in transaction.meta for what the change deleted, read while it still could be. */
 const DELETIONS = Symbol('deletions');
+
+/** Key in transaction.meta for Yjs tidying up formatting by itself, which nobody sent. */
+const CLEANUP = Symbol('cleanup');
 
 /** What a change without a sender deleted: nothing anybody needs to hear about. */
 const NO_DELETIONS: Deletions = { removals: [], losses: [] };
@@ -107,12 +115,20 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
       if (known !== undefined) {
         transaction.meta.set(DELETIONS, deletionsIn(transaction, known, containers));
       }
+      // Yjs tidies up format marks after a change by itself, without a sender.
+      if (transaction.origin === null && isFormatCleanup(transaction)) {
+        transaction.meta.set(CLEANUP, true);
+      }
     });
 
     // Attached only now: replaying the stored history must not store it a second time.
     doc.on(
       'update',
       (update: Uint8Array, origin: unknown, _doc: Y.Doc, transaction: Y.Transaction) => {
+        // Every client tidies up the same way itself, so it is neither stored nor passed on.
+        if (transaction.meta.has(CLEANUP)) {
+          return;
+        }
         const deletions =
           (transaction.meta.get(DELETIONS) as Deletions | undefined) ?? NO_DELETIONS;
         onUpdate(loaded, update, origin, deletions);

@@ -335,6 +335,40 @@ describe('following along without writing', () => {
     await alice.close();
   });
 
+  it('keeps a reader whose copy tidies up formatting by itself', async () => {
+    const workpieceId = await freshWorkpiece();
+    const alice = await open(workpieceId, 'alice');
+    const erin = await open(workpieceId, 'erin');
+    await Promise.all([alice.synced, erin.synced]);
+    let closedWith: number | undefined;
+    void erin.closed.then((code) => {
+      closedWith = code;
+    });
+    // Erin's copy knows the text as a text, as it must to show it.
+    const shown = erin.doc.getText('t');
+
+    // Made apart from each other: c made bold, and c deleted.
+    const start = new Y.Doc();
+    start.getText('t').insert(0, 'abcdef');
+    const bolding = new Y.Doc();
+    Y.applyUpdate(bolding, Y.encodeStateAsUpdate(start));
+    bolding.getText('t').format(2, 1, { bold: true });
+    const deleting = new Y.Doc();
+    Y.applyUpdate(deleting, Y.encodeStateAsUpdate(start));
+    deleting.getText('t').delete(2, 1);
+
+    // Alice's copy never takes them for a text, so only erin's tidies up the marks around nothing.
+    for (const change of [start, bolding, deleting]) {
+      Y.applyUpdate(alice.doc, Y.encodeStateAsUpdate(change));
+    }
+
+    expect(await waitFor(() => shown.toString() === 'abdef')).toBe(true);
+    await pause(200);
+    expect(closedWith).toBeUndefined();
+
+    await Promise.all([alice.close(), erin.close()]);
+  });
+
   it('lets a reader come back with everything it holds, deletions included', async () => {
     const workpieceId = await freshWorkpiece();
     const alice = await open(workpieceId, 'alice');

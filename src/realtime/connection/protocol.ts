@@ -148,7 +148,7 @@ export function applyAsSent(doc: Y.Doc, update: Uint8Array, origin: unknown): vo
   );
 }
 
-/** Whether every item of the update is known and every deletion done, so it would change nothing. */
+/** Whether every item is known and every deletion done or a tidied-up mark, so nothing changes. */
 function bringsNothingNew(doc: Y.Doc, update: Uint8Array): boolean {
   const { structs, ds } = Y.decodeUpdate(update);
   const known = Y.decodeStateVector(Y.encodeStateVector(doc));
@@ -164,15 +164,34 @@ function bringsNothingNew(doc: Y.Doc, update: Uint8Array): boolean {
   }
 
   // Yjs sends the whole delete set every time, so a returning reader repeats deletions done long ago.
-  const deleted = Y.createDeleteSetFromStructStore(doc.store);
   return [...ds.clients].every(([client, ranges]) => {
-    const done = deleted.clients.get(client) ?? [];
-    return ranges.every((range) =>
-      done.some(
-        (span) => span.clock <= range.clock && range.clock + range.len <= span.clock + span.len,
-      ),
-    );
+    const held = doc.store.clients.get(client) ?? [];
+    return ranges.every((range) => goneOrMarks(held, range.clock, range.clock + range.len));
   });
+}
+
+/** Whether every piece in the range is deleted already or a format mark, which copies tidy up. */
+function goneOrMarks(structs: (Y.Item | Y.GC)[], clock: number, end: number): boolean {
+  const last = structs.at(-1);
+  // Pieces the workpiece does not hold yet are new in any case.
+  if (last === undefined || last.id.clock + last.length < end) {
+    return false;
+  }
+
+  // Walks from piece to piece until the range is covered.
+  for (let index = Y.findIndexSS(structs, clock); index < structs.length; index += 1) {
+    const struct = structs[index];
+    if (struct === undefined || struct.id.clock >= end) {
+      break;
+    }
+    if (
+      !struct.deleted &&
+      !(struct instanceof Y.Item && struct.content instanceof Y.ContentFormat)
+    ) {
+      return false;
+    }
+  }
+  return true;
 }
 
 /** One awareness entry as it travels: which client, its clock, and its state still as JSON. */
