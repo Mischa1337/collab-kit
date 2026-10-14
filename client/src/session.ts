@@ -16,7 +16,10 @@ import {
   type PresenceClient,
   type Session,
   type SessionEvents,
+  type SharedText,
   type Status,
+  type TextDelta,
+  type TextPosition,
 } from './api.ts';
 
 /** The client announces two subprotocols: this marker and the token itself. */
@@ -30,6 +33,12 @@ const FINAL_CODES: ReadonlySet<number> = new Set([4403, 1007, 1008, 1009]);
 
 /** Longest wait between two attempts, as in y-websocket. */
 const MAX_WAIT_MS = 2500;
+
+/** A text the session handed out, with the history its undo works on. */
+interface OpenText {
+  readonly shared: SharedText;
+  readonly history: Y.UndoManager;
+}
 
 /** What a session needs from the library around it. */
 export interface SessionContext {
@@ -51,7 +60,10 @@ export function openSession<Value>(
   options: OpenOptions = {},
 ): Session<Value> {
   const doc = new Y.Doc();
-  const map = doc.getMap<Value>(options.map ?? 'units');
+  const mapName = options.map ?? 'units';
+  const map = doc.getMap<Value>(mapName);
+  // Every text handed out, once per name.
+  const texts = new Map<string, OpenText>();
   const provider = new WebsocketProvider(context.socketUrl, workpieceId, doc, {
     // Connected only once token and rights are in.
     connect: false,
@@ -111,6 +123,16 @@ export function openSession<Value>(
     if (next !== status) {
       status = next;
       emit('status', next);
+    }
+  }
+
+  /** Throws where CK would refuse a change, so nothing goes out that ends the session. */
+  function checkWrite(): void {
+    if (ended) {
+      throw new CollabKitError(1000, 'session closed');
+    }
+    if (!mayWrite) {
+      throw new CollabKitError(403, 'read only');
     }
   }
 
@@ -239,12 +261,7 @@ export function openSession<Value>(
       get: (key) => map.get(key),
       entries: () => [...map.entries()],
       update: ({ set = {}, delete: removed = [] }) => {
-        if (ended) {
-          throw new CollabKitError(1000, 'session closed');
-        }
-        if (!mayWrite) {
-          throw new CollabKitError(403, 'read only');
-        }
+        checkWrite();
         // One transaction, so CK gets one change.
         doc.transact(() => {
           for (const key of removed) {
@@ -261,6 +278,22 @@ export function openSession<Value>(
         map.observe(observer);
         return () => map.unobserve(observer);
       },
+    },
+    text: (name) => {
+      if (ended) {
+        throw new CollabKitError(1000, 'session closed');
+      }
+      const known = texts.get(name);
+      if (known !== undefined) {
+        return known.shared;
+      }
+      // A mistake of the tool, not a refusal of CK, so no status.
+      if (name === mapName) {
+        throw new Error(`${name} holds the units of this session, not a text`);
+      }
+      const opened = textOf(doc, doc.getText(name), checkWrite);
+      texts.set(name, opened);
+      return opened.shared;
     },
     presence: {
       set: (fields) => {
@@ -311,6 +344,11 @@ export function openSession<Value>(
       for (const set of Object.values(listeners)) {
         set.clear();
       }
+      // Each history listens to the doc until it is let go of.
+      for (const { history } of texts.values()) {
+        history.destroy();
+      }
+      texts.clear();
       // The provider tells CK this client left; awareness and doc keep no timer behind.
       provider.destroy();
       awareness.destroy();
@@ -318,6 +356,54 @@ export function openSession<Value>(
       status = 'closed';
     },
   };
+}
+
+/** A text of the doc as the library shows it; its own origin tells own changes from all others. */
+function textOf(doc: Y.Doc, text: Y.Text, checkWrite: () => void): OpenText {
+  const origin = Symbol('text');
+  // Only what went through update, so undo never takes back the work of others.
+  const history = new Y.UndoManager(text, { trackedOrigins: new Set([origin]) });
+
+  const shared: SharedText = {
+    get value() {
+      return text.toString();
+    },
+    delta: () => text.toDelta() as TextDelta,
+    update: (delta) => {
+      checkWrite();
+      // One transaction, so CK gets one change.
+      doc.transact(() => text.applyDelta([...delta]), origin);
+    },
+    onChange: (listener) => {
+      const observer = (event: Y.YTextEvent): void => {
+        // Nothing to show, as when formatting met a letter already deleted.
+        if (event.delta.length > 0) {
+          listener(event.delta as TextDelta, event.transaction.origin === origin);
+        }
+      };
+      text.observe(observer);
+      return () => text.unobserve(observer);
+    },
+    cursor: (index) =>
+      Y.relativePositionToJSON(Y.createRelativePositionFromTypeIndex(text, index)) as TextPosition,
+    indexOf: (position) => {
+      const absolute = Y.createAbsolutePositionFromRelativePosition(
+        Y.createRelativePositionFromJSON(position),
+        doc,
+      );
+      // A place in another text of the same doc is no place in this one.
+      return absolute !== null && absolute.type === text ? absolute.index : undefined;
+    },
+    undo: () => {
+      checkWrite();
+      return history.undo() !== null;
+    },
+    redo: () => {
+      checkWrite();
+      return history.redo() !== null;
+    },
+  };
+  return { shared, history };
 }
 
 /** A work-lost event from the view of this person: the loser comes first in affects. */

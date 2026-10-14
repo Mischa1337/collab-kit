@@ -43,6 +43,8 @@ export interface Session<Value = unknown> {
   readonly mayWrite: boolean;
   readonly status: Status;
   readonly units: Units<Value>;
+  /** The text of this name in the doc, the same object for the same name; throws after close. */
+  text(name: string): SharedText;
   readonly presence: Presence;
   /** Calls the listener on every such event; gives back how to stop. */
   on<Kind extends keyof SessionEvents>(
@@ -91,6 +93,36 @@ export interface UnitChange<Value = unknown> {
   readonly set?: Readonly<Record<string, Value>>;
   readonly delete?: readonly string[];
 }
+
+/** A text of the workpiece, changed and told of as change lists; the editor is up to the tool. */
+export interface SharedText {
+  /** The text without its formatting. */
+  readonly value: string;
+  /** The whole content with its attributes, to load an editor. */
+  delta(): TextDelta;
+  /** Applies one change; throws without edit, where CK would close with 1008. */
+  update(delta: TextDelta): void;
+  /** Every change in the same form; own only for update of this session. */
+  onChange(listener: (delta: TextDelta, own: boolean) => void): () => void;
+  /** A place that moves along when others type before it, as JSON for presence. */
+  cursor(index: number): TextPosition;
+  /** Where a place stands now; undefined if it lies in another text or is unknown. */
+  indexOf(position: TextPosition): number | undefined;
+  /** Takes back the last own change, never one of others; tells whether there was one. */
+  undo(): boolean;
+  /** Does again what undo took back; tells whether there was something. */
+  redo(): boolean;
+}
+
+/** A change to a text, step by step from its start; attributes are free, null removes one. */
+export type TextDelta = readonly (
+  | { readonly insert: string; readonly attributes?: Free }
+  | { readonly retain: number; readonly attributes?: Free }
+  | { readonly delete: number }
+)[];
+
+/** A place in a text as Yjs keeps it; only indexOf reads it. */
+export type TextPosition = Free;
 
 /** Who is at the workpiece; what an entry holds besides person is up to the tool. */
 export interface Presence {
