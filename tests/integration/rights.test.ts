@@ -485,7 +485,7 @@ describe('rooms and workpieces under grants', () => {
     const made = await create(tutor, { roomId });
     expect(made.status).toBe(201);
     const inRoom = await request(server).get(`/rooms/${roomId}`).set(as(tutor));
-    expect(inRoom.body.references).toContainEqual({ kind: 'workpiece', id: made.body._id });
+    expect(inRoom.body.workpieces).toContain(made.body._id);
 
     expect((await create(tutor, {})).status).toBe(403);
     expect((await create(dozent, {})).status).toBe(201);
@@ -500,10 +500,7 @@ describe('rooms and workpieces under grants', () => {
     const review = await group(['bob']);
     await grant(review, { kind: 'room', id: second }, ['see', 'manage']);
     const push = () =>
-      request(server)
-        .post(`/rooms/${second}/references`)
-        .set(as(bob))
-        .send({ kind: 'workpiece', id: workpieceId });
+      request(server).post(`/rooms/${second}/workpieces`).set(as(bob)).send({ workpieceId });
 
     // Unseen it stays unknown; seen but not managed it is not bob's to hand on.
     expect((await push()).status).toBe(404);
@@ -511,19 +508,6 @@ describe('rooms and workpieces under grants', () => {
     expect((await push()).status).toBe(403);
     await grant(review, { kind: 'workpiece', id: workpieceId }, ['see', 'manage']);
     expect((await push()).status).toBe(201);
-  });
-
-  it('keeps groups out of the references and points to the grants', async () => {
-    const roomId = await room();
-    const team = await group(['alice']);
-
-    const pushed = await request(server)
-      .post(`/rooms/${roomId}/references`)
-      .set(as(dozent))
-      .send({ kind: 'group', id: team });
-
-    expect(pushed.status).toBe(400);
-    expect(pushed.body.error).toContain('PUT /grants');
   });
 });
 

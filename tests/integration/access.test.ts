@@ -46,11 +46,7 @@ describe('what someone may do with a workpiece over the socket', () => {
       members,
     });
 
-    await addToRoom(storage.db, room._id, {
-      kind: 'workpiece',
-      id: workpiece._id,
-      addedBy: 'alice',
-    });
+    await addToRoom(storage.db, room._id, { workpieceId: workpiece._id, addedBy: 'alice' });
     await setGrant(storage.db, {
       groupId: group._id,
       scope: { kind: 'room', id: room._id },
@@ -93,11 +89,7 @@ describe('what someone may do with a workpiece over the socket', () => {
   it('keeps everybody out of a room nobody holds a grant at', async () => {
     const workpiece = await createWorkpiece(storage.db, { name: 'Entwurf', createdBy: 'alice' });
     const room = await createRoom(storage.db, { name: 'Leer', createdBy: 'alice' });
-    await addToRoom(storage.db, room._id, {
-      kind: 'workpiece',
-      id: workpiece._id,
-      addedBy: 'alice',
-    });
+    await addToRoom(storage.db, room._id, { workpieceId: workpiece._id, addedBy: 'alice' });
 
     await expect(workpieceAccess(storage.db, actor('alice'), workpiece._id)).resolves.toBe('none');
   });
@@ -111,7 +103,7 @@ describe('what someone may do with a workpiece over the socket', () => {
       createdBy: 'bob',
       members: ['bob'],
     });
-    await addToRoom(storage.db, other._id, { kind: 'workpiece', id: workpieceId, addedBy: 'bob' });
+    await addToRoom(storage.db, other._id, { workpieceId, addedBy: 'bob' });
     await setGrant(storage.db, {
       groupId: theirs._id,
       scope: { kind: 'room', id: other._id },

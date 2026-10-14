@@ -87,7 +87,7 @@ export function workpieceRoutes(db: Db, hub: WorkpieceHub): Router {
       ...defined({ contract, units }),
     });
     if (roomId !== undefined) {
-      await addToRoom(db, roomId, { kind: 'workpiece', id: workpiece._id, addedBy: actor.actorId });
+      await addToRoom(db, roomId, { workpieceId: workpiece._id, addedBy: actor.actorId });
     }
 
     response.status(201).json(await withNames(db, workpiece));

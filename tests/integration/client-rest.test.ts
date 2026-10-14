@@ -37,8 +37,8 @@ const ROUTES = [
   'GET /rooms/:id',
   'PATCH /rooms/:id',
   'DELETE /rooms/:id',
-  'POST /rooms/:id/references',
-  'DELETE /rooms/:id/references',
+  'POST /rooms/:id/workpieces',
+  'DELETE /rooms/:id/workpieces/:workpieceId',
   'GET /rooms/:id/events',
   'GET /rooms/:id/activity',
   'POST /groups',
@@ -142,7 +142,8 @@ beforeAll(async () => {
     const { pathname } = new URL(String(input));
     const route = pathname
       .replaceAll(/\/[0-9a-f]{24}(?=\/|$)/g, '/:id')
-      .replace(/\/members\/[^/]+$/, '/members/:actorId');
+      .replace(/\/members\/[^/]+$/, '/members/:actorId')
+      .replace(/^\/rooms\/:id\/workpieces\/:id$/, '/rooms/:id/workpieces/:workpieceId');
     called.add(`${init?.method ?? 'GET'} ${route}`);
     return realFetch(input, init);
   };
@@ -174,7 +175,7 @@ describe('the REST wrapper', () => {
     expect(room).toMatchObject({
       name: 'Seminar',
       settings: { color: 'blue' },
-      references: [],
+      workpieces: [],
       createdBy: 'alice',
       names: { alice: 'Alice' },
     });
@@ -203,11 +204,12 @@ describe('the REST wrapper', () => {
     expect((await bob.me.rooms()).map((each) => each._id)).toEqual([room._id]);
 
     const workpiece = await alice.workpieces.create({ name: 'Entwurf' });
-    const reference = { kind: 'workpiece', id: workpiece._id };
-    expect((await alice.rooms.addReference(room._id, reference)).references).toEqual([reference]);
-    expect((await alice.rooms.events(room._id, { kind: 'reference-added' })).length).toBe(1);
+    expect((await alice.rooms.addWorkpiece(room._id, workpiece._id)).workpieces).toEqual([
+      workpiece._id,
+    ]);
+    expect((await alice.rooms.events(room._id, { kind: 'workpiece-added' })).length).toBe(1);
     expect((await alice.rooms.activity(room._id)).map((each) => each.actorId)).toEqual(['alice']);
-    expect((await alice.rooms.removeReference(room._id, reference)).references).toEqual([]);
+    expect((await alice.rooms.removeWorkpiece(room._id, workpiece._id)).workpieces).toEqual([]);
 
     expect(await alice.grants.remove({ groupId: group._id, scope, reason: 'vorbei' })).toEqual({
       removed: true,

@@ -52,7 +52,7 @@ async function world(members: readonly string[]): Promise<World> {
   const group = await createGroup(db, { name: 'Team 3', createdBy: 'tutor', members });
   const room = await createRoom(db, { name: 'Übung 3', createdBy: 'tutor' });
   const workpiece = await createWorkpiece(db, { name: 'Modell', createdBy: 'tutor' });
-  await addToRoom(db, room._id, { kind: 'workpiece', id: workpiece._id, addedBy: 'tutor' });
+  await addToRoom(db, room._id, { workpieceId: workpiece._id, addedBy: 'tutor' });
 
   const anchor = { kind: 'workpiece' as const, id: workpiece._id };
   const task = await createTask(db, {

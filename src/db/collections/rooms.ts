@@ -1,25 +1,18 @@
 import { ObjectId, type Db, type Document } from 'mongodb';
 
-import type { Reference } from '../../model/anchor.ts';
 import { defined } from '../../utils/optional.ts';
 import type { CollectionDefinition } from '../apply.ts';
 import { writeReturningEvents, writeWithEvents, type NewEvent } from './events.ts';
 import { removeGrantsAt } from './grants.ts';
 
-/** What a room references: a workpiece only, as only to it rights flow down from the room. */
-export interface RoomReference {
-  kind: 'workpiece';
-  id: ObjectId;
-}
-
-/** Bundles without owning: what it references lives on its own and may sit in several rooms. */
+/** Bundles without owning: its workpieces live on their own and may sit in several rooms. */
 export interface RoomRecord {
   _id: ObjectId;
   name: string;
   /** Switch positions of the docking tool. The service never reads them. */
   settings: Document;
-  /** Whole things only, so no unit; who put them in or took them out, and when, is in events. */
-  references: RoomReference[];
+  /** Only workpieces, as only to them rights flow down; who moved them, and when, is in events. */
+  workpieces: ObjectId[];
   createdAt: Date;
   createdBy: string;
 }
@@ -28,27 +21,23 @@ export const roomsDefinition: CollectionDefinition = {
   name: 'rooms',
   schema: {
     bsonType: 'object',
-    required: ['name', 'settings', 'references', 'createdAt', 'createdBy'],
+    required: ['name', 'settings', 'workpieces', 'createdAt', 'createdBy'],
     properties: {
       name: { bsonType: 'string' },
       settings: {
         bsonType: 'object',
         description: 'switch positions chosen by the docking tool, deliberately unconstrained',
       },
-      references: {
+      workpieces: {
         bsonType: 'array',
-        description: 'what the room bundles, pointed at and never owned',
-        items: {
-          bsonType: 'object',
-          required: ['kind', 'id'],
-          properties: { kind: { enum: ['workpiece'] }, id: { bsonType: 'objectId' } },
-        },
+        description: 'the workpieces the room bundles, pointed at and never owned',
+        items: { bsonType: 'objectId' },
       },
       createdAt: { bsonType: 'date' },
       createdBy: { bsonType: 'string' },
     },
   },
-  indexes: [{ key: { 'references.id': 1 }, name: 'references_id' }],
+  indexes: [{ key: { workpieces: 1 }, name: 'workpieces' }],
 };
 
 export interface NewRoom {
@@ -62,7 +51,7 @@ export async function createRoom(db: Db, input: NewRoom, now = new Date()): Prom
     _id: new ObjectId(),
     name: input.name,
     settings: input.settings ?? {},
-    references: [],
+    workpieces: [],
     createdAt: now,
     createdBy: input.createdBy,
   };
@@ -75,70 +64,61 @@ export async function findRoom(db: Db, id: ObjectId): Promise<RoomRecord | null>
   return db.collection<RoomRecord>('rooms').findOne({ _id: id });
 }
 
-export interface Addition extends RoomReference {
+export interface Addition {
+  readonly workpieceId: ObjectId;
   readonly addedBy: string;
 }
 
-/** Adds a reference if new and records it; whether the workpiece is there the route checks. */
+/** Adds a workpiece if new and records it; whether it is there the route checks. */
 export async function addToRoom(
   db: Db,
   roomId: ObjectId,
   input: Addition,
   now = new Date(),
 ): Promise<boolean> {
-  const reference: RoomReference = { kind: input.kind, id: input.id };
-
   return writeWithEvents(
     db,
     async (session) => {
       const result = await db
         .collection<RoomRecord>('rooms')
-        .updateOne(
-          { _id: roomId, references: { $not: { $elemMatch: reference } } },
-          { $push: { references: reference } },
-          { session },
-        );
+        .updateOne({ _id: roomId }, { $addToSet: { workpieces: input.workpieceId } }, { session });
 
       return result.modifiedCount === 1;
     },
-    [referenceEvent('reference-added', roomId, reference, input.addedBy)],
+    [workpieceEvent('workpiece-added', roomId, input.workpieceId, input.addedBy)],
     now,
   );
 }
 
-export interface Removal extends RoomReference {
+export interface Removal {
+  readonly workpieceId: ObjectId;
   readonly removedBy: string;
 }
 
-/** Takes the reference out again and records it. The thing it pointed at stays untouched. */
+/** Takes the workpiece out again and records it. The workpiece itself stays untouched. */
 export async function removeFromRoom(
   db: Db,
   roomId: ObjectId,
   input: Removal,
   now = new Date(),
 ): Promise<boolean> {
-  const reference: RoomReference = { kind: input.kind, id: input.id };
-
   return writeWithEvents(
     db,
     async (session) => {
       const result = await db
         .collection<RoomRecord>('rooms')
-        .updateOne({ _id: roomId }, { $pull: { references: reference } }, { session });
+        .updateOne({ _id: roomId }, { $pull: { workpieces: input.workpieceId } }, { session });
 
       return result.modifiedCount === 1;
     },
-    [referenceEvent('reference-removed', roomId, reference, input.removedBy)],
+    [workpieceEvent('workpiece-removed', roomId, input.workpieceId, input.removedBy)],
     now,
   );
 }
 
-/** Every room this thing sits in, which is the way back from a workpiece. */
-export async function roomsContaining(db: Db, what: Reference): Promise<RoomRecord[]> {
-  return db
-    .collection<RoomRecord>('rooms')
-    .find({ references: { $elemMatch: { kind: what.kind, id: what.id } } })
-    .toArray();
+/** Every room this workpiece sits in, which is the way back from it. */
+export async function roomsContaining(db: Db, workpieceId: ObjectId): Promise<RoomRecord[]> {
+  return db.collection<RoomRecord>('rooms').find({ workpieces: workpieceId }).toArray();
 }
 
 /** These rooms, or every room when no keys are named. */
@@ -242,7 +222,12 @@ function roomEvent(
   };
 }
 
-/** The trace of a change to what the room references, anchored at the room. */
-function referenceEvent(kind: string, roomId: ObjectId, what: RoomReference, by: string): NewEvent {
-  return { kind, createdBy: by, anchor: { kind: 'room', id: roomId }, detail: { ...what } };
+/** The trace of a workpiece put in or taken out, anchored at the room. */
+function workpieceEvent(
+  kind: string,
+  roomId: ObjectId,
+  workpieceId: ObjectId,
+  by: string,
+): NewEvent {
+  return { kind, createdBy: by, anchor: { kind: 'room', id: roomId }, detail: { workpieceId } };
 }

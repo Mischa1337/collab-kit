@@ -103,7 +103,7 @@ async function collectPlaces(
 /** Right above a place: the rooms of a workpiece, the parent and anchor of a task or comment. */
 async function parentsOf(db: Db, place: Reference): Promise<Reference[]> {
   if (place.kind === 'workpiece') {
-    const rooms = await roomsContaining(db, place);
+    const rooms = await roomsContaining(db, place.id);
     return rooms.map((room) => ({ kind: 'room', id: room._id }));
   }
   if (place.kind === 'task') {
@@ -177,9 +177,7 @@ export async function workpiecesVisibleTo(db: Db, actor: Actor): Promise<Workpie
     placesWhere(db, groups, 'see', 'workpiece'),
     placesWhere(db, groups, 'see', 'room'),
   ]);
-  const inRooms = (await findRooms(db, roomIds)).flatMap((room) =>
-    room.references.map((reference) => reference.id),
-  );
+  const inRooms = (await findRooms(db, roomIds)).flatMap((room) => room.workpieces);
   return findWorkpieces(db, [...direct, ...inRooms]);
 }
 

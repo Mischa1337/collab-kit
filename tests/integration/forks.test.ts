@@ -83,7 +83,7 @@ async function workpieceIn(roomId: ObjectId): Promise<ObjectId> {
     contract: { kind: 'modell' },
     units: CELLS,
   });
-  await addToRoom(storage.db, roomId, { kind: 'workpiece', id: workpiece._id, addedBy: 'alice' });
+  await addToRoom(storage.db, roomId, { workpieceId: workpiece._id, addedBy: 'alice' });
   return workpiece._id;
 }
 
@@ -603,7 +603,7 @@ describe('who may fork and merge', () => {
     const roomId = await team();
     const groupWork = await workpieceIn(roomId);
     const onlySeeing = await roomFor(['erin'], ['see']);
-    await addToRoom(storage.db, onlySeeing, { kind: 'workpiece', id: groupWork, addedBy: 'alice' });
+    await addToRoom(storage.db, onlySeeing, { workpieceId: groupWork, addedBy: 'alice' });
     const other = await workpieceIn(roomId);
     const alice = await open(other, 'alice');
     alice.doc.getText('t').insert(0, 'x');
@@ -627,7 +627,7 @@ describe('who may fork and merge', () => {
     const roomId = await team();
     const groupWork = await workpieceIn(roomId);
     const onlySeeing = await roomFor(['erin'], ['see']);
-    await addToRoom(storage.db, onlySeeing, { kind: 'workpiece', id: groupWork, addedBy: 'alice' });
+    await addToRoom(storage.db, onlySeeing, { workpieceId: groupWork, addedBy: 'alice' });
     const hidden = await workpieceIn(await roomFor(['frank'], ['see']));
     const own = await forkInto('alice', groupWork, roomId);
     const from = { from: own.toHexString() };

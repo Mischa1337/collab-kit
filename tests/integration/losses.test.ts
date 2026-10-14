@@ -55,11 +55,7 @@ async function freshWorkpiece(): Promise<ObjectId> {
     createdBy: 'alice',
     members: ['alice', 'bob', 'carol'],
   });
-  await addToRoom(storage.db, room._id, {
-    kind: 'workpiece',
-    id: workpiece._id,
-    addedBy: 'alice',
-  });
+  await addToRoom(storage.db, room._id, { workpieceId: workpiece._id, addedBy: 'alice' });
   await setGrant(storage.db, {
     groupId: group._id,
     scope: { kind: 'room', id: room._id },

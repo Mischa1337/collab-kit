@@ -63,11 +63,7 @@ async function freshWorkpiece(): Promise<ObjectId> {
     units: [{ path: ['units'] }],
   });
   const room = await createRoom(storage.db, { name: 'Seminar', createdBy: 'alice' });
-  await addToRoom(storage.db, room._id, {
-    kind: 'workpiece',
-    id: workpiece._id,
-    addedBy: 'alice',
-  });
+  await addToRoom(storage.db, room._id, { workpieceId: workpiece._id, addedBy: 'alice' });
   const writers = await createGroup(storage.db, {
     name: 'Schreibende',
     createdBy: 'alice',

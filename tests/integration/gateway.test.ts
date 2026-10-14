@@ -127,11 +127,7 @@ beforeAll(async () => {
     createdBy: 'alice',
     members: ['alice'],
   });
-  await addToRoom(storage.db, room._id, {
-    kind: 'workpiece',
-    id: workpiece._id,
-    addedBy: 'alice',
-  });
+  await addToRoom(storage.db, room._id, { workpieceId: workpiece._id, addedBy: 'alice' });
   // In through a grant at the room, as a group in it no longer opens anything.
   await setGrant(storage.db, {
     groupId: group._id,
@@ -433,11 +429,7 @@ describe('when access is taken away', () => {
       createdBy: 'alice',
       members: ['carol'],
     });
-    await addToRoom(storage.db, room._id, {
-      kind: 'workpiece',
-      id: workpiece._id,
-      addedBy: 'alice',
-    });
+    await addToRoom(storage.db, room._id, { workpieceId: workpiece._id, addedBy: 'alice' });
     // Both groups may work in the room, so carol gets in twice over.
     await Promise.all(
       [all._id, tutors._id].map((groupId) =>
@@ -576,10 +568,8 @@ describe('when access is taken away', () => {
       closedWith(await openAs('carol', workpiece)),
     ];
 
-    const query = `kind=workpiece&id=${workpiece.toHexString()}`;
-    expect((await removeAsAlice(`/rooms/${room.toHexString()}/references?${query}`)).status).toBe(
-      200,
-    );
+    const path = `/rooms/${room.toHexString()}/workpieces/${workpiece.toHexString()}`;
+    expect((await removeAsAlice(path)).status).toBe(200);
     await expect(Promise.all(closing)).resolves.toEqual([4403, 4403]);
   });
 

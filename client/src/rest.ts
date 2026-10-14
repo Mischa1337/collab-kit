@@ -26,9 +26,10 @@ export function createRoutes(baseUrl: string, getToken: () => string | Promise<s
       get: (id) => read(`/rooms/${segment(id)}`),
       update: (id, change) => write('PATCH', `/rooms/${segment(id)}`, change),
       remove: (id, options = {}) => remove(`/rooms/${segment(id)}`, { ...options }),
-      addReference: (id, reference) => write('POST', `/rooms/${segment(id)}/references`, reference),
-      removeReference: (id, reference) =>
-        remove(`/rooms/${segment(id)}/references`, { ...reference }),
+      addWorkpiece: (id, workpieceId) =>
+        write('POST', `/rooms/${segment(id)}/workpieces`, { workpieceId }),
+      removeWorkpiece: (id, workpieceId) =>
+        remove(`/rooms/${segment(id)}/workpieces/${segment(workpieceId)}`),
       events: (id, query = {}) => read(`/rooms/${segment(id)}/events`, { ...query }),
       activity: (id) => read(`/rooms/${segment(id)}/activity`),
     },

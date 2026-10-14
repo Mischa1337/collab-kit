@@ -62,7 +62,7 @@ export async function forkWorkpiece(
     forkOf: { id: sourceId, ...defined({ at }) },
   });
   if (input.roomId !== undefined) {
-    await addToRoom(db, input.roomId, { kind: 'workpiece', id, addedBy: input.createdBy });
+    await addToRoom(db, input.roomId, { workpieceId: id, addedBy: input.createdBy });
   }
 
   // Only at the fork: the group of the original need not hear of a private copy.

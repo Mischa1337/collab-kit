@@ -16,15 +16,11 @@ import {
 import { eventKeysOf, withNames } from '../db/names.ts';
 import type { Actor } from '../model/actor.ts';
 import type { Reference } from '../model/anchor.ts';
-import { asActorId, asCount, asObject, asObjectId, asReference, asText } from '../utils/input.ts';
+import { asActorId, asCount, asObject, asObjectId, asText } from '../utils/input.ts';
 import { defined } from '../utils/optional.ts';
 import { actorOf, bodyOf, fail, guard, idOf, requireId, unusableField } from './http.ts';
 
-/** What a reference in a room needs, for the 400 of the routes that move one. */
-const ROOM_REFERENCE_RULE =
-  'a room references only kind workpiece, with an id of 24 hex characters';
-
-/** A room bundles: these routes move references, never create or delete what they point at. */
+/** A room bundles: these routes move workpieces in and out, never create or delete them. */
 export function roomRoutes(db: Db, recheckAccess: () => Promise<void>): Router {
   const routes = Router();
 
@@ -120,55 +116,48 @@ export function roomRoutes(db: Db, recheckAccess: () => Promise<void>): Router {
     response.json({ deleted });
   });
 
-  routes.post('/rooms/:id/references', seeing, changing, async (request, response) => {
-    const reference = asReference(bodyOf(request));
+  routes.post('/rooms/:id/workpieces', seeing, changing, async (request, response) => {
+    const workpieceId = asObjectId(bodyOf(request)['workpieceId']);
 
-    // Who may into a room stands in its grants, a group in here would open nothing.
-    if (reference?.kind === 'group') {
-      return fail(response, 400, 'a group gets into a room through PUT /grants');
-    }
-    if (reference?.kind !== 'workpiece') {
-      return fail(response, 400, ROOM_REFERENCE_RULE);
+    if (workpieceId === undefined) {
+      return fail(response, 400, 'workpieceId is missing');
     }
 
     const actor = actorOf(request);
-    if (!(await maySee(db, actor, reference))) {
-      return fail(response, 404, 'unknown reference');
+    const workpiece = { kind: 'workpiece' as const, id: workpieceId };
+    if (!(await maySee(db, actor, workpiece))) {
+      return fail(response, 404, 'unknown workpiece');
     }
     // In here it gets the rights of the room, so it takes manage at it too.
-    if (!(await may(db, actor, 'manage', reference))) {
+    if (!(await may(db, actor, 'manage', workpiece))) {
       return fail(response, 403, 'not allowed to hand this on');
     }
 
     const id = idOf(request);
-    const added = await addToRoom(db, id, {
-      kind: 'workpiece',
-      id: reference.id,
-      addedBy: actor.actorId,
-    });
+    const added = await addToRoom(db, id, { workpieceId, addedBy: actor.actorId });
 
     // 200 if it was already in: adding it twice is no error, it just changes nothing.
     response.status(added ? 201 : 200).json(await withNames(db, await findRoom(db, id)));
   });
 
-  // In the query and not the body: a body on DELETE may get lost on the way.
-  routes.delete('/rooms/:id/references', seeing, changing, async (request, response) => {
-    const reference = asReference(request.query);
+  routes.delete(
+    '/rooms/:id/workpieces/:workpieceId',
+    seeing,
+    changing,
+    async (request, response) => {
+      const workpieceId = asObjectId(request.params['workpieceId']);
 
-    if (reference?.kind !== 'workpiece') {
-      return fail(response, 400, ROOM_REFERENCE_RULE);
-    }
+      if (workpieceId === undefined) {
+        return fail(response, 400, 'workpieceId is missing');
+      }
 
-    const id = idOf(request);
-    await removeFromRoom(db, id, {
-      kind: 'workpiece',
-      id: reference.id,
-      removedBy: actorOf(request).actorId,
-    });
-    // Without the reference, open connections to what it opened would carry on as before.
-    await recheckAccess();
-    response.json(await withNames(db, await findRoom(db, id)));
-  });
+      const id = idOf(request);
+      await removeFromRoom(db, id, { workpieceId, removedBy: actorOf(request).actorId });
+      // Without the workpiece in here, open connections to it would carry on as before.
+      await recheckAccess();
+      response.json(await withNames(db, await findRoom(db, id)));
+    },
+  );
 
   /** The room and all it bundles, oldest first after since; hub traces anchor at workpieces. */
   routes.get('/rooms/:id/events', seeing, async (request, response) => {
@@ -210,7 +199,10 @@ async function bundledIn(db: Db, actor: Actor, id: ObjectId): Promise<[Reference
   // The groups that may into the room belong to its stream, as when they lay in it.
   const holders = await grantsAt(db, { kind: 'room', id });
   const bundled: Reference[] = [
-    ...(room?.references ?? []),
+    ...(room?.workpieces ?? []).map((workpieceId) => ({
+      kind: 'workpiece' as const,
+      id: workpieceId,
+    })),
     ...holders.map((grant) => ({ kind: 'group' as const, id: grant.groupId })),
   ];
   // Only what the actor may see, so the room shows no more than /events would.

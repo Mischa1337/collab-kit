@@ -209,12 +209,12 @@ export interface CollabEvent {
   readonly createdAt: string;
 }
 
-/** A room: what it bundles, its settings; who may in stands in the grants. */
+/** A room: the workpieces it bundles, its settings; who may in stands in the grants. */
 export interface Room {
   readonly _id: string;
   readonly name: string;
   readonly settings: Free;
-  readonly references: readonly Reference[];
+  readonly workpieces: readonly string[];
   readonly createdAt: string;
   readonly createdBy: string;
 }
@@ -509,8 +509,8 @@ export interface RoomRoutes {
   get(id: string): Promise<Named<Room>>;
   update(id: string, change: PlaceChange): Promise<Named<Room>>;
   remove(id: string, options?: Reasoned): Promise<{ readonly deleted: boolean }>;
-  addReference(id: string, reference: Reference): Promise<Named<Room>>;
-  removeReference(id: string, reference: Reference): Promise<Named<Room>>;
+  addWorkpiece(id: string, workpieceId: string): Promise<Named<Room>>;
+  removeWorkpiece(id: string, workpieceId: string): Promise<Named<Room>>;
   events(id: string, query?: RoomEventQuery): Promise<Named<CollabEvent>[]>;
   activity(id: string): Promise<Named<Activity>[]>;
 }
