@@ -32,6 +32,7 @@ export function createRoutes(baseUrl: string, getToken: () => string | Promise<s
         remove(`/rooms/${segment(id)}/workpieces/${segment(workpieceId)}`),
       events: (id, query = {}) => read(`/rooms/${segment(id)}/events`, { ...query }),
       activity: (id) => read(`/rooms/${segment(id)}/activity`),
+      presence: (id) => read(`/rooms/${segment(id)}/presence`),
     },
     groups: {
       create: (group) => write('POST', '/groups', group),

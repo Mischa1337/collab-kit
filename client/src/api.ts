@@ -277,6 +277,13 @@ export interface Activity {
   readonly kind: string;
 }
 
+/** A person connected to a workpiece of the room, and over how many connections, such as tabs. */
+export interface RoomPresence {
+  readonly workpieceId: string;
+  readonly actorId: string;
+  readonly connections: number;
+}
+
 /** A comment; deleted, its body is empty and the shell stays for the answers. */
 export interface CollabComment {
   readonly _id: string;
@@ -513,6 +520,8 @@ export interface RoomRoutes {
   removeWorkpiece(id: string, workpieceId: string): Promise<Named<Room>>;
   events(id: string, query?: RoomEventQuery): Promise<Named<CollabEvent>[]>;
   activity(id: string): Promise<Named<Activity>[]>;
+  /** Who is connected to which of its workpieces right now; asked for, never told. */
+  presence(id: string): Promise<Named<RoomPresence>[]>;
 }
 
 /** The routes under /groups. */

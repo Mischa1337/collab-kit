@@ -41,6 +41,7 @@ const ROUTES = [
   'DELETE /rooms/:id/workpieces/:workpieceId',
   'GET /rooms/:id/events',
   'GET /rooms/:id/activity',
+  'GET /rooms/:id/presence',
   'POST /groups',
   'GET /groups',
   'GET /groups/:id',
@@ -278,6 +279,49 @@ describe('the REST wrapper', () => {
     expect((await carol.me.events({ kind: 'workpiece-merged' })).map((event) => event._id)).toEqual(
       [merged._id],
     );
+  });
+
+  it('tells who is connected to which workpiece of a room right now', async () => {
+    const room = await alice.rooms.create({ name: 'Werkraum' });
+    const group = await alice.groups.create({ name: 'Zuschauer', members: ['bob'] });
+    await alice.grants.set({
+      groupId: group._id,
+      scope: { kind: 'room', id: room._id },
+      rights: ['see'],
+    });
+    const first = await alice.workpieces.create({ name: 'Eins', roomId: room._id });
+    const second = await alice.workpieces.create({ name: 'Zwei', roomId: room._id });
+    // Nobody connects to this one, and the one outside the room does not count.
+    await alice.workpieces.create({ name: 'Leer', roomId: room._id });
+    const outside = await alice.workpieces.create({ name: 'Draußen' });
+
+    // Alice in two tabs, bob only reading.
+    const tab = open(alice, first._id);
+    const otherTab = open(alice, first._id);
+    const sessions = [tab, otherTab, open(bob, second._id), open(alice, outside._id)];
+    await Promise.all(sessions.map((session) => session.synced));
+
+    expect(await bob.rooms.presence(room._id)).toEqual([
+      { workpieceId: first._id, actorId: 'alice', connections: 2, names: { alice: 'Alice' } },
+      { workpieceId: second._id, actorId: 'bob', connections: 1, names: { bob: 'Bob' } },
+    ]);
+    await expect(carol.rooms.presence(room._id)).rejects.toMatchObject({ status: 404 });
+
+    // One tab less counts one less, the last one gone takes the entry away.
+    tab.close();
+    expect(
+      await waitFor(async () => (await alice.rooms.presence(room._id))[0]?.connections === 1),
+    ).toBe(true);
+    otherTab.close();
+    expect(
+      await waitFor(async () =>
+        (await alice.rooms.presence(room._id)).every((each) => each.actorId !== 'alice'),
+      ),
+    ).toBe(true);
+
+    // Out of the room, out of its presence, whether or not the connection is gone yet.
+    await alice.rooms.removeWorkpiece(room._id, second._id);
+    expect(await alice.rooms.presence(room._id)).toEqual([]);
   });
 
   it('keeps comments and their answers, and takes the words of one away', async () => {

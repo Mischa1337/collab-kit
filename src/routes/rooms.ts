@@ -16,12 +16,13 @@ import {
 import { eventKeysOf, withNames } from '../db/names.ts';
 import type { Actor } from '../model/actor.ts';
 import type { Reference } from '../model/anchor.ts';
+import type { WorkpieceHub } from '../realtime/index.ts';
 import { asActorId, asCount, asObject, asObjectId, asText } from '../utils/input.ts';
 import { defined } from '../utils/optional.ts';
 import { actorOf, bodyOf, fail, guard, idOf, requireId, unusableField } from './http.ts';
 
 /** A room bundles: these routes move workpieces in and out, never create or delete them. */
-export function roomRoutes(db: Db, recheckAccess: () => Promise<void>): Router {
+export function roomRoutes(db: Db, hub: WorkpieceHub, recheckAccess: () => Promise<void>): Router {
   const routes = Router();
 
   routes.param('id', requireId('room'));
@@ -183,6 +184,18 @@ export function roomRoutes(db: Db, recheckAccess: () => Promise<void>): Router {
   routes.get('/rooms/:id/activity', seeing, async (request, response) => {
     const references = await bundledIn(db, actorOf(request), idOf(request));
     response.json(await withNames(db, await latestPerActor(db, references)));
+  });
+
+  /** Who is connected to which workpiece of the room right now, from the hub alone (D1.10). */
+  routes.get('/rooms/:id/presence', seeing, async (request, response) => {
+    const room = await findRoom(db, idOf(request));
+    // See at the room is see at every workpiece in it, so none needs a check of its own.
+    const presence = (room?.workpieces ?? []).flatMap((workpieceId) =>
+      hub
+        .presentAt(workpieceId)
+        .map(({ actorId, connections }) => ({ workpieceId, actorId, connections })),
+    );
+    response.json(await withNames(db, presence));
   });
 
   /** Where a client starts: every room this token may see. */

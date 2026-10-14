@@ -486,6 +486,21 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
 
     count: (workpieceId) => heldByKey.get(workpieceId.toHexString())?.connections.size ?? 0,
 
+    // A merge holds a workpiece without a connection, so it never shows up here.
+    presentAt: (workpieceId) => {
+      const connections = heldByKey.get(workpieceId.toHexString())?.connections ?? [];
+
+      // One entry per person, however many tabs they have open.
+      const counted = new Map<string, number>();
+      for (const connection of connections) {
+        const { actorId } = connection.actor;
+        counted.set(actorId, (counted.get(actorId) ?? 0) + 1);
+      }
+      return [...counted]
+        .toSorted(([one], [other]) => one.localeCompare(other))
+        .map(([actorId, count]) => ({ actorId, connections: count }));
+    },
+
     close: async () => {
       // Every left still being written and every merge still running ends before the workpieces go.
       await Promise.allSettled(running);

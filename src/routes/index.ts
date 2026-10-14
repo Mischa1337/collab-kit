@@ -46,7 +46,7 @@ export function createApi(options: ApiOptions): Router {
   });
   api.use(express.json({ limit: '1mb' }));
 
-  api.use(roomRoutes(options.db, options.recheckAccess));
+  api.use(roomRoutes(options.db, options.hub, options.recheckAccess));
   api.use(groupRoutes(options.db, options.recheckAccess));
   api.use(grantRoutes(options.db, options.recheckAccess));
   api.use(actorRoutes(options.db));

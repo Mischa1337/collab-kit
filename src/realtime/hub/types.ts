@@ -28,6 +28,12 @@ export interface OpenWorkpiece {
   mayAnnounce(connection: Connection, clientId: number): boolean;
 }
 
+/** A person connected to a workpiece, and over how many connections, such as tabs. */
+export interface PresentActor {
+  readonly actorId: string;
+  readonly connections: number;
+}
+
 /** What a person gives a checkpoint: who sets it, a name and the why. */
 export interface NewCheckpoint {
   readonly createdBy: string;
@@ -61,6 +67,8 @@ export interface WorkpieceHub {
   merge(workpieceId: ObjectId, input: Merge): Promise<EventRecord>;
   /** How many connections hold this workpiece right now. */
   count(workpieceId: ObjectId): number;
+  /** Who is connected to this workpiece right now, one entry per person, by actorId. */
+  presentAt(workpieceId: ObjectId): PresentActor[];
   /** Lets go of every workpiece, for the shutdown. */
   close(): Promise<void>;
 }
