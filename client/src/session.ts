@@ -12,15 +12,12 @@ import {
   type Me,
   type Named,
   type OpenOptions,
-  type Person,
-  type PresenceClient,
   type Session,
   type SessionEvents,
-  type SharedText,
   type Status,
-  type TextDelta,
-  type TextPosition,
 } from './api.ts';
+import { announce, presenceOf } from './presence.ts';
+import { textOf, type OpenText } from './text.ts';
 
 /** The client announces two subprotocols: this marker and the token itself. */
 const BEARER = 'bearer';
@@ -33,12 +30,6 @@ const FINAL_CODES: ReadonlySet<number> = new Set([4403, 1007, 1008, 1009]);
 
 /** Longest wait between two attempts, as in y-websocket. */
 const MAX_WAIT_MS = 2500;
-
-/** A text the session handed out, with the history its undo works on. */
-interface OpenText {
-  readonly shared: SharedText;
-  readonly history: Y.UndoManager;
-}
 
 /** What a session needs from the library around it. */
 export interface SessionContext {
@@ -196,10 +187,7 @@ export function openSession<Value>(
     }
 
     // Who this is, so the others see a person and not only a client.
-    awareness.setLocalStateField(
-      'person',
-      me.label === undefined ? { id: me.actorId } : { id: me.actorId, name: me.label },
-    );
+    announce(awareness, me);
 
     provider.protocols = [BEARER, token];
     provider.connect();
@@ -295,19 +283,7 @@ export function openSession<Value>(
       texts.set(name, opened);
       return opened.shared;
     },
-    presence: {
-      set: (fields) => {
-        const own = awareness.getLocalState() ?? {};
-        // person stays what GET /me said, whatever the fields bring.
-        awareness.setLocalState({ ...own, ...fields, person: own['person'] });
-      },
-      people: () => peopleIn(awareness.getStates(), me?.actorId),
-      onChange: (listener) => {
-        const observer = (): void => listener();
-        awareness.on('change', observer);
-        return () => awareness.off('change', observer);
-      },
-    },
+    presence: presenceOf(awareness, () => me?.actorId),
     on: (kind, listener) => {
       listeners[kind].add(listener);
       return () => listeners[kind].delete(listener);
@@ -358,54 +334,6 @@ export function openSession<Value>(
   };
 }
 
-/** A text of the doc as the library shows it; its own origin tells own changes from all others. */
-function textOf(doc: Y.Doc, text: Y.Text, checkWrite: () => void): OpenText {
-  const origin = Symbol('text');
-  // Only what went through update, so undo never takes back the work of others.
-  const history = new Y.UndoManager(text, { trackedOrigins: new Set([origin]) });
-
-  const shared: SharedText = {
-    get value() {
-      return text.toString();
-    },
-    delta: () => text.toDelta() as TextDelta,
-    update: (delta) => {
-      checkWrite();
-      // One transaction, so CK gets one change.
-      doc.transact(() => text.applyDelta([...delta]), origin);
-    },
-    onChange: (listener) => {
-      const observer = (event: Y.YTextEvent): void => {
-        // Nothing to show, as when formatting met a letter already deleted.
-        if (event.delta.length > 0) {
-          listener(event.delta as TextDelta, event.transaction.origin === origin);
-        }
-      };
-      text.observe(observer);
-      return () => text.unobserve(observer);
-    },
-    cursor: (index) =>
-      Y.relativePositionToJSON(Y.createRelativePositionFromTypeIndex(text, index)) as TextPosition,
-    indexOf: (position) => {
-      const absolute = Y.createAbsolutePositionFromRelativePosition(
-        Y.createRelativePositionFromJSON(position),
-        doc,
-      );
-      // A place in another text of the same doc is no place in this one.
-      return absolute !== null && absolute.type === text ? absolute.index : undefined;
-    },
-    undo: () => {
-      checkWrite();
-      return history.undo() !== null;
-    },
-    redo: () => {
-      checkWrite();
-      return history.redo() !== null;
-    },
-  };
-  return { shared, history };
-}
-
 /** A work-lost event from the view of this person: the loser comes first in affects. */
 function conflictOf(event: Named<CollabEvent>, self: string | undefined): Conflict {
   const loser = event.affects?.[0] ?? event.createdBy;
@@ -420,33 +348,4 @@ function conflictOf(event: Named<CollabEvent>, self: string | undefined): Confli
     names: event.names ?? {},
     event,
   };
-}
-
-/** The awareness entries by person; an entry without one is a session not yet in. */
-function peopleIn(
-  states: Map<number, Record<string, unknown>>,
-  self: string | undefined,
-): Person[] {
-  const people = new Map<string, Person & { clients: PresenceClient[] }>();
-
-  for (const [clientId, state] of states) {
-    const person = personIn(state['person']);
-    if (person === undefined) {
-      continue;
-    }
-    const entry = people.get(person.id) ?? { ...person, self: person.id === self, clients: [] };
-    entry.clients.push({ clientId, state });
-    people.set(person.id, entry);
-  }
-  return [...people.values()];
-}
-
-/** The person an entry names, if it names one the way the library writes it. */
-function personIn(raw: unknown): { id: string; name?: string } | undefined {
-  if (typeof raw !== 'object' || raw === null || !('id' in raw) || typeof raw.id !== 'string') {
-    return undefined;
-  }
-  return 'name' in raw && typeof raw.name === 'string'
-    ? { id: raw.id, name: raw.name }
-    : { id: raw.id };
 }
