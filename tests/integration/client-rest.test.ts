@@ -103,6 +103,16 @@ function as(actor: string, top = false): CollabKitApi {
 // Every session a test opens, closed after it.
 const opened: Session[] = [];
 
+/** A workpiece as the anchor of an event. */
+function anchorAt(workpiece: { readonly _id: string }) {
+  return { kind: 'workpiece', id: workpiece._id };
+}
+
+/** The ids of these events, in their order. */
+function idsOf(events: readonly { readonly _id: string }[]): string[] {
+  return events.map((event) => event._id);
+}
+
 /** Opens a session and remembers it for closing. */
 function open(ck: CollabKitApi, workpieceId: string): Session {
   const session = ck.open(workpieceId);
@@ -427,6 +437,57 @@ describe('the REST wrapper', () => {
       { actorId: 'alice', label: 'Alice' },
       { actorId: 'bob', label: 'Bob' },
     ]);
+  });
+
+  it('reads the events of every room the token sees as one stream', async () => {
+    // Dave is new here, so no room of another test shows up for him.
+    const dave = as('dave');
+    const course = await alice.groups.create({ name: 'Kurs', members: ['dave'] });
+    const [first, second, hidden] = await Promise.all(
+      ['Erster', 'Zweiter', 'Verborgen'].map((name) => alice.rooms.create({ name })),
+    );
+    if (first === undefined || second === undefined || hidden === undefined) {
+      throw new Error('rooms are missing');
+    }
+    await Promise.all(
+      [first, second].map((room) =>
+        alice.grants.set({
+          groupId: course._id,
+          scope: { kind: 'room', id: room._id },
+          rights: ['see', 'speak'],
+        }),
+      ),
+    );
+    // One workpiece in both rooms, so its events come twice from CK.
+    const shared = await alice.workpieces.create({ name: 'Geteilt', roomId: first._id });
+    await alice.rooms.addWorkpiece(second._id, shared._id);
+    const own = await alice.workpieces.create({ name: 'Eigen', roomId: second._id });
+    const unseen = await alice.workpieces.create({ name: 'Geheim', roomId: hidden._id });
+
+    const visitShared = await dave.events.create({ kind: 'visit', anchor: anchorAt(shared) });
+    const visitOwn = await dave.events.create({ kind: 'visit', anchor: anchorAt(own) });
+    await alice.events.create({ kind: 'visit', anchor: anchorAt(unseen) });
+    const visitByAlice = await alice.events.create({ kind: 'visit', anchor: anchorAt(shared) });
+
+    expect(idsOf(await dave.events.inRooms({ kind: 'visit' }))).toEqual([
+      visitShared._id,
+      visitOwn._id,
+      visitByAlice._id,
+    ]);
+    expect(idsOf(await dave.events.inRooms({ kind: 'visit', createdBy: 'dave' }))).toEqual([
+      visitShared._id,
+      visitOwn._id,
+    ]);
+
+    // The limit holds for all rooms together, since reads on from the last one.
+    const page = await dave.events.inRooms({ kind: 'visit', limit: 2 });
+    expect(idsOf(page)).toEqual([visitShared._id, visitOwn._id]);
+    expect(page[0]?.names).toEqual({ dave: 'Dave' });
+    expect(
+      idsOf(await dave.events.inRooms({ kind: 'visit', since: visitOwn._id, limit: 2 })),
+    ).toEqual([visitByAlice._id]);
+
+    expect(await carol.events.inRooms({ kind: 'visit', createdBy: 'dave' })).toEqual([]);
   });
 
   it('throws a CollabKitError with the status and the words of CK', async () => {

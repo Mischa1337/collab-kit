@@ -603,10 +603,12 @@ export interface EventQuery extends AnchorQuery {
   readonly limit?: number;
 }
 
-/** The routes under /events. */
+/** The routes under /events, and the events of all rooms at once. */
 export interface EventRoutes {
   create(event: NewEvent): Promise<Named<CollabEvent>>;
   list(query: EventQuery): Promise<Named<CollabEvent>[]>;
+  /** No route: every room of /me/rooms asked, each event once, oldest first, limit for all. */
+  inRooms(query?: RoomEventQuery): Promise<Named<CollabEvent>[]>;
 }
 
 /** The route under /actors. */

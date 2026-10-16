@@ -1,10 +1,12 @@
 /** The routes of CK as one thin function each, grouped as CK groups them. */
 
-import type { CollabKitApi } from './api.ts';
+import type { CollabKitApi, EventRoutes } from './api.ts';
 import { callRoute, fetchRoute, type CallOptions, type Query } from './http.ts';
 
-/** Every route but the session, which is not one. */
-export type Routes = Omit<CollabKitApi, 'open'>;
+/** Every route, without the session and the events of all rooms, which are none. */
+export type Routes = Omit<CollabKitApi, 'open' | 'events'> & {
+  readonly events: Omit<EventRoutes, 'inRooms'>;
+};
 
 /** A key as one path segment, so an actor key with a slash stays one. */
 const segment = (key: string): string => encodeURIComponent(key);

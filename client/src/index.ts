@@ -1,6 +1,7 @@
 /** Entry of the client library, built into v1.js; what it offers is described in api.ts. */
 
 import type * as Api from './api.ts';
+import { eventsInRooms } from './events.ts';
 import { callRoute } from './http.ts';
 import { createRoutes } from './rest.ts';
 import { openSession, type SessionContext } from './session.ts';
@@ -18,8 +19,12 @@ export const createCollabKitApi: typeof Api.createCollabKitApi = (options) => {
     read: (token, path, query) => callRoute(url, token, 'GET', path, query ? { query } : {}),
   };
 
+  const routes = createRoutes(url, getToken);
+
   return {
-    ...createRoutes(url, getToken),
+    ...routes,
+    // Built on the routes, so the library asks CK nothing it could not ask itself.
+    events: { ...routes.events, inRooms: (query) => eventsInRooms(routes, query) },
     open: (workpieceId, openOptions) => openSession(context, workpieceId, openOptions),
   };
 };
