@@ -53,6 +53,11 @@ export function openSession<Value>(
   const doc = new Y.Doc();
   const mapName = options.map ?? 'units';
   const map = doc.getMap<Value>(mapName);
+  // Own changes go in under tracked, or under untracked when kept out of undo.
+  const tracked = Symbol('units');
+  const untracked = Symbol('units, not undoable');
+  // One step per update and only own ones, so undo never takes back the work of others.
+  const history = new Y.UndoManager(map, { trackedOrigins: new Set([tracked]), captureTimeout: 0 });
   // Every text handed out, once per name.
   const texts = new Map<string, OpenText>();
   const provider = new WebsocketProvider(context.socketUrl, workpieceId, doc, {
@@ -248,24 +253,38 @@ export function openSession<Value>(
     units: {
       get: (key) => map.get(key),
       entries: () => [...map.entries()],
-      update: ({ set = {}, delete: removed = [] }) => {
+      update: ({ set = {}, delete: removed = [] }, { undoable = true } = {}) => {
         checkWrite();
-        // One transaction, so CK gets one change.
-        doc.transact(() => {
-          for (const key of removed) {
-            map.delete(key);
-          }
-          for (const [key, value] of Object.entries(set)) {
-            map.set(key, value);
-          }
-        });
+        // One transaction, so CK gets one change and undo one step.
+        doc.transact(
+          () => {
+            for (const key of removed) {
+              map.delete(key);
+            }
+            for (const [key, value] of Object.entries(set)) {
+              map.set(key, value);
+            }
+          },
+          undoable ? tracked : untracked,
+        );
       },
       onChange: (listener) => {
-        const observer = (event: Y.YMapEvent<Value>): void =>
-          listener([...event.keysChanged], !event.transaction.local);
+        // Undo and redo are local too, but the editor does not show them yet.
+        const observer = ({ keysChanged, transaction }: Y.YMapEvent<Value>): void =>
+          listener([...keysChanged], !transaction.local || transaction.origin === history);
         map.observe(observer);
         return () => map.unobserve(observer);
       },
+      undo: () => {
+        checkWrite();
+        return history.undo() !== null;
+      },
+      redo: () => {
+        checkWrite();
+        return history.redo() !== null;
+      },
+      canUndo: () => history.canUndo(),
+      canRedo: () => history.canRedo(),
     },
     text: (name) => {
       if (ended) {
@@ -320,9 +339,10 @@ export function openSession<Value>(
       for (const set of Object.values(listeners)) {
         set.clear();
       }
-      // Each history listens to the doc until it is let go of.
-      for (const { history } of texts.values()) {
-        history.destroy();
+      // Each history listens to the doc until it is let go of; emptied first, so canUndo is false.
+      for (const steps of [history, ...Array.from(texts.values(), (text) => text.history)]) {
+        steps.clear();
+        steps.destroy();
       }
       texts.clear();
       // The provider tells CK this client left; awareness and doc keep no timer behind.

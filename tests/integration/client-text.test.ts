@@ -281,15 +281,33 @@ describe('undo', () => {
     expect(await waitFor(() => alice.text('t').value === 'von alice und bob')).toBe(true);
     const own: boolean[] = [];
     alice.text('t').onChange((_delta, isOwn) => own.push(isOwn));
+    const steps = () => [alice.text('t').canUndo(), alice.text('t').canRedo()];
+    expect(steps()).toEqual([true, false]);
 
     expect(alice.text('t').undo()).toBe(true);
 
     expect(alice.text('t').value).toBe(' und bob');
     expect(own).toEqual([false]);
+    expect(steps()).toEqual([false, true]);
     expect(await waitFor(() => bob.text('t').value === ' und bob')).toBe(true);
     expect(alice.text('t').undo()).toBe(false);
     expect(alice.text('t').redo()).toBe(true);
     expect(alice.text('t').value).toBe('von alice und bob');
+    expect(steps()).toEqual([true, false]);
+  });
+
+  it('keeps an update with undoable false out of undo, and it stays own', async () => {
+    const workpieceId = await freshWorkpiece();
+    const [alice] = await together(workpieceId, 'alice');
+    const own: boolean[] = [];
+    alice.text('t').onChange((_delta, isOwn) => own.push(isOwn));
+
+    alice.text('t').update([{ insert: 'geladen' }], { undoable: false });
+
+    expect(own).toEqual([true]);
+    expect(alice.text('t').canUndo()).toBe(false);
+    expect(alice.text('t').undo()).toBe(false);
+    expect(alice.text('t').value).toBe('geladen');
   });
 });
 

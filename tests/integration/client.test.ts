@@ -10,6 +10,7 @@ import { createCollabKitApi } from '../../client/src/index.ts';
 import { createTokenCheck } from '../../src/auth/token.ts';
 import { applyDefinitions } from '../../src/db/apply.ts';
 import { connect, type Storage } from '../../src/db/client.ts';
+import { readEvents } from '../../src/db/collections/events.ts';
 import { removeGrant, setGrant, type GrantChange } from '../../src/db/collections/grants.ts';
 import { createGroup } from '../../src/db/collections/groups.ts';
 import { addToRoom, createRoom } from '../../src/db/collections/rooms.ts';
@@ -104,6 +105,12 @@ const stored = async (workpieceId: ObjectId, count: number) =>
   expect(
     await waitFor(async () => (await readUpdatesSince(storage.db, workpieceId)).length === count),
   ).toBe(true);
+
+/** The removed and replaced work of this person at the workpiece. */
+const removalsOf = async (workpieceId: ObjectId, actor: string) =>
+  (
+    await readEvents(storage.db, { anchor: { kind: 'workpiece', id: workpieceId }, affects: actor })
+  ).filter((event) => event.kind === 'work-removed' || event.kind === 'work-replaced');
 
 const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -255,6 +262,211 @@ describe('units', () => {
       ['a', 1],
       ['c', 3],
     ]);
+  });
+});
+
+describe('undo', () => {
+  it('takes back only the own step, remote here as there, and redo brings it again', async () => {
+    const { workpieceId } = await freshWorkpiece();
+    const alice = open('alice', workpieceId);
+    const bob = open('bob', workpieceId);
+    await Promise.all([alice.synced, bob.synced]);
+    alice.units.update({ set: { a: 1 } });
+    expect(await waitFor(() => bob.units.get('a') === 1)).toBe(true);
+    bob.units.update({ set: { b: 2 } });
+    expect(await waitFor(() => alice.units.get('b') === 2)).toBe(true);
+    const seenByAlice: [string[], boolean][] = [];
+    alice.units.onChange((keys, remote) => seenByAlice.push([keys, remote]));
+
+    expect(alice.units.undo()).toBe(true);
+
+    expect(alice.units.entries()).toEqual([['b', 2]]);
+    expect(seenByAlice).toEqual([[['a'], true]]);
+    expect(await waitFor(() => bob.units.get('a') === undefined)).toBe(true);
+    expect(bob.units.get('b')).toBe(2);
+    expect(alice.units.undo()).toBe(false);
+
+    expect(alice.units.redo()).toBe(true);
+
+    expect(alice.units.get('a')).toBe(1);
+    expect(seenByAlice).toEqual([
+      [['a'], true],
+      [['a'], true],
+    ]);
+    expect(await waitFor(() => bob.units.get('a') === 1)).toBe(true);
+  });
+
+  it('makes every update a step of its own, however quick', async () => {
+    const { workpieceId } = await freshWorkpiece();
+    const alice = open('alice', workpieceId);
+    await alice.synced;
+    alice.units.update({ set: { a: 1 } });
+    alice.units.update({ set: { b: 2 } });
+
+    expect(alice.units.undo()).toBe(true);
+    expect(alice.units.entries()).toEqual([['a', 1]]);
+    expect(alice.units.undo()).toBe(true);
+    expect(alice.units.entries()).toEqual([]);
+  });
+
+  it('leaves a key others set since, takes back the rest, and replaces no work', async () => {
+    const { workpieceId } = await freshWorkpiece();
+    const alice = open('alice', workpieceId);
+    const bob = open('bob', workpieceId);
+    await Promise.all([alice.synced, bob.synced]);
+    alice.units.update({ set: { a: 1, b: 1 } });
+    expect(await waitFor(() => bob.units.get('b') === 1)).toBe(true);
+    bob.units.update({ set: { a: 2 } });
+    expect(await waitFor(() => alice.units.get('a') === 2)).toBe(true);
+
+    expect(alice.units.undo()).toBe(true);
+
+    expect(alice.units.entries()).toEqual([['a', 2]]);
+    expect(await waitFor(() => bob.units.get('b') === undefined)).toBe(true);
+    expect(bob.units.get('a')).toBe(2);
+
+    // Written once the last one left; the work bob replaced shows the bundle is in.
+    alice.close();
+    bob.close();
+    expect(await waitFor(async () => (await removalsOf(workpieceId, 'alice')).length === 1)).toBe(
+      true,
+    );
+    expect(await removalsOf(workpieceId, 'alice')).toMatchObject([
+      { kind: 'work-replaced', createdBy: 'bob', anchor: { unit: 'a' } },
+    ]);
+    expect(await removalsOf(workpieceId, 'bob')).toEqual([]);
+  });
+
+  it('goes on to the step before when others overwrote all of the last one', async () => {
+    const { workpieceId } = await freshWorkpiece();
+    const alice = open('alice', workpieceId);
+    const bob = open('bob', workpieceId);
+    await Promise.all([alice.synced, bob.synced]);
+    alice.units.update({ set: { a: 1 } });
+    alice.units.update({ set: { b: 1 } });
+    expect(await waitFor(() => bob.units.get('b') === 1)).toBe(true);
+    bob.units.update({ set: { b: 2 } });
+    expect(await waitFor(() => alice.units.get('b') === 2)).toBe(true);
+
+    expect(alice.units.undo()).toBe(true);
+
+    expect(alice.units.entries()).toEqual([['b', 2]]);
+    expect(alice.units.undo()).toBe(false);
+  });
+
+  it('brings a deleted key back with its old value, here and there', async () => {
+    const { workpieceId } = await freshWorkpiece();
+    const alice = open('alice', workpieceId);
+    const bob = open('bob', workpieceId);
+    await Promise.all([alice.synced, bob.synced]);
+    bob.units.update({ set: { a: { index: 3, label: 'A' } } });
+    expect(await waitFor(() => alice.units.get('a') !== undefined)).toBe(true);
+    alice.units.update({ delete: ['a'] });
+    expect(await waitFor(() => bob.units.get('a') === undefined)).toBe(true);
+
+    expect(alice.units.undo()).toBe(true);
+
+    expect(alice.units.get('a')).toEqual({ index: 3, label: 'A' });
+    expect(await waitFor(() => bob.units.get('a') !== undefined)).toBe(true);
+    expect(bob.units.get('a')).toEqual({ index: 3, label: 'A' });
+  });
+
+  it('keeps an update with undoable false out of undo, and the next one in', async () => {
+    const { workpieceId } = await freshWorkpiece();
+    const alice = open('alice', workpieceId);
+    await alice.synced;
+    const seen: [string[], boolean][] = [];
+    alice.units.onChange((keys, remote) => seen.push([keys.toSorted(), remote]));
+
+    alice.units.update({ set: { a: 1, b: 2 } }, { undoable: false });
+
+    expect(seen).toEqual([[['a', 'b'], false]]);
+    expect(alice.units.canUndo()).toBe(false);
+    expect(alice.units.undo()).toBe(false);
+    expect(alice.units.entries().toSorted()).toEqual([
+      ['a', 1],
+      ['b', 2],
+    ]);
+
+    alice.units.update({ set: { a: 3 } });
+    expect(alice.units.undo()).toBe(true);
+    expect(alice.units.get('a')).toBe(1);
+    expect(alice.units.undo()).toBe(false);
+  });
+
+  it('tells after update, undo and redo whether there is a step, and none after close', async () => {
+    const { workpieceId } = await freshWorkpiece();
+    const alice = open('alice', workpieceId);
+    await alice.synced;
+    const steps = () => [alice.units.canUndo(), alice.units.canRedo()];
+    expect(steps()).toEqual([false, false]);
+
+    alice.units.update({ set: { a: 1 } });
+    expect(steps()).toEqual([true, false]);
+    alice.units.undo();
+    expect(steps()).toEqual([false, true]);
+    alice.units.redo();
+    expect(steps()).toEqual([true, false]);
+    alice.units.undo();
+    alice.units.update({ set: { b: 2 } });
+    expect(steps()).toEqual([true, false]);
+
+    alice.close();
+    expect(steps()).toEqual([false, false]);
+  });
+
+  it('sends on connect what was taken back while disconnected', async () => {
+    const { workpieceId } = await freshWorkpiece();
+    const alice = open('alice', workpieceId);
+    const bob = open('bob', workpieceId);
+    await Promise.all([alice.synced, bob.synced]);
+    alice.units.update({ set: { a: 1 } });
+    expect(await waitFor(() => bob.units.get('a') === 1)).toBe(true);
+
+    alice.disconnect();
+    expect(alice.units.undo()).toBe(true);
+    await pause(200);
+    expect(bob.units.get('a')).toBe(1);
+    alice.connect();
+
+    expect(await waitFor(() => bob.units.get('a') === undefined)).toBe(true);
+  });
+
+  it('keeps the steps over a change of rights: 403 without edit, taken back with it', async () => {
+    const place = await freshWorkpiece();
+    const bob = open('bob', place.workpieceId);
+    await bob.synced;
+    bob.units.update({ set: { a: 1 } });
+    await stored(place.workpieceId, 1);
+
+    await grant(place.writers, place.roomId, ['see']);
+    await gateway.recheck();
+    expect(await waitFor(() => !bob.mayWrite && bob.status === 'connected')).toBe(true);
+    expect(thrownBy(() => bob.units.undo())).toMatchObject({ status: 403 });
+
+    await grant(place.writers, place.roomId, ['see', 'edit']);
+    await gateway.recheck();
+    expect(await waitFor(() => bob.mayWrite && bob.status === 'connected')).toBe(true);
+    expect(bob.units.undo()).toBe(true);
+    expect(bob.units.get('a')).toBeUndefined();
+    await stored(place.workpieceId, 2);
+  });
+
+  it('throws 403 for undo and redo without edit and stays connected, 1000 after close', async () => {
+    const { workpieceId } = await freshWorkpiece();
+    const alice = open('alice', workpieceId);
+    const erin = open('erin', workpieceId);
+    await Promise.all([alice.synced, erin.synced]);
+
+    for (const call of [() => erin.units.undo(), () => erin.units.redo()]) {
+      expect(thrownBy(call)).toMatchObject({ name: 'CollabKitError', status: 403 });
+    }
+    expect(erin.status).toBe('connected');
+
+    alice.close();
+    for (const call of [() => alice.units.undo(), () => alice.units.redo()]) {
+      expect(thrownBy(call)).toMatchObject({ name: 'CollabKitError', status: 1000 });
+    }
   });
 });
 

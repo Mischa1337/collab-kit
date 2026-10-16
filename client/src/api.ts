@@ -117,16 +117,30 @@ export interface Conflict {
 export interface Units<Value = unknown> {
   get(key: string): Value | undefined;
   entries(): [string, Value][];
-  /** Sets and deletes in one change; throws without edit, where CK would close with 1008. */
-  update(change: UnitChange<Value>): void;
-  /** The keys a change touched, and whether it came from elsewhere. */
+  /** Sets and deletes as one change and one step; throws without edit, as CK would with 1008. */
+  update(change: UnitChange<Value>, options?: UpdateOptions): void;
+  /** The keys a change touched, and whether the editor has yet to take it: remote, undo, redo. */
   onChange(listener: (keys: string[], remote: boolean) => void): () => void;
+  /** Takes back the last own step, never what others set since; tells whether there was one. */
+  undo(): boolean;
+  /** Does again what undo took back; tells whether there was something. */
+  redo(): boolean;
+  /** Whether there is a step to take back; read after update, undo and redo, false after close. */
+  canUndo(): boolean;
+  /** Whether there is a step to do again. */
+  canRedo(): boolean;
 }
 
 /** One change to the units; a value is always written whole. */
 export interface UnitChange<Value = unknown> {
   readonly set?: Readonly<Record<string, Value>>;
   readonly delete?: readonly string[];
+}
+
+/** How a change goes in; undoable false keeps it out of undo, as when loading a whole state. */
+export interface UpdateOptions {
+  /** Left out, true. */
+  readonly undoable?: boolean;
 }
 
 /** A text of the workpiece, changed and told of as change lists; the editor is up to the tool. */
@@ -136,7 +150,7 @@ export interface SharedText {
   /** The whole content with its attributes, to load an editor. */
   delta(): TextDelta;
   /** Applies one change; throws without edit, where CK would close with 1008. */
-  update(delta: TextDelta): void;
+  update(delta: TextDelta, options?: UpdateOptions): void;
   /** Every change in the same form; own only for update of this session. */
   onChange(listener: (delta: TextDelta, own: boolean) => void): () => void;
   /** A place that moves along when others type before it, as JSON for presence. */
@@ -147,6 +161,10 @@ export interface SharedText {
   undo(): boolean;
   /** Does again what undo took back; tells whether there was something. */
   redo(): boolean;
+  /** Whether there is a change to take back; read after update, undo, redo; false after close. */
+  canUndo(): boolean;
+  /** Whether there is a change to do again. */
+  canRedo(): boolean;
 }
 
 /** A change to a text, step by step from its start; attributes are free, null removes one. */
