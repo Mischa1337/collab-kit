@@ -66,9 +66,9 @@ export interface Session<Value = unknown> {
   text(name: string): SharedText;
   readonly presence: Presence;
   /** Calls the listener on every such event; gives back how to stop. */
-  on<Kind extends keyof SessionEvents>(
+  on<Kind extends keyof SessionEvents<Value>>(
     kind: Kind,
-    listener: (value: SessionEvents[Kind]) => void,
+    listener: (value: SessionEvents<Value>[Kind]) => void,
   ): () => void;
   /** Lets go of the connection, keeps the doc; what changes meanwhile goes out on connect. */
   disconnect(): void;
@@ -81,14 +81,14 @@ export interface Session<Value = unknown> {
 }
 
 /** The value each event of a session brings. */
-export interface SessionEvents {
+export interface SessionEvents<Value = unknown> {
   readonly status: Status;
   /** May write now or not, when CK answers otherwise than before. */
   readonly rightsChanged: boolean;
   /** CK ended the session; it stays closed until connect is called. */
   readonly closed: Closed;
   /** A change lost at this workpiece, to whoever was involved and whoever was not. */
-  readonly conflict: Conflict;
+  readonly conflict: Conflict<Value>;
 }
 
 /** Why a session ended: the close code, or 4000 plus the status of a call before connecting. */
@@ -98,7 +98,7 @@ export interface Closed {
 }
 
 /** A change lost because two changed the same place without knowing of each other. */
-export interface Conflict {
+export interface Conflict<Value = unknown> {
   /** The key of the unit, if the workpiece names the map as holding units. */
   readonly unit?: string;
   readonly cause: 'overwritten' | 'place-removed';
@@ -111,6 +111,8 @@ export interface Conflict {
   readonly names: Names;
   /** The work-lost event as the routes give it. */
   readonly event: Named<CollabEvent>;
+  /** The own value lost, only in the session that set it through units.update, until close. */
+  readonly lostValue?: Value;
 }
 
 /** The units of the workpiece: one value per key of the map. */

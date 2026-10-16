@@ -642,4 +642,45 @@ describe('conflicts', () => {
     expect(toAlice[0]?.mine).toBe(loser === 'alice');
     expect(toBob[0]?.mine).toBe(loser === 'bob');
   });
+
+  it('hands the loser its lost value, and setting it again replaces the other', async () => {
+    const { workpieceId } = await freshWorkpiece();
+    const alice = open('alice', workpieceId);
+    const bob = open('bob', workpieceId);
+    await Promise.all([alice.synced, bob.synced]);
+    const toAlice: Conflict[] = [];
+    const toBob: Conflict[] = [];
+    alice.on('conflict', (conflict) => toAlice.push(conflict));
+    bob.on('conflict', (conflict) => toBob.push(conflict));
+
+    // Alice sets the key twice while away, so only her second value can be lost.
+    alice.disconnect();
+    alice.units.update({ set: { k: 'A1' } });
+    alice.units.update({ set: { k: 'A2' } });
+    bob.units.update({ set: { k: 'B' } });
+    await stored(workpieceId, 1);
+    alice.connect();
+    expect(await waitFor(() => toAlice.length === 1 && toBob.length === 1)).toBe(true);
+
+    const aliceLost = alice.clientId < bob.clientId;
+    const [loser, winner] = aliceLost ? [alice, bob] : [bob, alice];
+    const [toLoser, toWinner] = aliceLost ? [toAlice, toBob] : [toBob, toAlice];
+    const lostValue = aliceLost ? 'A2' : 'B';
+    expect(toLoser[0]).toMatchObject({ mine: true, lostValue });
+    expect(toWinner[0]).not.toHaveProperty('lostValue');
+
+    loser.units.update({ set: { k: toLoser[0]?.lostValue } });
+    expect(await waitFor(() => winner.units.get('k') === lostValue)).toBe(true);
+
+    // Written once the last one left, to whoever's value was replaced.
+    alice.close();
+    bob.close();
+    const replaced = aliceLost ? 'bob' : 'alice';
+    expect(await waitFor(async () => (await removalsOf(workpieceId, replaced)).length === 1)).toBe(
+      true,
+    );
+    expect(await removalsOf(workpieceId, replaced)).toMatchObject([
+      { kind: 'work-replaced', anchor: { unit: 'k' } },
+    ]);
+  });
 });

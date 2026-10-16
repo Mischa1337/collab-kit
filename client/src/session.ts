@@ -84,7 +84,12 @@ export function openSession<Value>(
   });
   const { awareness } = provider;
 
-  const listeners: { [Kind in keyof SessionEvents]: Set<(value: SessionEvents[Kind]) => void> } = {
+  // The own value per key and the clocks its setting took, so a conflict can hand it back.
+  const written = new Map<string, Written<Value>>();
+
+  const listeners: {
+    [Kind in keyof SessionEvents<Value>]: Set<(value: SessionEvents<Value>[Kind]) => void>;
+  } = {
     status: new Set(),
     rightsChanged: new Set(),
     closed: new Set(),
@@ -118,7 +123,10 @@ export function openSession<Value>(
   synced.catch(() => undefined);
 
   /** Tells every listener; one that throws neither stops the others nor the session. */
-  function emit<Kind extends keyof SessionEvents>(kind: Kind, value: SessionEvents[Kind]): void {
+  function emit<Kind extends keyof SessionEvents<Value>>(
+    kind: Kind,
+    value: SessionEvents<Value>[Kind],
+  ): void {
     for (const listener of listeners[kind]) {
       try {
         listener(value);
@@ -128,6 +136,14 @@ export function openSession<Value>(
         });
       }
     }
+  }
+
+  /** The own value a work-lost names, if this session set it through update and still knows it. */
+  function lostIn(event: CollabEvent): Written<Value> | undefined {
+    const own = lostRanges(event).filter((range) => range.client === doc.clientID);
+    return [...written.values()].find((entry) =>
+      own.some((range) => range.clock < entry.to && range.clock + range.length > entry.from),
+    );
   }
 
   /** Notes where the connection stands and tells whoever listens, once per change. */
@@ -288,7 +304,7 @@ export function openSession<Value>(
     // Nothing goes into the encoder, or y-websocket would send it back.
     const event = JSON.parse(decoding.readVarString(decoder)) as Named<CollabEvent>;
     if (event.kind === 'work-lost') {
-      emit('conflict', conflictOf(event, me?.actorId));
+      emit('conflict', conflictOf(event, me?.actorId, lostIn(event)));
     }
   };
 
@@ -314,9 +330,13 @@ export function openSession<Value>(
           () => {
             for (const key of removed) {
               map.delete(key);
+              written.delete(key);
             }
             for (const [key, value] of Object.entries(set)) {
+              // The clocks before and after are the pieces this value went into.
+              const from = Y.getState(doc.store, doc.clientID);
               map.set(key, value);
+              written.set(key, { from, to: Y.getState(doc.store, doc.clientID), value });
             }
           },
           undoable ? tracked : untracked,
@@ -395,6 +415,7 @@ export function openSession<Value>(
       for (const set of Object.values(listeners)) {
         set.clear();
       }
+      written.clear();
       // Each history listens to the doc until it is let go of; emptied first, so canUndo is false.
       for (const steps of [history, ...Array.from(texts.values(), (text) => text.history)]) {
         steps.clear();
@@ -430,8 +451,36 @@ function expiryOf(token: string): number | undefined {
   }
 }
 
+/** A value this session set through update, and the clocks of its own client it took. */
+interface Written<Value> {
+  readonly from: number;
+  readonly to: number;
+  readonly value: Value;
+}
+
+/** The stretches a work-lost names as lost; none when CK only counted them. */
+function lostRanges(event: CollabEvent): { client: number; clock: number; length: number }[] {
+  const lost = event.detail?.['lost'];
+  if (!Array.isArray(lost)) {
+    return [];
+  }
+  return lost.flatMap((range: unknown) => {
+    if (typeof range !== 'object' || range === null) {
+      return [];
+    }
+    const { client, clock, length } = range as Record<string, unknown>;
+    return typeof client === 'number' && typeof clock === 'number' && typeof length === 'number'
+      ? [{ client, clock, length }]
+      : [];
+  });
+}
+
 /** A work-lost event from the view of this person: the loser comes first in affects. */
-function conflictOf(event: Named<CollabEvent>, self: string | undefined): Conflict {
+function conflictOf<Value>(
+  event: Named<CollabEvent>,
+  self: string | undefined,
+  lost: Written<Value> | undefined,
+): Conflict<Value> {
   const loser = event.affects?.[0] ?? event.createdBy;
   const unit = event.anchor.unit;
 
@@ -443,5 +492,6 @@ function conflictOf(event: Named<CollabEvent>, self: string | undefined): Confli
     mine: loser === self,
     names: event.names ?? {},
     event,
+    ...(lost === undefined ? {} : { lostValue: lost.value }),
   };
 }
