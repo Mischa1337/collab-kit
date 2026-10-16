@@ -585,6 +585,28 @@ describe('rights and ends', () => {
   });
 });
 
+describe('tokens', () => {
+  it('sends a fresh token over the open connection, so nobody leaves on the way', async () => {
+    const { workpieceId } = await freshWorkpiece();
+    // CK takes each for five seconds of tolerance past exp, the library asks after five.
+    let asked = 0;
+    const session = openWith(() => {
+      asked += 1;
+      return jwt.sign(
+        { sub: 'alice', name: 'alice', exp: Math.floor(Date.now() / 1000) + 2 },
+        secret,
+      );
+    }, workpieceId);
+    await session.synced;
+
+    await pause(8000);
+    expect(session.status).toBe('connected');
+    expect(asked).toBeGreaterThanOrEqual(2);
+    const events = await readEvents(storage.db, { anchor: { kind: 'workpiece', id: workpieceId } });
+    expect(events.filter((event) => event.kind === 'left')).toEqual([]);
+  });
+});
+
 describe('conflicts', () => {
   it('reports a change lost on the same unit to both, mine to the loser', async () => {
     const { workpieceId } = await freshWorkpiece();

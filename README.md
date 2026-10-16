@@ -37,7 +37,10 @@ handelt. Eingestellt wird das pro Instanz in der `.env` (Vorlage: `.env.example`
 
 Ein leerer Wert gilt als nicht gesetzt. Ein ungültiger Wert oder ein fehlender Schlüssel verhindert
 den Start, die Ursache steht in der Fehlermeldung. Wie lange ein Token gilt, entscheidet das
-Werkzeug über `exp`.
+Werkzeug über `exp`. Das gilt auch für eine offene WebSocket-Verbindung: Der Dienst schließt sie
+mit 4401, sobald ihr Token samt `JWT_CLOCK_TOLERANCE` abgelaufen ist, außer der Client schickt
+vorher ein neues über die Verbindung. Die Client-Bibliothek fragt dafür 30 s vor `exp` selbst
+`getToken`.
 
 Bei einem Schlüsselpaar bekommt der Dienst nur den öffentlichen Schlüssel, Zeilenumbrüche im PEM
 werden als `\n` geschrieben:

@@ -9,7 +9,7 @@ export declare function createCollabKitApi(options: CollabKitOptions): CollabKit
 export interface CollabKitOptions {
   /** Address of CK as http or https; the socket is the same address with ws or wss and /ws. */
   readonly url: string;
-  /** Asked before every connection and every call, so a renewed token counts at once. */
+  /** Asked before every connection and call and 30 s before exp, so a renewed token counts at once. */
   getToken(): string | Promise<string>;
 }
 

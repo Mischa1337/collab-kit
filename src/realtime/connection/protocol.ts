@@ -11,6 +11,9 @@ const MESSAGE_AWARENESS = 1;
 /** Sent by the service alone: an event as it happens, to connections that asked with ?events=1. */
 const MESSAGE_EVENT = 101;
 
+/** Sent by the client alone: a fresh token, so the connection outlives the one it opened with. */
+const MESSAGE_TOKEN = 100;
+
 /** Key in transaction.meta for the sender's deletions, so what they had in front of them. */
 export const SENDER_DELETES = Symbol('sender deletes');
 
@@ -36,6 +39,15 @@ export function encodeEvent(event: object): Uint8Array {
   encoding.writeVarUint(encoder, MESSAGE_EVENT);
   encoding.writeVarString(encoder, JSON.stringify(event));
   return encoding.toUint8Array(encoder);
+}
+
+/** The token a message brings to renew the connection, undefined for any other kind; unreadable throws. */
+export function tokenIn(data: Uint8Array): string | undefined {
+  const decoder = decoding.createDecoder(data);
+  if (decoding.readVarUint(decoder) !== MESSAGE_TOKEN) {
+    return undefined;
+  }
+  return decoding.readVarString(decoder);
 }
 
 /** The awareness entries of these clients as one message. */

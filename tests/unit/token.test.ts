@@ -17,19 +17,27 @@ describe('createTokenCheck', () => {
   it('by default takes the opaque key from sub and the display name from name', async () => {
     const token = sign({ sub: 'u-8134', name: 'Alice Muster' }, { expiresIn: '15m' });
 
-    await expect(check(token)).resolves.toEqual({ actorId: 'u-8134', label: 'Alice Muster' });
+    await expect(check(token)).resolves.toEqual({
+      actorId: 'u-8134',
+      label: 'Alice Muster',
+      expiresAt: expect.any(Number),
+    });
   });
 
   it('accepts a token without a name and then carries no label', async () => {
     await expect(check(sign({ sub: 'u-8134' }, { expiresIn: '15m' }))).resolves.toEqual({
       actorId: 'u-8134',
+      expiresAt: expect.any(Number),
     });
   });
 
   it('ignores every other claim, roles of the tool included', async () => {
     const token = sign({ sub: 'u-8134', role: 'lecturer', tenant: 'x' }, { expiresIn: '15m' });
 
-    await expect(check(token)).resolves.toEqual({ actorId: 'u-8134' });
+    await expect(check(token)).resolves.toEqual({
+      actorId: 'u-8134',
+      expiresAt: expect.any(Number),
+    });
   });
 
   it('refuses a signature made with another secret', async () => {
@@ -48,6 +56,7 @@ describe('createTokenCheck', () => {
   it('forgives a token that expired within the clock tolerance', async () => {
     await expect(check(sign({ sub: 'u-8134' }, { expiresIn: '-1s' }))).resolves.toEqual({
       actorId: 'u-8134',
+      expiresAt: expect.any(Number),
     });
   });
 
@@ -75,7 +84,25 @@ describe('createTokenCheck', () => {
     const now = Math.floor(Date.now() / 1000);
     const token = sign({ sub: 'u-8134', iat: now - 7200, exp: now + 31_536_000 });
 
-    await expect(check(token)).resolves.toEqual({ actorId: 'u-8134' });
+    await expect(check(token)).resolves.toEqual({ actorId: 'u-8134', expiresAt: now + 31_536_005 });
+  });
+
+  it('gives exp plus the tolerance as expiresAt, when the token is no longer taken', async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const strict = createTokenCheck({ key: secret, algorithm: 'HS256', clockToleranceSeconds: 0 });
+
+    await expect(check(sign({ sub: 'u-8134', exp: now + 60 }))).resolves.toEqual({
+      actorId: 'u-8134',
+      expiresAt: now + 65,
+    });
+    await expect(strict(sign({ sub: 'u-8134', exp: now + 60 }))).resolves.toEqual({
+      actorId: 'u-8134',
+      expiresAt: now + 60,
+    });
+  });
+
+  it('leaves expiresAt out for a token without exp', async () => {
+    await expect(check(sign({ sub: 'u-8134' }))).resolves.toEqual({ actorId: 'u-8134' });
   });
 
   it('keeps the reason in cause, so only the log learns it', async () => {
@@ -100,12 +127,17 @@ describe('createTokenCheck with claims set for the instance', () => {
       { expiresIn: '15m' },
     );
 
-    await expect(custom(token)).resolves.toEqual({ actorId: 'u-8134', label: 'Alice Muster' });
+    await expect(custom(token)).resolves.toEqual({
+      actorId: 'u-8134',
+      label: 'Alice Muster',
+      expiresAt: expect.any(Number),
+    });
   });
 
   it('turns a numeric key into text', async () => {
     await expect(custom(sign({ uid: 8134 }, { expiresIn: '15m' }))).resolves.toEqual({
       actorId: '8134',
+      expiresAt: expect.any(Number),
     });
   });
 
@@ -135,13 +167,21 @@ describe('createTokenCheck with a top claim set for the instance', () => {
   it('puts an actor at the top when the claim holds one of the values', async () => {
     const token = sign({ sub: 'u-8134', globalRole: 'MODERATOR' }, { expiresIn: '15m' });
 
-    await expect(topped('globalRole')(token)).resolves.toEqual({ actorId: 'u-8134', top: true });
+    await expect(topped('globalRole')(token)).resolves.toEqual({
+      actorId: 'u-8134',
+      top: true,
+      expiresAt: expect.any(Number),
+    });
   });
 
   it('finds the value as one entry of a list claim', async () => {
     const token = sign({ sub: 'u-8134', roles: ['ROLE_USER', 'ADMIN'] }, { expiresIn: '15m' });
 
-    await expect(topped('roles')(token)).resolves.toEqual({ actorId: 'u-8134', top: true });
+    await expect(topped('roles')(token)).resolves.toEqual({
+      actorId: 'u-8134',
+      top: true,
+      expiresAt: expect.any(Number),
+    });
   });
 
   it('leaves every other actor without the field, also for a near miss', async () => {
@@ -149,7 +189,7 @@ describe('createTokenCheck with a top claim set for the instance', () => {
       ['USER', 'admin', ['USER'], 0, undefined].map((globalRole) =>
         expect(
           topped('globalRole')(sign({ sub: 'u-8134', globalRole }, { expiresIn: '15m' })),
-        ).resolves.toEqual({ actorId: 'u-8134' }),
+        ).resolves.toEqual({ actorId: 'u-8134', expiresAt: expect.any(Number) }),
       ),
     );
   });
@@ -157,7 +197,10 @@ describe('createTokenCheck with a top claim set for the instance', () => {
   it('puts nobody at the top while no claim is set', async () => {
     const token = sign({ sub: 'u-8134', globalRole: 'ADMIN' }, { expiresIn: '15m' });
 
-    await expect(check(token)).resolves.toEqual({ actorId: 'u-8134' });
+    await expect(check(token)).resolves.toEqual({
+      actorId: 'u-8134',
+      expiresAt: expect.any(Number),
+    });
   });
 });
 
@@ -167,9 +210,7 @@ describe('createTokenCheck with the algorithm set for the instance', () => {
 
     await expect(
       hs512(sign({ sub: 'u-8134' }, { algorithm: 'HS512', expiresIn: '15m' })),
-    ).resolves.toEqual({
-      actorId: 'u-8134',
-    });
+    ).resolves.toEqual({ actorId: 'u-8134', expiresAt: expect.any(Number) });
     await expect(hs512(sign({ sub: 'u-8134' }, { expiresIn: '15m' }))).rejects.toThrowError(
       'token rejected',
     );
@@ -186,7 +227,10 @@ describe('createTokenCheck with the algorithm set for the instance', () => {
         expiresIn: '15m',
       });
 
-      await expect(rs256(token)).resolves.toEqual({ actorId: 'u-8134' });
+      await expect(rs256(token)).resolves.toEqual({
+        actorId: 'u-8134',
+        expiresAt: expect.any(Number),
+      });
     });
 
     it('refuses a token signed with another private key', async () => {
@@ -229,7 +273,10 @@ describe('createTokenCheck with issuer and audience set for the instance', () =>
       { expiresIn: '15m' },
     );
 
-    await expect(bound(token)).resolves.toEqual({ actorId: 'u-8134' });
+    await expect(bound(token)).resolves.toEqual({
+      actorId: 'u-8134',
+      expiresAt: expect.any(Number),
+    });
   });
 
   it('refuses a token from another issuer', async () => {
@@ -262,7 +309,10 @@ describe('createTokenCheck with issuer and audience set for the instance', () =>
       { expiresIn: '15m' },
     );
 
-    await expect(check(token)).resolves.toEqual({ actorId: 'u-8134' });
+    await expect(check(token)).resolves.toEqual({
+      actorId: 'u-8134',
+      expiresAt: expect.any(Number),
+    });
   });
 });
 
@@ -289,7 +339,10 @@ describe('createTokenCheck with the key set of the tool', () => {
   it('accepts a token signed with the key its kid names', async () => {
     const rs256 = createTokenCheck({ key: await keySet, algorithm: 'RS256', actorClaim: 'id' });
 
-    await expect(rs256(signRs256({ id: 42 }, 'fbs-key'))).resolves.toEqual({ actorId: '42' });
+    await expect(rs256(signRs256({ id: 42 }, 'fbs-key'))).resolves.toEqual({
+      actorId: '42',
+      expiresAt: expect.any(Number),
+    });
   });
 
   it('refuses a token whose kid is in no set, even after loading it again', async () => {

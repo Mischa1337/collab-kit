@@ -72,6 +72,7 @@ export function createTokenCheck(options: TokenOptions): (token: string) => Prom
   const algorithm = options.algorithm;
   const actorClaim = options.actorClaim ?? 'sub';
   const labelClaim = options.labelClaim ?? 'name';
+  const clockTolerance = options.clockToleranceSeconds ?? 5;
 
   // A fixed key is read once, so a broken one stops the start instead of failing every request.
   const lookup = typeof options.key === 'function' ? options.key : fixedKey(options.key, algorithm);
@@ -79,7 +80,7 @@ export function createTokenCheck(options: TokenOptions): (token: string) => Prom
   const verifyOptions: jwt.VerifyOptions = {
     // Pinned on purpose. Without it a forged header could pick another algorithm.
     algorithms: [algorithm],
-    clockTolerance: options.clockToleranceSeconds ?? 5,
+    clockTolerance,
     ...defined({ issuer: options.issuer, audience: audienceOption(options.audience) }),
   };
 
@@ -108,8 +109,11 @@ export function createTokenCheck(options: TokenOptions): (token: string) => Prom
     }
 
     const label = asNonBlank(claims[labelClaim]);
+    // As long as verify takes the token, so an open connection ends exactly where a new one would fail.
+    const exp = claims['exp'];
+    const expiresAt = typeof exp === 'number' ? exp + clockTolerance : undefined;
 
-    return { actorId, ...defined({ label, top: topOf(claims, options.top) }) };
+    return { actorId, ...defined({ label, top: topOf(claims, options.top), expiresAt }) };
   };
 }
 

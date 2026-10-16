@@ -24,7 +24,11 @@ describe('requireActor', () => {
     const response = await request(app).get('/probe').set('authorization', `Bearer ${token}`);
 
     expect(response.status).toBe(200);
-    expect(response.body).toEqual({ actorId: 'u-8134', label: 'Alice Muster' });
+    expect(response.body).toEqual({
+      actorId: 'u-8134',
+      label: 'Alice Muster',
+      expiresAt: expect.any(Number),
+    });
   });
 
   it('refuses a request without a header', async () => {

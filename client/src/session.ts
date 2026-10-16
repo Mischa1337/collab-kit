@@ -1,6 +1,7 @@
 /** A session at one workpiece: one Y.Doc for its whole life, connected again and again. */
 
 import * as decoding from 'lib0/decoding';
+import * as encoding from 'lib0/encoding';
 import { WebsocketProvider } from 'y-websocket';
 import * as Y from 'yjs';
 
@@ -24,6 +25,18 @@ const BEARER = 'bearer';
 
 /** Sent by CK alone: an event as it happens, to a connection opened with ?events=1. */
 const MESSAGE_EVENT = 101;
+
+/** Sent by the client alone: a fresh token over the open connection, before the old one runs out. */
+const MESSAGE_TOKEN = 100;
+
+/** How long before exp a fresh token is asked for. */
+const RENEW_BEFORE_MS = 30_000;
+
+/** Shortest wait between two asks, also when the tool has no fresh token yet. */
+const RENEW_EVERY_MS = 5000;
+
+/** Longest wait setTimeout holds; anything longer fires at once. */
+const MAX_TIMEOUT_MS = 2 ** 31 - 1;
 
 /** Close codes after which a new connection would end the same way. */
 const FINAL_CODES: ReadonlySet<number> = new Set([4403, 1007, 1008, 1009]);
@@ -91,6 +104,9 @@ export function openSession<Value>(
   let failures = 0;
   let renewedToken = false;
   let retry: ReturnType<typeof setTimeout> | undefined;
+  // The token the connection last got, and the wait until a fresh one is asked for.
+  let current: string | undefined;
+  let renewal: ReturnType<typeof setTimeout> | undefined;
 
   let markSynced!: () => void;
   let failSynced!: (error: CollabKitError) => void;
@@ -137,6 +153,7 @@ export function openSession<Value>(
     wanted = false;
     generation += 1;
     clearTimeout(retry);
+    clearTimeout(renewal);
     provider.disconnect();
     setStatus('closed');
     failSynced(new CollabKitError(closed.code, closed.reason));
@@ -196,6 +213,40 @@ export function openSession<Value>(
 
     provider.protocols = [BEARER, token];
     provider.connect();
+    current = token;
+    renewLater(token, expiryWait(token));
+  }
+
+  /** Asks for a fresh token after this wait; without one to wait for, never. */
+  function renewLater(held: string, wait: number | undefined): void {
+    clearTimeout(renewal);
+    if (wait === undefined) {
+      return;
+    }
+    renewal = setTimeout(() => void renew(held), Math.min(wait, MAX_TIMEOUT_MS));
+  }
+
+  /** Sends a fresh token over the open connection; the same one again means asking later. */
+  async function renew(held: string): Promise<void> {
+    const token = await Promise.resolve(context.getToken()).catch(() => held);
+    // Closed or connected anew meanwhile, and a new connection asked for its own token.
+    if (held !== current || !provider.wsconnected || provider.ws === null) {
+      return;
+    }
+    if (token === held) {
+      renewLater(held, RENEW_EVERY_MS);
+      return;
+    }
+
+    // No answer comes; a refusal is CK closing the connection.
+    const encoder = encoding.createEncoder();
+    encoding.writeVarUint(encoder, MESSAGE_TOKEN);
+    encoding.writeVarString(encoder, token);
+    provider.ws.send(encoding.toUint8Array(encoder));
+    // So y-websocket, should it connect again by itself, offers the fresh one.
+    provider.protocols = [BEARER, token];
+    current = token;
+    renewLater(token, expiryWait(token));
   }
 
   /** A call before connecting failed: unreachable tries again, a refusal of CK ends it. */
@@ -222,6 +273,9 @@ export function openSession<Value>(
   });
   // Every close by CK, a refused handshake included, which a browser only shows as 1006.
   provider.on('closed', ({ code, reason }) => {
+    // The next connection asks for a token of its own.
+    clearTimeout(renewal);
+    current = undefined;
     if (FINAL_CODES.has(code)) {
       end({ code, reason });
       return;
@@ -314,6 +368,7 @@ export function openSession<Value>(
       wanted = false;
       generation += 1;
       clearTimeout(retry);
+      clearTimeout(renewal);
       provider.disconnect();
       setStatus('disconnected');
     },
@@ -335,6 +390,7 @@ export function openSession<Value>(
       wanted = false;
       generation += 1;
       clearTimeout(retry);
+      clearTimeout(renewal);
       failSynced(new CollabKitError(1000, 'session closed'));
       for (const set of Object.values(listeners)) {
         set.clear();
@@ -352,6 +408,26 @@ export function openSession<Value>(
       status = 'closed';
     },
   };
+}
+
+/** How long until a fresh token is asked for: shortly before exp, never sooner than the shortest wait. */
+function expiryWait(token: string): number | undefined {
+  const exp = expiryOf(token);
+  return exp === undefined
+    ? undefined
+    : Math.max(exp * 1000 - RENEW_BEFORE_MS - Date.now(), RENEW_EVERY_MS);
+}
+
+/** The exp of a token, read without checking it, since only CK can; undefined without one. */
+function expiryOf(token: string): number | undefined {
+  try {
+    // The payload is the middle part, base64url without padding.
+    const payload = (token.split('.')[1] ?? '').replace(/-/g, '+').replace(/_/g, '/');
+    const exp = (JSON.parse(atob(payload)) as { exp?: unknown }).exp;
+    return typeof exp === 'number' ? exp : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** A work-lost event from the view of this person: the loser comes first in affects. */
