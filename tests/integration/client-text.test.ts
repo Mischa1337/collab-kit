@@ -271,6 +271,59 @@ describe('cursors', () => {
   });
 });
 
+describe('anchors', () => {
+  it('keeps a passage while others type before it, at its edges and inside', async () => {
+    const workpieceId = await freshWorkpiece();
+    const [alice, bob] = await together(workpieceId, 'alice', 'bob');
+    const text = alice.text('t');
+    text.update([{ insert: 'abcdef' }]);
+
+    // cde, through CK as the anchor of an event, as a comment would carry it.
+    const ck = createCollabKitApi({ url, getToken: () => tokenOf('alice') });
+    const sent = text.anchor(2, 3);
+    const { anchor } = await ck.events.create({ kind: 'visit', anchor: sent });
+    expect(anchor).toEqual(sent);
+    expect(text.rangeOf(anchor)).toEqual({ index: 2, length: 3 });
+
+    text.update([{ insert: 'XY' }]);
+    expect(text.rangeOf(anchor)).toEqual({ index: 4, length: 3 });
+    // Typed right at the start or the end, it stays outside.
+    text.update([{ retain: 4 }, { insert: '1' }]);
+    text.update([{ retain: 8 }, { insert: '2' }]);
+    expect(text.value).toBe('XYab1cde2f');
+    expect(text.rangeOf(anchor)).toEqual({ index: 5, length: 3 });
+    // Typed inside, the passage grows.
+    text.update([{ retain: 6 }, { insert: '3' }]);
+    expect(text.rangeOf(anchor)).toEqual({ index: 5, length: 4 });
+
+    expect(await waitFor(() => bob.text('t').value === 'XYab1c3de2f')).toBe(true);
+    expect(bob.text('t').rangeOf(anchor)).toEqual({ index: 5, length: 4 });
+
+    // Deleted whole, a point is left where it stood.
+    text.update([{ retain: 5 }, { delete: 4 }]);
+    expect(text.rangeOf(anchor)).toEqual({ index: 5, length: 0 });
+  });
+
+  it('holds a point without length, and finds nothing for any other anchor', async () => {
+    const workpieceId = await freshWorkpiece();
+    const [alice] = await together(workpieceId, 'alice');
+    const text = alice.text('t');
+    text.update([{ insert: 'abc' }]);
+
+    const point = text.anchor(1);
+    text.update([{ insert: 'X' }]);
+    expect(text.rangeOf(point)).toEqual({ index: 2, length: 0 });
+
+    const anchor = text.anchor(1, 1);
+    expect(alice.text('other').rangeOf(anchor)).toBeUndefined();
+    expect(text.rangeOf({ ...anchor, id: '0123456789abcdef01234567' })).toBeUndefined();
+    expect(text.rangeOf({ ...anchor, kind: 'room' })).toBeUndefined();
+    expect(text.rangeOf({ kind: 'workpiece', id: anchor.id })).toBeUndefined();
+    expect(text.rangeOf({ ...anchor, unit: 'cell-1' })).toBeUndefined();
+    expect(text.rangeOf({ ...anchor, unit: '{"start":1}' })).toBeUndefined();
+  });
+});
+
 describe('undo', () => {
   it('takes back only the own input, which arrives with own false', async () => {
     const workpieceId = await freshWorkpiece();

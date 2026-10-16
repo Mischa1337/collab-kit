@@ -352,7 +352,7 @@ export function openSession<Value>(
       if (name === mapName) {
         throw new Error(`${name} holds the units of this session, not a text`);
       }
-      const opened = textOf(doc, doc.getText(name), checkWrite);
+      const opened = textOf(doc, doc.getText(name), workpieceId, checkWrite);
       texts.set(name, opened);
       return opened.shared;
     },

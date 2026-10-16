@@ -157,6 +157,10 @@ export interface SharedText {
   cursor(index: number): TextPosition;
   /** Where a place stands now; undefined if it lies in another text or is unknown. */
   indexOf(position: TextPosition): number | undefined;
+  /** An anchor at a point or passage, moving along like cursor; typing at an edge stays out. */
+  anchor(index: number, length?: number): Anchor;
+  /** Where an anchor of this text stands now; undefined for any other anchor. */
+  rangeOf(anchor: Anchor): TextRange | undefined;
   /** Takes back the last own change, never one of others; tells whether there was one. */
   undo(): boolean;
   /** Does again what undo took back; tells whether there was something. */
@@ -176,6 +180,12 @@ export type TextDelta = readonly (
 
 /** A place in a text as Yjs keeps it; only indexOf reads it. */
 export type TextPosition = Free;
+
+/** A passage of a text; length 0 is a point, or a passage deleted whole. */
+export interface TextRange {
+  readonly index: number;
+  readonly length: number;
+}
 
 /** Who is at the workpiece; what an entry holds besides person is up to the tool. */
 export interface Presence {
