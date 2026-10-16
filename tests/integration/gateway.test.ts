@@ -1,6 +1,7 @@
 import net, { type AddressInfo } from 'node:net';
 
 import jwt from 'jsonwebtoken';
+import * as encoding from 'lib0/encoding';
 import { MongoClient, ObjectId } from 'mongodb';
 import pino from 'pino';
 import { WebSocket } from 'ws';
@@ -14,8 +15,7 @@ import { createGroup } from '../../src/db/collections/groups.ts';
 import { setGrant } from '../../src/db/collections/grants.ts';
 import { addToRoom, createRoom } from '../../src/db/collections/rooms.ts';
 import { collectionDefinitions } from '../../src/db/schemas.ts';
-import { createWorkpieceHub } from '../../src/realtime/hub.ts';
-import { attachGateway, type Gateway } from '../../src/realtime/gateway.ts';
+import { createWorkpieceHub, attachGateway, type Gateway } from '../../src/realtime/index.ts';
 import { createApi } from '../../src/routes/index.ts';
 import { createServer } from '../../src/routes/server.ts';
 
@@ -107,6 +107,14 @@ function closedWith(socket: WebSocket): Promise<number> {
   });
 }
 
+/** Sends a fresh token over the open connection, as the client library does. */
+function renew(socket: WebSocket, fresh: string): void {
+  const encoder = encoding.createEncoder();
+  encoding.writeVarUint(encoder, 100);
+  encoding.writeVarString(encoder, fresh);
+  socket.send(encoding.toUint8Array(encoder));
+}
+
 function close(socket: WebSocket): Promise<void> {
   return new Promise((resolve) => {
     socket.on('close', () => resolve());
@@ -128,11 +136,7 @@ beforeAll(async () => {
     createdBy: 'alice',
     members: ['alice'],
   });
-  await addToRoom(storage.db, room._id, {
-    kind: 'workpiece',
-    id: workpiece._id,
-    addedBy: 'alice',
-  });
+  await addToRoom(storage.db, room._id, { workpieceId: workpiece._id, addedBy: 'alice' });
   // In through a grant at the room, as a group in it no longer opens anything.
   await setGrant(storage.db, {
     groupId: group._id,
@@ -434,11 +438,7 @@ describe('when access is taken away', () => {
       createdBy: 'alice',
       members: ['carol'],
     });
-    await addToRoom(storage.db, room._id, {
-      kind: 'workpiece',
-      id: workpiece._id,
-      addedBy: 'alice',
-    });
+    await addToRoom(storage.db, room._id, { workpieceId: workpiece._id, addedBy: 'alice' });
     // Both groups may work in the room, so carol gets in twice over.
     await Promise.all(
       [all._id, tutors._id].map((groupId) =>
@@ -577,11 +577,170 @@ describe('when access is taken away', () => {
       closedWith(await openAs('carol', workpiece)),
     ];
 
-    const query = `kind=workpiece&id=${workpiece.toHexString()}`;
-    expect((await removeAsAlice(`/rooms/${room.toHexString()}/references?${query}`)).status).toBe(
-      200,
-    );
+    const path = `/rooms/${room.toHexString()}/workpieces/${workpiece.toHexString()}`;
+    expect((await removeAsAlice(path)).status).toBe(200);
     await expect(Promise.all(closing)).resolves.toEqual([4403, 4403]);
+  });
+
+  it('closes the connection of whoever was in through the deleted group only', async () => {
+    const { workpiece, all } = await seminar();
+    const bob = await openAs('bob', workpiece);
+    const carol = await openAs('carol', workpiece);
+    const bobClosing = closedWith(bob);
+
+    expect((await removeAsAlice(`/groups/${all.toHexString()}`)).status).toBe(200);
+    await expect(bobClosing).resolves.toBe(4403);
+
+    // carol still gets in through the other group of the room.
+    await pause(100);
+    expect(carol.readyState).toBe(WebSocket.OPEN);
+
+    await close(carol);
+  });
+
+  it('closes every connection when the room is deleted', async () => {
+    const { workpiece, room } = await seminar();
+    const closing = [
+      closedWith(await openAs('bob', workpiece)),
+      closedWith(await openAs('carol', workpiece)),
+    ];
+
+    expect((await removeAsAlice(`/rooms/${room.toHexString()}`)).status).toBe(200);
+    await expect(Promise.all(closing)).resolves.toEqual([4403, 4403]);
+  });
+});
+
+describe('when the token runs out', () => {
+  const silent = pino({ level: 'silent' });
+  let expiringServer: ReturnType<typeof createServer>;
+  let expiringGateway: Gateway;
+  let expiringPort: number;
+  let path: string;
+
+  beforeAll(async () => {
+    expiringServer = createServer({ logger: silent });
+    expiringGateway = attachGateway({
+      server: expiringServer,
+      db: storage.db,
+      hub: createWorkpieceHub({ db: storage.db, logger: silent }),
+      // No tolerance, so a token ends exactly at its exp.
+      checkToken: createTokenCheck({
+        key: secret,
+        algorithm: 'HS256',
+        clockToleranceSeconds: 0,
+        top: { claim: 'globalRole', values: ['ADMIN'] },
+      }),
+      logger: silent,
+    });
+    await new Promise<void>((resolve) => expiringServer.listen(0, resolve));
+    expiringPort = (expiringServer.address() as AddressInfo).port;
+
+    // alice and bob write, erin reads.
+    const workpiece = await createWorkpiece(storage.db, { name: 'Entwurf', createdBy: 'alice' });
+    const room = await createRoom(storage.db, { name: 'Seminar', createdBy: 'alice' });
+    await addToRoom(storage.db, room._id, { workpieceId: workpiece._id, addedBy: 'alice' });
+    const groups = [
+      { members: ['alice', 'bob'], rights: ['see', 'edit'] as const },
+      { members: ['erin'], rights: ['see'] as const },
+    ];
+    await Promise.all(
+      groups.map(async ({ members, rights }) => {
+        const group = await createGroup(storage.db, {
+          name: 'Gruppe',
+          createdBy: 'alice',
+          members,
+        });
+        await setGrant(storage.db, {
+          groupId: group._id,
+          scope: { kind: 'room', id: room._id },
+          rights: [...rights],
+          setBy: 'alice',
+        });
+      }),
+    );
+    path = `/ws/${workpiece._id.toHexString()}`;
+  });
+
+  afterAll(async () => {
+    await expiringGateway.close();
+    await new Promise<void>((resolve) => expiringServer.close(() => resolve()));
+  });
+
+  /** A token that runs out in at most this many seconds, as exp counts whole seconds. */
+  const expiringIn = (seconds: number, actor = 'alice', claims: object = {}) =>
+    jwt.sign(
+      { sub: actor, name: actor, exp: Math.floor(Date.now() / 1000) + seconds, ...claims },
+      secret,
+    );
+
+  async function openWith(offered: string): Promise<WebSocket> {
+    const attempt = await tryOpen(path, ['bearer', offered], expiringPort);
+    if (!attempt.ok) {
+      throw new Error(`could not open the workpiece: ${attempt.status}`);
+    }
+    return attempt.socket;
+  }
+
+  it('closes with 4401 once the token ran out', async () => {
+    const socket = await openWith(expiringIn(2));
+
+    await expect(closedWith(socket)).resolves.toBe(4401);
+  });
+
+  it('stays open past the first exp when renewed before', async () => {
+    const socket = await openWith(expiringIn(2));
+    renew(socket, expiringIn(60));
+
+    await pause(2500);
+    expect(socket.readyState).toBe(WebSocket.OPEN);
+    await close(socket);
+  });
+
+  it('is not cut short by a later token that runs out sooner', async () => {
+    const socket = await openWith(expiringIn(60));
+    renew(socket, expiringIn(2));
+
+    await pause(2500);
+    expect(socket.readyState).toBe(WebSocket.OPEN);
+    await close(socket);
+  });
+
+  it('keeps a connection open that renewed with a token without exp', async () => {
+    const socket = await openWith(expiringIn(2));
+    renew(socket, jwt.sign({ sub: 'alice' }, secret));
+
+    await pause(2500);
+    expect(socket.readyState).toBe(WebSocket.OPEN);
+    await close(socket);
+  });
+
+  it('closes with 4401 for an unusable token and for the token of somebody else', async () => {
+    const [unusable, foreign] = await Promise.all([
+      openWith(expiringIn(60)),
+      openWith(expiringIn(60)),
+    ]);
+    const closing = [closedWith(unusable), closedWith(foreign)];
+    renew(unusable, 'gar-kein-token');
+    renew(foreign, expiringIn(60, 'bob'));
+
+    await expect(Promise.all(closing)).resolves.toEqual([4401, 4401]);
+  });
+
+  it('closes with 4409 when the token puts the same person at the top', async () => {
+    const socket = await openWith(expiringIn(60));
+    const closing = closedWith(socket);
+    renew(socket, expiringIn(60, 'alice', { globalRole: 'ADMIN' }));
+
+    await expect(closing).resolves.toBe(4409);
+  });
+
+  it('lets a reader renew like a writer', async () => {
+    const socket = await openWith(expiringIn(2, 'erin'));
+    renew(socket, expiringIn(60, 'erin'));
+
+    await pause(2500);
+    expect(socket.readyState).toBe(WebSocket.OPEN);
+    await close(socket);
   });
 });
 

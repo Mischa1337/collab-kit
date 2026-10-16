@@ -37,7 +37,10 @@ handelt. Eingestellt wird das pro Instanz in der `.env` (Vorlage: `.env.example`
 
 Ein leerer Wert gilt als nicht gesetzt. Ein ungültiger Wert oder ein fehlender Schlüssel verhindert
 den Start, die Ursache steht in der Fehlermeldung. Wie lange ein Token gilt, entscheidet das
-Werkzeug über `exp`.
+Werkzeug über `exp`. Das gilt auch für eine offene WebSocket-Verbindung: Der Dienst schließt sie
+mit 4401, sobald ihr Token samt `JWT_CLOCK_TOLERANCE` abgelaufen ist, außer der Client schickt
+vorher ein neues über die Verbindung. Die Client-Bibliothek fragt dafür 30 s vor `exp` selbst
+`getToken`.
 
 Bei einem Schlüsselpaar bekommt der Dienst nur den öffentlichen Schlüssel, Zeilenumbrüche im PEM
 werden als `\n` geschrieben:
@@ -73,6 +76,19 @@ JWT_SECRET=ein-langes-zufaelliges-geheimnis
 - WebSocket: als Subprotokolle `['bearer', <token>]`
 
 Jede Ablehnung beantwortet der Dienst gleich mit `401`. Den Grund schreibt er nur ins Log.
+
+## Client-Bibliothek
+
+Ein Werkzeug im Browser lädt die Bibliothek vom Dienst selbst, so passt sie immer zu dieser
+Instanz:
+
+```js
+const { createCollabKitApi } = await import('https://ck.example/client/v1.js');
+```
+
+`/client/v1.js` und `/client/v1.d.ts` mit den Typen für TypeScript kommen ohne Token. Laden darf
+jede Seite, die `ALLOWED_ORIGINS` erlaubt. Die Bibliothek bringt Yjs mit, das Werkzeug braucht
+kein eigenes.
 
 ## Betrieb und Grenzen
 

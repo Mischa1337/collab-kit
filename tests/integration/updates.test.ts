@@ -15,9 +15,8 @@ import { addToRoom, createRoom } from '../../src/db/collections/rooms.ts';
 import { createWorkpiece, findWorkpieceWithFold } from '../../src/db/collections/workpieces.ts';
 import { collectionDefinitions } from '../../src/db/schemas.ts';
 import { appendUpdate, readUpdatesSince } from '../../src/db/collections/updates.ts';
-import { createWorkpieceHub } from '../../src/realtime/hub.ts';
-import { foldNow, loadWorkpiece, storeUpdate } from '../../src/realtime/persistence.ts';
-import { attachGateway, type Gateway } from '../../src/realtime/gateway.ts';
+import { createWorkpieceHub, attachGateway, type Gateway } from '../../src/realtime/index.ts';
+import { foldNow, loadWorkpiece, storeUpdate } from '../../src/realtime/hub/persistence.ts';
 import { createServer } from '../../src/routes/server.ts';
 import { connectClient, waitFor } from './yjs-client.ts';
 
@@ -49,7 +48,7 @@ async function bundle(workpieceId: import('mongodb').ObjectId): Promise<void> {
     createdBy: 'alice',
     members: ['alice', 'bob', 'carol'],
   });
-  await addToRoom(storage.db, room._id, { kind: 'workpiece', id: workpieceId, addedBy: 'alice' });
+  await addToRoom(storage.db, room._id, { workpieceId, addedBy: 'alice' });
   // In through a grant at the room, as a group in it no longer opens anything.
   await setGrant(storage.db, {
     groupId: group._id,
@@ -125,11 +124,13 @@ describe('the stream of updates', () => {
     const first = await appendUpdate(storage.db, {
       workpieceId,
       bytes: new Uint8Array([1]),
+      clients: [],
       createdBy: 'alice',
     });
     await appendUpdate(storage.db, {
       workpieceId,
       bytes: new Uint8Array([2]),
+      clients: [],
       createdBy: 'bob',
     });
 
@@ -147,6 +148,7 @@ describe('the stream of updates', () => {
     await appendUpdate(storage.db, {
       workpieceId: other,
       bytes: new Uint8Array([1]),
+      clients: [],
       createdBy: 'alice',
     });
 
@@ -160,6 +162,7 @@ describe('loading', () => {
     const broken = await appendUpdate(storage.db, {
       workpieceId,
       bytes: new Uint8Array([1, 2, 3]),
+      clients: [],
       createdBy: 'alice',
     });
 
@@ -278,6 +281,7 @@ describe('folding', () => {
     await appendUpdate(storage.db, {
       workpieceId,
       bytes: Y.encodeStateAsUpdate(writtenBy('geschlossen')),
+      clients: [],
       createdBy: 'carol',
     });
     const { doc, stored } = await loadWorkpiece(storage.db, workpieceId);
@@ -300,6 +304,7 @@ describe('folding', () => {
     await appendUpdate(storage.db, {
       workpieceId,
       bytes: Y.encodeStateAsUpdate(writtenBy('etwas')),
+      clients: [],
       createdBy: 'alice',
     });
 
@@ -313,6 +318,7 @@ describe('folding', () => {
     await appendUpdate(storage.db, {
       workpieceId,
       bytes: Y.encodeStateAsUpdate(writtenBy('vorher')),
+      clients: [],
       createdBy: 'alice',
     });
     const { doc, stored } = await loadWorkpiece(storage.db, workpieceId);
@@ -333,6 +339,7 @@ describe('folding', () => {
     await appendUpdate(storage.db, {
       workpieceId,
       bytes: Y.encodeStateAsUpdate(writtenBy('eins')),
+      clients: [],
       createdBy: 'alice',
     });
 

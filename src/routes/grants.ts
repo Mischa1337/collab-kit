@@ -2,25 +2,19 @@ import { Router } from 'express';
 import type { Db } from 'mongodb';
 
 import { may, mayHandOn, maySeeGroup, placeExists, rightsAt } from '../auth/access.ts';
-import {
-  findGrant,
-  grantsAt,
-  grantsOf,
-  removeGrant,
-  setGrant,
-  type Scope,
-} from '../db/collections/grants.ts';
+import { findGrant, grantsAt, grantsOf, removeGrant, setGrant } from '../db/collections/grants.ts';
 import { findGroup } from '../db/collections/groups.ts';
+import { withNames } from '../db/names.ts';
 import type { Actor } from '../model/actor.ts';
+import type { Reference } from '../model/anchor.ts';
 import { RIGHTS } from '../model/right.ts';
 import {
   asObjectId,
   asReference,
   asRights,
-  asScope,
   asText,
+  REFERENCE_RULE,
   RIGHTS_RULE,
-  SCOPE_RULE,
 } from '../utils/input.ts';
 import { defined } from '../utils/optional.ts';
 import { actorOf, bodyOf, fail, unusableField } from './http.ts';
@@ -33,7 +27,7 @@ export function grantRoutes(db: Db, recheckAccess: () => Promise<void>): Router 
   routes.put('/grants', async (request, response) => {
     const body = bodyOf(request);
     const groupId = asObjectId(body['groupId']);
-    const scope = asScope(body['scope']);
+    const scope = asReference(body['scope']);
     const rights = asRights(body['rights']);
     const reason = asText(body['reason']);
 
@@ -41,7 +35,7 @@ export function grantRoutes(db: Db, recheckAccess: () => Promise<void>): Router 
       return fail(response, 400, 'groupId is missing');
     }
     if (body['scope'] !== undefined && scope === undefined) {
-      return fail(response, 400, SCOPE_RULE);
+      return fail(response, 400, REFERENCE_RULE);
     }
     if (rights === undefined) {
       return fail(response, 400, RIGHTS_RULE);
@@ -74,7 +68,7 @@ export function grantRoutes(db: Db, recheckAccess: () => Promise<void>): Router 
     if (changed) {
       await recheckAccess();
     }
-    response.json(await findGrant(db, groupId, scope));
+    response.json(await withNames(db, await findGrant(db, groupId, scope)));
   });
 
   // In the query and not the body: a body on DELETE may get lost on the way.
@@ -87,7 +81,7 @@ export function grantRoutes(db: Db, recheckAccess: () => Promise<void>): Router 
       return fail(response, 400, 'groupId is missing');
     }
     if (scope === null) {
-      return fail(response, 400, SCOPE_RULE);
+      return fail(response, 400, REFERENCE_RULE);
     }
     const unusable = unusableField(request.query, { reason });
     if (unusable !== undefined) {
@@ -121,7 +115,7 @@ export function grantRoutes(db: Db, recheckAccess: () => Promise<void>): Router 
       return fail(response, 400, 'groupId is unusable');
     }
     if (scope === null) {
-      return fail(response, 400, SCOPE_RULE);
+      return fail(response, 400, REFERENCE_RULE);
     }
     if (groupId !== undefined && scope !== undefined) {
       return fail(response, 400, 'either groupId or a place, not both');
@@ -129,12 +123,13 @@ export function grantRoutes(db: Db, recheckAccess: () => Promise<void>): Router 
 
     // A group is asked about at itself, a place at that place.
     const actor = actorOf(request);
-    const at = groupId === undefined ? scope : { kind: 'group', id: groupId };
+    const at = groupId === undefined ? scope : { kind: 'group' as const, id: groupId };
     if (!(await may(db, actor, 'manage', at))) {
       return fail(response, 403, 'not allowed to read these grants');
     }
 
-    response.json(groupId === undefined ? await grantsAt(db, scope) : await grantsOf(db, groupId));
+    const grants = groupId === undefined ? await grantsAt(db, scope) : await grantsOf(db, groupId);
+    response.json(await withNames(db, grants));
   });
 
   /** What this token may do at a thing, or everywhere without one, so a tool can shape its view. */
@@ -143,7 +138,7 @@ export function grantRoutes(db: Db, recheckAccess: () => Promise<void>): Router 
     const target = asReference({ kind, id });
 
     if ((kind !== undefined || id !== undefined) && target === undefined) {
-      return fail(response, 400, 'kind and id are needed together, both as text');
+      return fail(response, 400, REFERENCE_RULE);
     }
 
     const held = await rightsAt(db, actorOf(request), target);
@@ -154,17 +149,17 @@ export function grantRoutes(db: Db, recheckAccess: () => Promise<void>): Router 
 }
 
 /** scopeKind and scopeId from a query: a place, undefined for none, null when only half fits. */
-function scopeIn(query: Record<string, unknown>): Scope | undefined | null {
+function scopeIn(query: Record<string, unknown>): Reference | undefined | null {
   const { scopeKind, scopeId } = query;
 
   if (scopeKind === undefined && scopeId === undefined) {
     return undefined;
   }
-  return asScope({ kind: scopeKind, id: scopeId }) ?? null;
+  return asReference({ kind: scopeKind, id: scopeId }) ?? null;
 }
 
 /** A place is there and in view; a group by its own rule, everything else by see. */
-async function seesPlace(db: Db, actor: Actor, scope: Scope): Promise<boolean> {
+async function seesPlace(db: Db, actor: Actor, scope: Reference): Promise<boolean> {
   if (scope.kind === 'group') {
     const group = await findGroup(db, scope.id);
     return group !== null && maySeeGroup(db, actor, group);

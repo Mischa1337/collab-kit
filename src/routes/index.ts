@@ -4,7 +4,9 @@ import type { Logger } from 'pino';
 
 import type { Actor } from '../model/actor.ts';
 import { requireActor } from '../auth/middleware.ts';
-import type { WorkpieceHub } from '../realtime/hub.ts';
+import { createActorNotes, type ActorNotes } from '../db/collections/actors.ts';
+import type { WorkpieceHub } from '../realtime/index.ts';
+import { actorRoutes } from './actors.ts';
 import { roomRoutes } from './rooms.ts';
 import { groupRoutes } from './groups.ts';
 import { grantRoutes } from './grants.ts';
@@ -12,6 +14,7 @@ import { workpieceRoutes } from './workpieces.ts';
 import { eventRoutes } from './events.ts';
 import { commentRoutes } from './comments.ts';
 import { taskRoutes } from './tasks.ts';
+import { actorOf } from './http.ts';
 
 export interface ApiOptions {
   readonly db: Db;
@@ -22,6 +25,8 @@ export interface ApiOptions {
   readonly recheckAccess: () => Promise<void>;
   /** States the tool names a decision, which only decide may set; left out, none. */
   readonly decisionStates?: readonly string[];
+  /** Shared with the hub, so a name is written once; left out, the routes keep their own. */
+  readonly noteActor?: ActorNotes;
 }
 
 /** Every route behind requireActor: who acts comes from the token, never from a body. */
@@ -33,11 +38,18 @@ export function createApi(options: ApiOptions): Router {
       options.logger.info({ err: error }, 'token rejected');
     }),
   );
+  // Every request keeps the name, so whoever only uses REST has one too; only new ones cost time.
+  const noteActor = options.noteActor ?? createActorNotes(options.db, options.logger);
+  api.use(async (request, _response, next) => {
+    await noteActor(actorOf(request));
+    next();
+  });
   api.use(express.json({ limit: '1mb' }));
 
-  api.use(roomRoutes(options.db, options.recheckAccess));
+  api.use(roomRoutes(options.db, options.hub, options.recheckAccess));
   api.use(groupRoutes(options.db, options.recheckAccess));
   api.use(grantRoutes(options.db, options.recheckAccess));
+  api.use(actorRoutes(options.db));
   api.use(workpieceRoutes(options.db, options.hub));
   api.use(eventRoutes(options.db));
   const decisions = options.decisionStates ?? [];

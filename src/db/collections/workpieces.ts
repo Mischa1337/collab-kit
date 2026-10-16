@@ -1,5 +1,6 @@
 import { Binary, ObjectId, type Db, type Document } from 'mongodb';
 
+import { defined } from '../../utils/optional.ts';
 import type { CollectionDefinition } from '../apply.ts';
 
 /** The loading shortcut: the folded Yjs state and the last update it contains. */
@@ -8,12 +9,28 @@ export interface FoldedState {
   upToUpdateId: ObjectId;
 }
 
+/** A Y.Map whose keys are the units, at a path of map keys that starts at a root type. */
+export interface UnitContainer {
+  path: string[];
+}
+
+/** Where a fork comes from: the workpiece and the last change of it the fork took along. */
+export interface ForkOrigin {
+  id: ObjectId;
+  /** Absent if the source had no change yet. */
+  at?: ObjectId;
+}
+
 /** One row per Y.Doc; fold is only a loading shortcut, the truth is the update stream. */
 export interface WorkpieceRecord {
   _id: ObjectId;
   name: string;
   /** What the tool registered while docking. The service never reads into it. */
   contract: Document;
+  /** Where the tool keeps its units, so conflicts hang on the unit they hit; empty if nowhere. */
+  units: UnitContainer[];
+  /** Only at a fork: where it was forked from. */
+  forkOf?: ForkOrigin;
   /** Absent until the workpiece has been folded for the first time. */
   fold?: FoldedState;
   createdAt: Date;
@@ -24,12 +41,34 @@ export const workpiecesDefinition: CollectionDefinition = {
   name: 'workpieces',
   schema: {
     bsonType: 'object',
-    required: ['name', 'contract', 'createdAt', 'createdBy'],
+    required: ['name', 'contract', 'units', 'createdAt', 'createdBy'],
     properties: {
       name: { bsonType: 'string' },
       contract: {
         bsonType: 'object',
         description: 'what the tool registered while docking, deliberately unconstrained',
+      },
+      units: {
+        bsonType: 'array',
+        maxItems: 20,
+        description: 'the maps whose keys are units, each at a path of keys from a root type',
+        items: {
+          bsonType: 'object',
+          required: ['path'],
+          additionalProperties: false,
+          properties: {
+            path: { bsonType: 'array', minItems: 1, maxItems: 10, items: { bsonType: 'string' } },
+          },
+        },
+      },
+      forkOf: {
+        bsonType: 'object',
+        description: 'only at a fork: the source and the last change of it taken along',
+        required: ['id'],
+        properties: {
+          id: { bsonType: 'objectId' },
+          at: { bsonType: 'objectId', description: 'absent if the source had no change yet' },
+        },
       },
       fold: {
         bsonType: 'object',
@@ -47,9 +86,13 @@ export const workpiecesDefinition: CollectionDefinition = {
 };
 
 export interface NewWorkpiece {
+  /** Chosen beforehand when its history is written first, as for a fork. */
+  readonly id?: ObjectId;
   readonly name: string;
   readonly createdBy: string;
   readonly contract?: Document;
+  readonly units?: UnitContainer[];
+  readonly forkOf?: ForkOrigin;
 }
 
 /** Creates an empty workpiece without a start state: every change, even the first, is an update. */
@@ -59,9 +102,11 @@ export async function createWorkpiece(
   now = new Date(),
 ): Promise<WorkpieceRecord> {
   const created: WorkpieceRecord = {
-    _id: new ObjectId(),
+    _id: input.id ?? new ObjectId(),
     name: input.name,
     contract: input.contract ?? {},
+    units: input.units ?? [],
+    ...defined({ forkOf: input.forkOf }),
     createdAt: now,
     createdBy: input.createdBy,
   };
@@ -78,6 +123,16 @@ export async function findWorkpiece(db: Db, id: ObjectId): Promise<Workpiece | n
   return db
     .collection<WorkpieceRecord>('workpieces')
     .findOne<Workpiece>({ _id: id }, { projection: { fold: 0 } });
+}
+
+/** These workpieces, or every one when no keys are named; without the folded state, as above. */
+export async function findWorkpieces(db: Db, ids?: readonly ObjectId[]): Promise<Workpiece[]> {
+  const filter = ids === undefined ? {} : { _id: { $in: [...ids] } };
+
+  return db
+    .collection<WorkpieceRecord>('workpieces')
+    .find<Workpiece>(filter, { projection: { fold: 0 } })
+    .toArray();
 }
 
 /** The whole stored workpiece, folded state included, for loading it into memory. */

@@ -1,16 +1,19 @@
 import { Router } from 'express';
 import type { Db } from 'mongodb';
 
-import { may, mayAddMember, maySee, maySeeGroup } from '../auth/access.ts';
+import { groupsVisibleTo, may, mayAddMember, maySee, maySeeGroup } from '../auth/access.ts';
 import {
   addMember,
   createGroup,
+  deleteGroup,
   findGroup,
   groupsOf,
   removeMember,
+  renameGroup,
   setGroupSettings,
 } from '../db/collections/groups.ts';
-import { asActorId, asObject, asText } from '../utils/input.ts';
+import { withNames } from '../db/names.ts';
+import { asActorId, asEvery, asObject, asText } from '../utils/input.ts';
 import { defined } from '../utils/optional.ts';
 import { actorOf, bodyOf, fail, guard, idOf, requireId, unusableField } from './http.ts';
 
@@ -70,7 +73,12 @@ export function groupRoutes(db: Db, recheckAccess: () => Promise<void>): Router 
       ...defined({ settings }),
     });
 
-    response.status(201).json(group);
+    response.status(201).json(await withNames(db, group));
+  });
+
+  /** Every group this token may see, its own and others; at the top all of them. */
+  routes.get('/groups', async (request, response) => {
+    response.json(await withNames(db, await groupsVisibleTo(db, actorOf(request))));
   });
 
   routes.get('/groups/:id', async (request, response) => {
@@ -80,19 +88,56 @@ export function groupRoutes(db: Db, recheckAccess: () => Promise<void>): Router 
       return fail(response, 404, 'unknown group');
     }
 
-    response.json(group);
+    response.json(await withNames(db, group));
   });
 
   routes.patch('/groups/:id', seeing, changing, async (request, response) => {
-    const settings = asObject(bodyOf(request)['settings']);
+    const body = bodyOf(request);
+    const name = asText(body['name']);
+    const settings = asObject(body['settings']);
+    const reason = asText(body['reason']);
 
-    if (settings === undefined) {
-      return fail(response, 400, 'settings must be an object');
+    const unusable = unusableField(body, { name, settings, reason });
+    if (unusable !== undefined) {
+      return fail(response, 400, `${unusable} is unusable`);
+    }
+    if (name === undefined && settings === undefined) {
+      return fail(response, 400, 'name or settings is needed');
     }
 
+    // Only the name leaves a trace; the settings are the tool's and never read here.
     const id = idOf(request);
-    await setGroupSettings(db, id, settings);
-    response.json(await findGroup(db, id));
+    if (name !== undefined) {
+      await renameGroup(db, id, {
+        name,
+        renamedBy: actorOf(request).actorId,
+        ...defined({ reason }),
+      });
+    }
+    if (settings !== undefined) {
+      await setGroupSettings(db, id, settings);
+    }
+    response.json(await withNames(db, await findGroup(db, id)));
+  });
+
+  // The reason in the query, as a body on DELETE may get lost on the way.
+  routes.delete('/groups/:id', seeing, changing, async (request, response) => {
+    const reason = asText(request.query['reason']);
+
+    const unusable = unusableField(request.query, { reason });
+    if (unusable !== undefined) {
+      return fail(response, 400, `${unusable} is unusable`);
+    }
+
+    const deleted = await deleteGroup(db, idOf(request), {
+      deletedBy: actorOf(request).actorId,
+      ...defined({ reason }),
+    });
+    // Its members lose what the group opened, so their connections are asked again.
+    if (deleted) {
+      await recheckAccess();
+    }
+    response.json({ deleted });
   });
 
   routes.post('/groups/:id/members', seeing, adding, async (request, response) => {
@@ -108,7 +153,7 @@ export function groupRoutes(db: Db, recheckAccess: () => Promise<void>): Router 
     if (added) {
       await recheckAccess();
     }
-    response.status(added ? 201 : 200).json(await findGroup(db, id));
+    response.status(added ? 201 : 200).json(await withNames(db, await findGroup(db, id)));
   });
 
   routes.delete('/groups/:id/members/:actorId', seeing, changing, async (request, response) => {
@@ -122,12 +167,12 @@ export function groupRoutes(db: Db, recheckAccess: () => Promise<void>): Router 
     await removeMember(db, id, { actorId, removedBy: actorOf(request).actorId });
     // An open connection of the removed actor would otherwise carry on as before.
     await recheckAccess();
-    response.json(await findGroup(db, id));
+    response.json(await withNames(db, await findGroup(db, id)));
   });
 
   /** The groups this token is in; the rooms it may see are at /me/rooms. */
   routes.get('/me/groups', async (request, response) => {
-    response.json(await groupsOf(db, actorOf(request).actorId));
+    response.json(await withNames(db, await groupsOf(db, actorOf(request).actorId)));
   });
 
   return routes;
@@ -138,10 +183,5 @@ function asMembers(raw: unknown): readonly string[] | undefined {
   if (raw === undefined) {
     return [];
   }
-  if (!Array.isArray(raw)) {
-    return undefined;
-  }
-
-  const members = raw.map((entry: unknown) => asActorId(entry));
-  return members.every((member): member is string => member !== undefined) ? members : undefined;
+  return asEvery(raw, asActorId);
 }

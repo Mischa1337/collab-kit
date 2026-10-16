@@ -5,15 +5,24 @@ import type { Db, ObjectId } from 'mongodb';
 import type { Logger } from 'pino';
 import { WebSocketServer, type WebSocket } from 'ws';
 
-import type { Actor } from '../model/actor.ts';
-import { workpieceAccess } from '../auth/access.ts';
-import { asObjectId } from '../utils/input.ts';
-import { isAllowedOrigin } from '../utils/origin.ts';
-import type { Connection, WorkpieceHub, OpenWorkpiece } from './hub.ts';
-import { encodeAwareness, encodeSyncStep1, handleMessage, MessageRefused } from './protocol.ts';
+import type { Actor } from '../../model/actor.ts';
+import { workpieceAccess } from '../../auth/access.ts';
+import { asObjectId } from '../../utils/input.ts';
+import { isAllowedOrigin } from '../../utils/origin.ts';
+import type { Connection, WorkpieceHub, OpenWorkpiece } from '../hub/types.ts';
+import {
+  encodeAwareness,
+  encodeSyncStep1,
+  handleMessage,
+  MessageRefused,
+  tokenIn,
+} from './protocol.ts';
 
 /** The client announces two subprotocols: this marker and the token itself. */
 const BEARER = 'bearer';
+
+/** Longest wait setTimeout holds; anything longer fires at once. */
+const MAX_TIMEOUT_MS = 2 ** 31 - 1;
 
 /** Start of every WebSocket address; the workpiece key follows it. */
 const PATH_PREFIX = '/ws/';
@@ -50,6 +59,8 @@ interface Admitted {
   readonly actor: Actor;
   /** Fixed for the life of the connection; when it changes, recheck closes it with 4409. */
   readonly mayWrite: boolean;
+  /** Whether it asked with ?events=1 to hear of events as they happen. */
+  readonly wantsEvents: boolean;
 }
 
 /** Takes WebSocket connections; a refusal is a plain HTTP status, not a socket that dies. */
@@ -185,6 +196,7 @@ async function serveConnection(
   // What the hub knows of this socket: who is on it and how to reach them.
   const connection: Connection = {
     actor: admitted.actor,
+    wantsEvents: admitted.wantsEvents,
     send: (message) => {
       if (ws.readyState === ws.OPEN) {
         ws.send(message);
@@ -227,8 +239,72 @@ async function serveConnection(
     }
   };
 
+  // Until when the newest token holds; a renewal only ever moves it later.
+  let expiresAt = admitted.actor.expiresAt;
+  let expiry: ReturnType<typeof setTimeout> | undefined;
+
+  /** Closes with 4401 once the token ran out, waiting in pieces setTimeout can hold. */
+  const watchExpiry = (): void => {
+    clearTimeout(expiry);
+    if (expiresAt === undefined) {
+      return;
+    }
+    const left = expiresAt * 1000 - Date.now();
+    if (left <= 0) {
+      log.info('token expired, connection closed');
+      ws.close(4401, 'token expired');
+      return;
+    }
+    expiry = setTimeout(watchExpiry, Math.min(left, MAX_TIMEOUT_MS));
+  };
+
+  /** Checks a token sent over the open connection: the same person stays, anybody else goes. */
+  const renew = async (token: string): Promise<void> => {
+    const actor = await options.checkToken(token).catch((error: unknown) => {
+      log.info({ err: error }, 'renewal rejected');
+      return undefined;
+    });
+
+    // Closed while it was checked, so there is nothing left to hold open.
+    if (ws.readyState !== ws.OPEN) {
+      return;
+    }
+    if (actor?.actorId !== admitted.actor.actorId) {
+      log.info('renewal refused, connection closed');
+      ws.close(4401, 'token rejected');
+      return;
+    }
+    // A fresh connection is admitted with the new rights, as recheck does.
+    if (actor.top !== admitted.actor.top) {
+      log.info('top changed, connection closed');
+      ws.close(4409, 'rights changed');
+      return;
+    }
+
+    // Only later, so an older token whose check ends last does not cut the connection short.
+    if (expiresAt !== undefined && (actor.expiresAt ?? Infinity) > expiresAt) {
+      expiresAt = actor.expiresAt;
+      watchExpiry();
+    }
+  };
+
   ws.on('message', (data: Buffer) => {
     const bytes = new Uint8Array(data);
+
+    // A new token is taken at once, even while the workpiece is still loading.
+    let token: string | undefined;
+    try {
+      token = tokenIn(bytes);
+    } catch (error) {
+      log.warn({ err: error }, 'message refused, connection closed');
+      ws.close(1007, 'unusable message');
+      return;
+    }
+    if (token !== undefined) {
+      void renew(token).catch(logFailure(log, 'renewal failed'));
+      return;
+    }
+
     if (progress.loaded === undefined) {
       waiting.push(bytes);
       return;
@@ -242,12 +318,16 @@ async function serveConnection(
   });
 
   ws.on('close', () => {
+    clearTimeout(expiry);
     progress.left = true;
     void options.hub
       .leave(admitted.workpieceId, connection)
       .catch(logFailure(log, 'could not leave the workpiece'));
     log.info('connection closed');
   });
+
+  // The token runs out from the handshake on, loading counts too.
+  watchExpiry();
 
   // Opens the workpiece, loading it from the database if nobody holds it yet.
   let workpiece: OpenWorkpiece;
@@ -303,7 +383,8 @@ async function admit(
     return { status: 404, text: 'Not Found', reason: 'unknown path' };
   }
 
-  const workpieceId = asObjectId(path.slice(PATH_PREFIX.length).split('?')[0]);
+  const [key, query] = path.slice(PATH_PREFIX.length).split('?');
+  const workpieceId = asObjectId(key);
   if (workpieceId === undefined) {
     return { status: 400, text: 'Bad Request', reason: 'malformed workpiece key' };
   }
@@ -326,7 +407,9 @@ async function admit(
     return { status: 404, text: 'Not Found', reason: 'unknown or not allowed to open' };
   }
 
-  return { workpieceId, actor, mayWrite: access === 'write' };
+  // Only who asks hears of events: a plain y-websocket client would not know message 101.
+  const wantsEvents = new URLSearchParams(query).get('events') === '1';
+  return { workpieceId, actor, mayWrite: access === 'write', wantsEvents };
 }
 
 /** A catch for work nobody waits for: a failure is logged instead of ending the process. */

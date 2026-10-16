@@ -10,14 +10,24 @@ import {
 import { defined } from '../../utils/optional.ts';
 import type { CollectionDefinition } from '../apply.ts';
 
+/** Where a chain of comments and tasks ends: the thing it is all about. */
+export interface About {
+  kind: 'room' | 'workpiece' | 'group';
+  id: ObjectId;
+}
+
 /** That something happened, by whom, where and when; append only, never changed afterwards. */
 export interface EventRecord {
   _id: ObjectId;
   kind: string;
   createdBy: string;
   anchor: Anchor;
+  /** Only at a comment or task: what it hangs on in the end, so a room finds it. */
+  about?: About;
   /** A place in the update stream, for a reading mark or a checkpoint. */
   at?: ObjectId;
+  /** Whom it concerns besides whoever did it, so they find it at /me/events. */
+  affects?: string[];
   /** Only set when a person named this moment. */
   label?: string;
   /** The why, D6.6, the one thing no protocol can derive. */
@@ -39,14 +49,32 @@ export const eventsDefinition: CollectionDefinition = {
       },
       createdBy: { bsonType: 'string' },
       anchor: anchorSchema,
+      about: {
+        bsonType: 'object',
+        required: ['kind', 'id'],
+        description: 'only at a comment or task: what it hangs on in the end',
+        properties: {
+          kind: { enum: ['room', 'workpiece', 'group'] },
+          id: { bsonType: 'objectId' },
+        },
+      },
       at: { bsonType: 'objectId', description: 'a place in the update stream' },
+      affects: {
+        bsonType: 'array',
+        items: { bsonType: 'string' },
+        description: 'whom it concerns besides whoever did it',
+      },
       label: { bsonType: 'string', description: 'only when a person named this moment' },
       reason: { bsonType: 'string', description: 'the why, D6.6, can only come from a person' },
       detail: { bsonType: 'object', description: 'free, the service never reads it' },
       createdAt: { bsonType: 'date' },
     },
   },
-  indexes: [{ key: { 'anchor.id': 1, kind: 1, _id: -1 }, name: 'anchor_id_kind' }],
+  indexes: [
+    { key: { 'anchor.id': 1, kind: 1, _id: -1 }, name: 'anchor_id_kind' },
+    { key: { 'about.id': 1, kind: 1, _id: -1 }, name: 'about_id_kind' },
+    { key: { affects: 1, _id: -1 }, name: 'affects' },
+  ],
 };
 
 /** Kinds only the service writes, each the proof of a change it made; add every new one here. */
@@ -56,23 +84,39 @@ export const SERVICE_KINDS: ReadonlySet<string> = new Set([
   'checkpoint',
   'member-added',
   'member-removed',
-  'reference-added',
-  'reference-removed',
+  'workpiece-added',
+  'workpiece-removed',
   'task-state',
   'assignee-added',
   'assignee-removed',
   'comment-state',
+  'comment-created',
+  'task-created',
   'grant-set',
   'grant-removed',
   'comment-edited',
   'comment-deleted',
+  'room-renamed',
+  'room-deleted',
+  'group-renamed',
+  'group-deleted',
+  'work-removed',
+  'work-replaced',
+  'work-lost',
+  'workpiece-forked',
+  'workpiece-merged',
 ]);
+
+/** What a merge found, written under authors who were not there: no sign of their activity. */
+const FOUND_BY_MERGE = ['work-removed', 'work-replaced'];
 
 export interface NewEvent {
   readonly kind: string;
   readonly createdBy: string;
   readonly anchor: Anchor;
+  readonly about?: About;
   readonly at?: ObjectId;
+  readonly affects?: readonly string[];
   readonly label?: string;
   readonly reason?: string;
   readonly detail?: Document;
@@ -99,15 +143,24 @@ function recordOf(input: NewEvent, now: Date): EventRecord {
     createdBy: input.createdBy,
     anchor: input.anchor,
     createdAt: now,
-    ...defined({ at: input.at, label: input.label, reason: input.reason, detail: input.detail }),
+    ...defined({
+      about: input.about,
+      at: input.at,
+      affects: input.affects === undefined ? undefined : [...input.affects],
+      label: input.label,
+      reason: input.reason,
+      detail: input.detail,
+    }),
   };
 }
 
 export interface EventQuery {
   readonly anchor?: AnchorQuery;
-  /** Anchors on any of these things, by kind and id; how a room asks about what it bundles. */
+  /** Anchored at or about any of these things; how a room asks about what it bundles. */
   readonly references?: readonly [Reference, ...Reference[]];
   readonly createdBy?: string;
+  /** Only what concerns this actor, the way /me/events asks. */
+  readonly affects?: string;
   readonly kind?: string;
   /** Only what happened after this event, the cut for polling. */
   readonly since?: ObjectId;
@@ -124,8 +177,13 @@ function filterOf(query: EventQuery): Filter<EventRecord> {
     ...(query.anchor === undefined ? {} : anchoredAt(query.anchor)),
     ...(query.references === undefined
       ? {}
-      : { $or: query.references.map((reference) => anchoredAt(reference)) }),
-    ...defined({ createdBy: query.createdBy, kind: query.kind }),
+      : {
+          $or: query.references.flatMap((reference) => [
+            anchoredAt(reference),
+            { 'about.kind': reference.kind, 'about.id': reference.id },
+          ]),
+        }),
+    ...defined({ createdBy: query.createdBy, affects: query.affects, kind: query.kind }),
     ...(Object.keys(window).length === 0 ? {} : { _id: window }),
   } as Filter<EventRecord>;
 }
@@ -142,6 +200,55 @@ export async function readEventsSince(db: Db, query: EventQuery = {}): Promise<E
   const found = db.collection<EventRecord>('events').find(filterOf(query)).sort({ _id: 1 });
 
   return query.limit === undefined ? found.toArray() : found.limit(query.limit).toArray();
+}
+
+/** The last trace a person left among some places; reading alone leaves none. */
+export interface Activity {
+  actorId: string;
+  /** When the newest event of this person happened. */
+  at: Date;
+  kind: string;
+}
+
+/** The newest event per person among these places, newest first (D1.10). */
+export async function latestPerActor(
+  db: Db,
+  references: readonly [Reference, ...Reference[]],
+): Promise<Activity[]> {
+  return db
+    .collection<EventRecord>('events')
+    .aggregate<Activity>([
+      // work-lost names the other side, who need not have been there when it was written.
+      {
+        $match: {
+          ...filterOf({ references }),
+          kind: { $ne: 'work-lost' },
+          $nor: [{ kind: { $in: FOUND_BY_MERGE }, 'detail.merge': { $exists: true } }],
+        },
+      },
+      { $sort: { _id: -1 } },
+      { $group: { _id: '$createdBy', at: { $first: '$createdAt' }, kind: { $first: '$kind' } } },
+      { $sort: { at: -1, _id: 1 } },
+      { $project: { _id: 0, actorId: '$_id', at: 1, kind: 1 } },
+    ])
+    .toArray();
+}
+
+/** The newest merge from one workpiece into another; its upTo is where the next one starts. */
+export async function latestMerge(
+  db: Db,
+  target: ObjectId,
+  from: ObjectId,
+): Promise<EventRecord | null> {
+  return db.collection<EventRecord>('events').findOne(
+    {
+      'anchor.kind': 'workpiece',
+      'anchor.id': target,
+      kind: 'workpiece-merged',
+      'detail.from': from,
+    },
+    { sort: { _id: -1 } },
+  );
 }
 
 /** Only the newest; a reading mark is no stored field but the last event of kind read. */
@@ -203,6 +310,24 @@ export async function writeWithEvents(
       await db.collection<EventRecord>('events').insertMany(records, { session });
     }
 
+    return true;
+  });
+}
+
+/** As writeWithEvents, for a write whose events depend on what it finds; none means no change. */
+export async function writeReturningEvents(
+  db: Db,
+  write: (session: ClientSession) => Promise<readonly NewEvent[]>,
+  now = new Date(),
+): Promise<boolean> {
+  return inTransaction(db, async (session) => {
+    const events = await write(session);
+    if (events.length === 0) {
+      return false;
+    }
+
+    const records = events.map((event) => recordOf(event, now));
+    await db.collection<EventRecord>('events').insertMany(records, { session });
     return true;
   });
 }

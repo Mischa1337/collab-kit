@@ -3,7 +3,7 @@ import { ObjectId, type Db, type Document, type Filter } from 'mongodb';
 import { anchorSchema, anchoredAt, type Anchor, type AnchorQuery } from '../../model/anchor.ts';
 import { defined, matchOptional } from '../../utils/optional.ts';
 import type { CollectionDefinition } from '../apply.ts';
-import { changeWithEvent, writeWithEvents, type NewEvent } from './events.ts';
+import { changeWithEvent, writeWithEvents, type About, type NewEvent } from './events.ts';
 
 /** Who a task is assigned to: a person by actor key, or a group; a change cannot hold one. */
 export type Assignee = { kind: 'actor'; id: string } | { kind: 'group'; id: ObjectId };
@@ -78,8 +78,11 @@ export interface NewTask {
   readonly assignees?: readonly Assignee[];
   readonly order?: number;
   readonly detail?: Document;
+  /** What its anchor or parent hangs on in the end, for the trace; the route looks it up. */
+  readonly about?: About;
 }
 
+/** Stores the task and records task-created in one transaction, its content not in it. */
 export async function createTask(db: Db, input: NewTask, now = new Date()): Promise<TaskRecord> {
   const task: TaskRecord = {
     _id: new ObjectId(),
@@ -97,7 +100,22 @@ export async function createTask(db: Db, input: NewTask, now = new Date()): Prom
     }),
   };
 
-  await db.collection<TaskRecord>('tasks').insertOne(task);
+  await writeWithEvents(
+    db,
+    async (session) => {
+      await db.collection<TaskRecord>('tasks').insertOne(task, { session });
+      return true;
+    },
+    [
+      {
+        kind: 'task-created',
+        createdBy: input.createdBy,
+        anchor: { kind: 'task', id: task._id },
+        ...defined({ about: input.about }),
+      },
+    ],
+    now,
+  );
   return task;
 }
 
@@ -110,7 +128,7 @@ async function changeTask(
   db: Db,
   taskId: ObjectId,
   change: Partial<Pick<TaskRecord, 'state'>>,
-  event: { kind: string; createdBy: string; reason?: string; detail: Document },
+  event: { kind: string; createdBy: string; reason?: string; about?: About; detail: Document },
   now: Date,
 ): Promise<TaskRecord> {
   return changeWithEvent<TaskRecord>(
@@ -125,7 +143,7 @@ async function changeTask(
         createdBy: event.createdBy,
         anchor: { kind: 'task', id: taskId },
         detail: event.detail,
-        ...defined({ reason: event.reason }),
+        ...defined({ about: event.about, reason: event.reason }),
       },
     },
     now,
@@ -137,6 +155,7 @@ export interface StateChange {
   readonly changedBy: string;
   /** Why it moved. The same why as at a checkpoint, D6.6. */
   readonly reason?: string;
+  readonly about?: About;
 }
 
 export async function setTaskState(
@@ -153,7 +172,7 @@ export async function setTaskState(
       kind: 'task-state',
       createdBy: input.changedBy,
       detail: { to: input.state },
-      ...defined({ reason: input.reason }),
+      ...defined({ about: input.about, reason: input.reason }),
     },
     now,
   );
@@ -164,6 +183,7 @@ export interface Assignment {
   readonly changedBy: string;
   /** Why it was given or taken, D6.6. */
   readonly reason?: string;
+  readonly about?: About;
 }
 
 /** Gives the task to one more person or group if new and records it; answers whether it was new. */
@@ -261,6 +281,6 @@ function assigneeEvent(kind: string, taskId: ObjectId, input: Assignment): NewEv
     createdBy: input.changedBy,
     anchor: { kind: 'task', id: taskId },
     detail: { ...input.assignee },
-    ...defined({ reason: input.reason }),
+    ...defined({ about: input.about, reason: input.reason }),
   };
 }

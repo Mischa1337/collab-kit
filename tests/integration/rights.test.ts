@@ -1,5 +1,5 @@
 import jwt from 'jsonwebtoken';
-import { ObjectId } from 'mongodb';
+import { Binary, ObjectId } from 'mongodb';
 import pino from 'pino';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -7,8 +7,10 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createTokenCheck } from '../../src/auth/token.ts';
 import { applyDefinitions } from '../../src/db/apply.ts';
 import { connect, type Storage } from '../../src/db/client.ts';
+import { noteActor } from '../../src/db/collections/actors.ts';
+import type { EventRecord } from '../../src/db/collections/events.ts';
 import { collectionDefinitions } from '../../src/db/schemas.ts';
-import { createWorkpieceHub } from '../../src/realtime/hub.ts';
+import { createWorkpieceHub } from '../../src/realtime/index.ts';
 import { createApi } from '../../src/routes/index.ts';
 import { createServer } from '../../src/routes/server.ts';
 
@@ -96,6 +98,15 @@ function grant(
   by = dozent,
 ) {
   return request(server).put('/grants').set(as(by)).send({ groupId, scope, rights });
+}
+
+/** The traces at a thing, oldest first, read straight from the database. */
+function tracesAt(id: string): Promise<EventRecord[]> {
+  return storage.db
+    .collection<EventRecord>('events')
+    .find({ 'anchor.id': new ObjectId(id) })
+    .sort({ _id: 1 })
+    .toArray();
 }
 
 /** A class: a room with a workpiece, a team with alice, tutors who manage the room. */
@@ -293,6 +304,117 @@ describe('groups under grants', () => {
   });
 });
 
+describe('listing, renaming and deleting groups', () => {
+  it('lists the own groups and those a token holds see at, all of them at the top', async () => {
+    const team = await group(['alice']);
+    const leads = await group(['bob']);
+    const other = await group(['carol']);
+    await grant(leads, { kind: 'group', id: team }, ['see']);
+    const listed = async (token: string) =>
+      (await request(server).get('/groups').set(as(token))).body.map(
+        (entry: { _id: string }) => entry._id,
+      );
+
+    expect(await listed(alice)).toContain(team);
+    expect(await listed(alice)).not.toContain(leads);
+    expect(await listed(bob)).toEqual(expect.arrayContaining([team, leads]));
+    expect(await listed(bob)).not.toContain(other);
+    expect(await listed(dozent)).toEqual(expect.arrayContaining([team, leads, other]));
+  });
+
+  it('renames a group with manage at it and leaves a trace, but none for the same name', async () => {
+    const team = await group(['alice']);
+    const leads = await group(['bob']);
+    await grant(leads, { kind: 'group', id: team }, ['see', 'manage']);
+    const rename = (token: string) =>
+      request(server).patch(`/groups/${team}`).set(as(token)).send({ name: 'Team Nord' });
+
+    expect((await rename(tutor)).status).toBe(404);
+    expect((await rename(alice)).status).toBe(403);
+    const renamed = await rename(bob);
+    expect(renamed.status).toBe(200);
+    expect(renamed.body.name).toBe('Team Nord');
+    expect((await rename(bob)).status).toBe(200);
+
+    const traces = (await tracesAt(team)).filter((event) => event.kind === 'group-renamed');
+    expect(traces).toHaveLength(1);
+    expect(traces[0]).toMatchObject({ createdBy: 'bob', detail: { to: 'Team Nord' } });
+    const empty = await request(server).patch(`/groups/${team}`).set(as(bob)).send({});
+    expect(empty.status).toBe(400);
+  });
+
+  it('deletes a group with manage at it: its grants go, and those held at it', async () => {
+    const { roomId, team, at } = await course();
+    await grant(team, at, ['see']);
+    await grant(team, undefined, ['speak']);
+    const leads = await group(['bob']);
+    await grant(leads, { kind: 'group', id: team }, ['see', 'manage']);
+    const remove = (token: string) =>
+      request(server).delete(`/groups/${team}?reason=aufgeloest`).set(as(token));
+
+    expect((await remove(tutor)).status).toBe(404);
+    expect((await remove(alice)).status).toBe(403);
+    const removed = await remove(bob);
+    expect(removed.status).toBe(200);
+    expect(removed.body).toEqual({ deleted: true });
+    expect((await request(server).get(`/groups/${team}`).set(as(dozent))).status).toBe(404);
+
+    const id = new ObjectId(team);
+    const grants = storage.db.collection('grants');
+    expect(await grants.countDocuments({ $or: [{ groupId: id }, { 'scope.id': id }] })).toBe(0);
+    expect((await request(server).get(`/rooms/${roomId}`).set(as(alice))).status).toBe(404);
+
+    // The room tells that the group lost its rights there; the rest is at the group.
+    const atRoom = (await tracesAt(roomId)).filter((event) => event.kind === 'grant-removed');
+    expect(atRoom).toHaveLength(1);
+    expect(atRoom[0]).toMatchObject({ createdBy: 'bob', reason: 'aufgeloest' });
+    expect(String(atRoom[0]?.detail?.['groupId'])).toBe(team);
+    const atGroup = await tracesAt(team);
+    expect(atGroup.filter((event) => event.kind === 'grant-removed')).toHaveLength(2);
+    expect(atGroup.at(-1)).toMatchObject({
+      kind: 'group-deleted',
+      createdBy: 'bob',
+      detail: { name: 'Gruppe' },
+      reason: 'aufgeloest',
+    });
+  });
+});
+
+describe('names to actor keys', () => {
+  /** The names a token gets for these keys, ordered by key. */
+  async function names(token: string, ids: string) {
+    const answer = await request(server).get(`/actors?ids=${ids}`).set(as(token));
+    return (answer.body as { actorId: string }[]).toSorted((a, b) =>
+      a.actorId.localeCompare(b.actorId),
+    );
+  }
+
+  it('names oneself and the members of every group one sees, everyone at the top', async () => {
+    await Promise.all([noteActor(storage.db, 'ida', 'Ida'), noteActor(storage.db, 'kim', 'Kim')]);
+    await group(['alice', 'ida', 'jan']);
+    const kims = await group(['kim']);
+    const leads = await group(['bob']);
+    await grant(leads, { kind: 'group', id: kims }, ['see']);
+
+    // kim is in no group alice sees, ghost was never seen, and jan came without a name.
+    expect(await names(alice, 'ida, jan,kim,ghost')).toEqual([{ actorId: 'ida', label: 'Ida' }]);
+    expect(await names(bob, 'kim,ida')).toEqual([{ actorId: 'kim', label: 'Kim' }]);
+    expect(await names(dozent, 'kim,ida,ghost')).toEqual([
+      { actorId: 'ida', label: 'Ida' },
+      { actorId: 'kim', label: 'Kim' },
+    ]);
+  });
+
+  it('refuses keys it cannot read', async () => {
+    const ask = (query: string) => request(server).get(`/actors${query}`).set(as(alice));
+
+    expect((await ask('')).status).toBe(400);
+    expect((await ask('?ids=')).status).toBe(400);
+    expect((await ask('?ids=ida,,jan')).status).toBe(400);
+    expect((await ask('?ids=ida&ids=jan')).status).toBe(400);
+  });
+});
+
 describe('rooms and workpieces under grants', () => {
   it('shows and lists a room only to whoever holds see there or everywhere', async () => {
     const { roomId, team, at } = await course();
@@ -323,6 +445,35 @@ describe('rooms and workpieces under grants', () => {
     expect((await rename(alice)).status).toBe(403);
   });
 
+  it('lists the workpieces a token sees, at them or through a room, all of them at the top', async () => {
+    const { workpieceId, team, at } = await course();
+    await grant(team, at, ['see']);
+    const created = await request(server)
+      .post('/workpieces')
+      .set(as(dozent))
+      .send({ name: 'Einzeln', contract: {} });
+    const single = created.body._id as string;
+    const readers = await group(['bob']);
+    await grant(readers, { kind: 'workpiece', id: single }, ['see']);
+    // Folded once, so the list has a state it must leave out.
+    await storage.db.collection('workpieces').updateOne(
+      { _id: new ObjectId(single) },
+      {
+        $set: { fold: { state: new Binary(Buffer.from([0, 0])), upToUpdateId: new ObjectId() } },
+      },
+    );
+    const listed = async (token: string) =>
+      (await request(server).get('/workpieces').set(as(token))).body as { _id: string }[];
+    const ids = async (token: string) => (await listed(token)).map((entry) => entry._id);
+
+    expect(await ids(alice)).toContain(workpieceId);
+    expect(await ids(alice)).not.toContain(single);
+    expect(await ids(bob)).toContain(single);
+    expect(await ids(bob)).not.toContain(workpieceId);
+    expect(await ids(dozent)).toEqual(expect.arrayContaining([workpieceId, single]));
+    expect((await listed(bob)).find((entry) => entry._id === single)).not.toHaveProperty('fold');
+  });
+
   it('creates a workpiece in a room with manage there, outside every room with manage everywhere', async () => {
     const { roomId } = await course();
     const create = (token: string, more: object) =>
@@ -334,7 +485,7 @@ describe('rooms and workpieces under grants', () => {
     const made = await create(tutor, { roomId });
     expect(made.status).toBe(201);
     const inRoom = await request(server).get(`/rooms/${roomId}`).set(as(tutor));
-    expect(inRoom.body.references).toContainEqual({ kind: 'workpiece', id: made.body._id });
+    expect(inRoom.body.workpieces).toContain(made.body._id);
 
     expect((await create(tutor, {})).status).toBe(403);
     expect((await create(dozent, {})).status).toBe(201);
@@ -349,10 +500,7 @@ describe('rooms and workpieces under grants', () => {
     const review = await group(['bob']);
     await grant(review, { kind: 'room', id: second }, ['see', 'manage']);
     const push = () =>
-      request(server)
-        .post(`/rooms/${second}/references`)
-        .set(as(bob))
-        .send({ kind: 'workpiece', id: workpieceId });
+      request(server).post(`/rooms/${second}/workpieces`).set(as(bob)).send({ workpieceId });
 
     // Unseen it stays unknown; seen but not managed it is not bob's to hand on.
     expect((await push()).status).toBe(404);
@@ -361,18 +509,80 @@ describe('rooms and workpieces under grants', () => {
     await grant(review, { kind: 'workpiece', id: workpieceId }, ['see', 'manage']);
     expect((await push()).status).toBe(201);
   });
+});
 
-  it('keeps groups out of the references and points to the grants', async () => {
+describe('renaming and deleting rooms', () => {
+  it('renames a room with manage there and leaves a trace, but none for the same name', async () => {
+    const { roomId, team, at } = await course();
+    await grant(team, at, ['see']);
+    const rename = (token: string) =>
+      request(server)
+        .patch(`/rooms/${roomId}`)
+        .set(as(token))
+        .send({ name: 'Seminar', reason: 'neues Semester' });
+
+    expect((await rename(bob)).status).toBe(404);
+    expect((await rename(alice)).status).toBe(403);
+    const renamed = await rename(tutor);
+    expect(renamed.status).toBe(200);
+    expect(renamed.body.name).toBe('Seminar');
+    expect((await rename(tutor)).status).toBe(200);
+
+    const traces = (await tracesAt(roomId)).filter((event) => event.kind === 'room-renamed');
+    expect(traces).toHaveLength(1);
+    expect(traces[0]).toMatchObject({
+      createdBy: 'tutor',
+      detail: { to: 'Seminar' },
+      reason: 'neues Semester',
+    });
+  });
+
+  it('takes name and settings at once and refuses a change with neither', async () => {
     const roomId = await room();
-    const team = await group(['alice']);
+    const change = (sent: object) =>
+      request(server).patch(`/rooms/${roomId}`).set(as(dozent)).send(sent);
 
-    const pushed = await request(server)
-      .post(`/rooms/${roomId}/references`)
-      .set(as(dozent))
-      .send({ kind: 'group', id: team });
+    const both = await change({ name: 'Labor', settings: { mode: 'async' } });
+    expect(both.body).toMatchObject({ name: 'Labor', settings: { mode: 'async' } });
+    expect((await change({})).status).toBe(400);
+    expect((await change({ name: '  ' })).status).toBe(400);
+    expect((await change({ name: 7, settings: {} })).status).toBe(400);
+  });
 
-    expect(pushed.status).toBe(400);
-    expect(pushed.body.error).toContain('PUT /grants');
+  it('deletes a room with manage there: its grants go, its workpieces stay', async () => {
+    const { roomId, workpieceId, team, tutors, at } = await course();
+    await grant(team, at, ['see']);
+    const remove = (token: string) =>
+      request(server).delete(`/rooms/${roomId}?reason=aufgeraeumt`).set(as(token));
+
+    expect((await remove(bob)).status).toBe(404);
+    expect((await remove(alice)).status).toBe(403);
+    const removed = await remove(tutor);
+    expect(removed.status).toBe(200);
+    expect(removed.body).toEqual({ deleted: true });
+    expect((await remove(tutor)).status).toBe(404);
+
+    const grants = storage.db.collection('grants');
+    expect(await grants.countDocuments({ 'scope.id': new ObjectId(roomId) })).toBe(0);
+    // The workpiece lives on; alice saw it only through the room, the dozent sees it from above.
+    const show = (token: string) =>
+      request(server).get(`/workpieces/${workpieceId}`).set(as(token));
+    expect((await show(dozent)).status).toBe(200);
+    expect((await show(alice)).status).toBe(404);
+
+    // A trace for each grant that went, then one for the room, all with the why.
+    const traces = await tracesAt(roomId);
+    const gone = traces.filter((event) => event.kind === 'grant-removed');
+    expect(gone.map((event) => String(event.detail?.['groupId'])).toSorted()).toEqual(
+      [team, tutors].toSorted(),
+    );
+    expect(gone.every((event) => event.reason === 'aufgeraeumt')).toBe(true);
+    expect(traces.at(-1)).toMatchObject({
+      kind: 'room-deleted',
+      createdBy: 'tutor',
+      detail: { name: 'Übung' },
+      reason: 'aufgeraeumt',
+    });
   });
 });
 
@@ -475,17 +685,6 @@ describe('tasks and comments under grants', () => {
     expect((await mark(alice, id, 'accepted')).status).toBe(403);
     expect((await mark(tutor, id, 'accepted')).status).toBe(403);
     expect((await mark(dozent, id, 'accepted')).status).toBe(200);
-  });
-
-  it('keeps a kind of the tool, which no grant reaches, to whoever may speak everywhere', async () => {
-    const say = (token: string) =>
-      request(server)
-        .post('/comments')
-        .set(as(token))
-        .send({ kind: 'comment', anchor: { kind: 'board', id: 'b-1' }, body: {} });
-
-    expect((await say(alice)).status).toBe(403);
-    expect((await say(dozent)).status).toBe(201);
   });
 });
 

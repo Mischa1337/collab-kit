@@ -11,7 +11,7 @@ import {
   encodeSyncUpdate,
   handleMessage,
   MessageRefused,
-} from '../../src/realtime/protocol.ts';
+} from '../../src/realtime/connection/protocol.ts';
 
 // Every Awareness runs a timer until it is destroyed.
 const awarenesses: Awareness[] = [];
@@ -69,18 +69,25 @@ function stepOneOf(doc: Y.Doc): Uint8Array {
   return encoding.toUint8Array(encoder);
 }
 
-/** One awareness entry as a client sends it: which client, its clock, and its state. */
-function presence(clientId: number, clock: number, state: unknown): Uint8Array {
+/** Awareness entries in one message as a client sends them: which client, its clock, its state. */
+function presences(...entries: [clientId: number, clock: number, state: unknown][]): Uint8Array {
   const update = encoding.createEncoder();
-  encoding.writeVarUint(update, 1);
-  encoding.writeVarUint(update, clientId);
-  encoding.writeVarUint(update, clock);
-  encoding.writeVarString(update, JSON.stringify(state));
+  encoding.writeVarUint(update, entries.length);
+  for (const [clientId, clock, state] of entries) {
+    encoding.writeVarUint(update, clientId);
+    encoding.writeVarUint(update, clock);
+    encoding.writeVarString(update, JSON.stringify(state));
+  }
 
   const message = encoding.createEncoder();
   encoding.writeVarUint(message, 1);
   encoding.writeVarUint8Array(message, encoding.toUint8Array(update));
   return encoding.toUint8Array(message);
+}
+
+/** One awareness entry as a client sends it. */
+function presence(clientId: number, clock: number, state: unknown): Uint8Array {
+  return presences([clientId, clock, state]);
 }
 
 /** The close code a refusal carries, or undefined when nothing was refused. */
@@ -208,6 +215,35 @@ describe('what the service takes from a reader', () => {
     expect(refusalOf(() => handleMessage(context, stepTwoOf(deleting, doc)))).toBe(1008);
     expect(doc.getText('t').toString()).toBe('Entwurf');
   });
+
+  it('passes over format marks the copy of a reader tidied up, and applies none of it', () => {
+    const { doc, context } = reader();
+    // Made apart from each other: c made bold, and c deleted.
+    const start = written('abcdef');
+    const bolding = copyOf(start);
+    bolding.getText('t').format(2, 1, { bold: true });
+    const deleting = copyOf(start);
+    deleting.getText('t').delete(2, 1);
+
+    // The reader's copy, knowing it as a text, deletes the marks around nothing by itself.
+    const tidied: Uint8Array[] = [];
+    const copy = new Y.Doc();
+    copy.getText('t');
+    copy.on('update', (update: Uint8Array, origin: unknown) => {
+      if (origin === null) {
+        tidied.push(update);
+      }
+    });
+    for (const change of [start, bolding, deleting]) {
+      Y.applyUpdate(doc, Y.encodeStateAsUpdate(change));
+      Y.applyUpdate(copy, Y.encodeStateAsUpdate(change), 'service');
+    }
+    const before = Y.encodeStateAsUpdate(doc);
+
+    expect(tidied).toHaveLength(1);
+    expect(handleMessage(context, encodeSyncUpdate(tidied[0]!))).toBeUndefined();
+    expect(Y.encodeStateAsUpdate(doc)).toEqual(before);
+  });
 });
 
 describe('awareness', () => {
@@ -219,11 +255,22 @@ describe('awareness', () => {
     expect(awareness.getStates().get(7)).toEqual({ name: 'alice' });
   });
 
-  it('refuses a presence of somebody else with 1008 before applying it', () => {
+  it('skips a presence of somebody else without refusing it and leaves it as it was', () => {
+    const { awareness, context } = service((clientId) => clientId !== 7);
+    handleMessage({ ...context, mayAnnounce: () => true }, presence(7, 1, { name: 'bob' }));
+
+    // A clock far ahead would lock bob out of that entry, were it taken.
+    expect(() => handleMessage(context, presence(7, 99, { name: 'mallory' }))).not.toThrow();
+    expect(awareness.getStates().get(7)).toEqual({ name: 'bob' });
+  });
+
+  it('takes the own entries of a message and skips those of somebody else', () => {
     const { awareness, context } = service((clientId) => clientId !== 7);
 
-    expect(refusalOf(() => handleMessage(context, presence(7, 1, { name: 'mallory' })))).toBe(1008);
+    handleMessage(context, presences([7, 1, { name: 'mallory' }], [8, 1, { name: 'alice' }]));
+
     expect(awareness.getStates().has(7)).toBe(false);
+    expect(awareness.getStates().get(8)).toEqual({ name: 'alice' });
   });
 
   it('refuses a presence larger than allowed with 1009', () => {

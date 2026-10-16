@@ -9,6 +9,7 @@ import * as Y from 'yjs';
  * tool that docks later and proves the service speaks the standard exchange.
  */
 const MESSAGE_SYNC = 0;
+const MESSAGE_EVENT = 101;
 const REMOTE = Symbol('remote');
 
 export interface TestClient {
@@ -17,6 +18,8 @@ export interface TestClient {
   readonly synced: Promise<void>;
   /** Resolves with the code the connection was closed with, by either side. */
   readonly closed: Promise<number>;
+  /** The events the service sent as message 101, in the order they came. */
+  readonly events: Record<string, unknown>[];
   close(): Promise<void>;
 }
 
@@ -52,11 +55,19 @@ export function connectClient(
     send(encoding.toUint8Array(encoder));
   });
 
+  const events: Record<string, unknown>[] = [];
+
   socket.on('message', (data: Buffer) => {
     const decoder = decoding.createDecoder(new Uint8Array(data));
     const encoder = encoding.createEncoder();
+    const message = decoding.readVarUint(decoder);
 
-    if (decoding.readVarUint(decoder) !== MESSAGE_SYNC) {
+    // An event comes as JSON, only to a client that asked for it.
+    if (message === MESSAGE_EVENT) {
+      events.push(JSON.parse(decoding.readVarString(decoder)) as Record<string, unknown>);
+      return;
+    }
+    if (message !== MESSAGE_SYNC) {
       return;
     }
 
@@ -82,6 +93,7 @@ export function connectClient(
         doc,
         synced,
         closed,
+        events,
         close: () =>
           new Promise<void>((done) => {
             socket.on('close', () => done());

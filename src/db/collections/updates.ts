@@ -1,4 +1,4 @@
-import { Binary, ObjectId, type Db, type Filter } from 'mongodb';
+import { Binary, ObjectId, type Db, type Filter, type FindCursor } from 'mongodb';
 
 import type { CollectionDefinition } from '../apply.ts';
 
@@ -7,6 +7,10 @@ export interface UpdateRecord {
   _id: ObjectId;
   workpieceId: ObjectId;
   bytes: Binary;
+  /** The Yjs clients with new pieces in it; the first change with one names whose they are. */
+  clients: number[];
+  /** The Yjs clients whose pieces it newly deleted, so who deleted a piece can be found. */
+  deletes?: number[];
   createdBy: string;
   createdAt: Date;
 }
@@ -15,20 +19,37 @@ export const updatesDefinition: CollectionDefinition = {
   name: 'updates',
   schema: {
     bsonType: 'object',
-    required: ['workpieceId', 'bytes', 'createdBy', 'createdAt'],
+    required: ['workpieceId', 'bytes', 'clients', 'createdBy', 'createdAt'],
     properties: {
       workpieceId: { bsonType: 'objectId' },
       bytes: { bsonType: 'binData', description: 'the Yjs update, opaque to the service' },
+      clients: {
+        bsonType: 'array',
+        // Yjs client ids reach 2^32, beyond what an int holds.
+        items: { bsonType: 'number' },
+        description: 'Yjs clients with new pieces in this change',
+      },
+      deletes: {
+        bsonType: 'array',
+        items: { bsonType: 'number' },
+        description: 'Yjs clients whose pieces this change newly deleted, absent if none',
+      },
       createdBy: { bsonType: 'string', description: 'D6.19, author on every single change' },
       createdAt: { bsonType: 'date' },
     },
   },
-  indexes: [{ key: { workpieceId: 1, _id: 1 }, name: 'workpiece_stream' }],
+  indexes: [
+    { key: { workpieceId: 1, _id: 1 }, name: 'workpiece_stream' },
+    { key: { workpieceId: 1, clients: 1, _id: 1 }, name: 'workpiece_clients' },
+    { key: { workpieceId: 1, deletes: 1, _id: 1 }, name: 'workpiece_deletes' },
+  ],
 };
 
 export interface NewUpdate {
   readonly workpieceId: ObjectId;
   readonly bytes: Uint8Array;
+  readonly clients: readonly number[];
+  readonly deletes?: readonly number[];
   readonly createdBy: string;
 }
 
@@ -41,12 +62,30 @@ export async function appendUpdate(
     _id: new ObjectId(),
     workpieceId: input.workpieceId,
     bytes: new Binary(input.bytes),
+    clients: [...input.clients],
+    ...(input.deletes === undefined || input.deletes.length === 0
+      ? {}
+      : { deletes: [...input.deletes] }),
     createdBy: input.createdBy,
     createdAt: now,
   };
 
   await db.collection<UpdateRecord>('updates').insertOne(record);
   return record;
+}
+
+/** Copies changes to another workpiece in their order, each under its author and time as before. */
+export async function copyUpdates(
+  db: Db,
+  rows: readonly UpdateRecord[],
+  workpieceId: ObjectId,
+): Promise<UpdateRecord[]> {
+  // New ids, made one after another, keep the order; everything else stays as it was.
+  const copies = rows.map((row) => ({ ...row, _id: new ObjectId(), workpieceId }));
+  if (copies.length > 0) {
+    await db.collection<UpdateRecord>('updates').insertMany(copies);
+  }
+  return copies;
 }
 
 /** Changes after the given one (all without it), oldest first; _id keeps order with one writer. */
@@ -86,6 +125,45 @@ export async function isUpdateOf(
     .findOne({ _id: updateId, workpieceId }, { projection: { _id: 1 } });
 
   return found !== null;
+}
+
+/** Whose pieces of these Yjs clients are: the author of the first change that brought one. */
+export async function creatorsOf(
+  db: Db,
+  workpieceId: ObjectId,
+  clientIds: readonly number[],
+): Promise<Map<number, string>> {
+  // One lookup per client, each answered by the index alone.
+  const found = await Promise.all(
+    clientIds.map(async (client) => {
+      const first = await db
+        .collection<UpdateRecord>('updates')
+        .findOne(
+          { workpieceId, clients: client },
+          { sort: { _id: 1 }, projection: { createdBy: 1 } },
+        );
+      return [client, first?.createdBy] as const;
+    }),
+  );
+
+  // A client no change brought stays out, so the caller sees whose author is unknown.
+  return new Map(
+    found.filter((entry): entry is readonly [number, string] => entry[1] !== undefined),
+  );
+}
+
+/** The changes that newly deleted pieces of this Yjs client, oldest first, bytes and author. */
+export function readUpdatesDeleting(
+  db: Db,
+  workpieceId: ObjectId,
+  client: number,
+): FindCursor<Pick<UpdateRecord, 'bytes' | 'createdBy'>> {
+  return db
+    .collection<UpdateRecord>('updates')
+    .find<Pick<UpdateRecord, 'bytes' | 'createdBy'>>(
+      { workpieceId, deletes: client },
+      { sort: { _id: 1 }, projection: { _id: 0, bytes: 1, createdBy: 1 } },
+    );
 }
 
 /** One change as the service tells of it: who, when and how many bytes, never the bytes. */

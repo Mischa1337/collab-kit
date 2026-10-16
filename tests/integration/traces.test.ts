@@ -17,8 +17,13 @@ import { setGrant } from '../../src/db/collections/grants.ts';
 import { addToRoom, createRoom } from '../../src/db/collections/rooms.ts';
 import { collectionDefinitions } from '../../src/db/schemas.ts';
 import { readUpdatesSince } from '../../src/db/collections/updates.ts';
-import { createWorkpieceHub, type Connection, type WorkpieceHub } from '../../src/realtime/hub.ts';
-import { attachGateway, type Gateway } from '../../src/realtime/gateway.ts';
+import {
+  createWorkpieceHub,
+  attachGateway,
+  type Connection,
+  type WorkpieceHub,
+  type Gateway,
+} from '../../src/realtime/index.ts';
 import { createServer } from '../../src/routes/server.ts';
 import { connectClient, waitFor } from './yjs-client.ts';
 
@@ -45,11 +50,7 @@ async function freshWorkpiece(): Promise<ObjectId> {
     createdBy: 'alice',
     members: ['alice', 'bob', 'carol'],
   });
-  await addToRoom(storage.db, room._id, {
-    kind: 'workpiece',
-    id: workpiece._id,
-    addedBy: 'alice',
-  });
+  await addToRoom(storage.db, room._id, { workpieceId: workpiece._id, addedBy: 'alice' });
   // In through a grant at the room, as a group in it no longer opens anything.
   await setGrant(storage.db, {
     groupId: group._id,
@@ -72,11 +73,12 @@ const open = (workpieceId: ObjectId, actor: string) =>
 /** A connection without a socket, to drive the hub directly. */
 const quiet = (actorId: string): Connection => ({
   actor: { actorId },
+  wantsEvents: false,
   send: () => {},
   close: () => {},
 });
 
-const on = (workpieceId: ObjectId) => ({ kind: 'workpiece', id: workpieceId });
+const on = (workpieceId: ObjectId) => ({ kind: 'workpiece' as const, id: workpieceId });
 
 const traced = (workpieceId: ObjectId, kind: string, createdBy: string) =>
   waitFor(
@@ -132,32 +134,10 @@ describe('presence', () => {
     const actors = storage.db.collection<ActorRecord>('actors');
     expect(await waitFor(async () => (await actors.findOne({ _id: 'alice' })) !== null)).toBe(true);
 
-    const stored = await actors.findOne({ _id: 'alice' });
-    expect(stored).toMatchObject({ _id: 'alice', label: 'alice' });
-    expect(stored?.lastSeenAt).toBeInstanceOf(Date);
+    // Only the name: when somebody was last there is read from the events of a place.
+    expect(await actors.findOne({ _id: 'alice' })).toEqual({ _id: 'alice', label: 'alice' });
 
     await alice.close();
-  });
-
-  it('moves lastSeenAt again on the way out', async () => {
-    const workpieceId = await freshWorkpiece();
-    const carol = await open(workpieceId, 'carol');
-    await carol.synced;
-
-    const actors = storage.db.collection<ActorRecord>('actors');
-    expect(await waitFor(async () => (await actors.findOne({ _id: 'carol' })) !== null)).toBe(true);
-    const arrived = (await actors.findOne({ _id: 'carol' }))?.lastSeenAt;
-
-    // Lets the clock move on, so the second timestamp can be told apart from the first.
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    await carol.close();
-
-    expect(
-      await waitFor(async () => {
-        const left = (await actors.findOne({ _id: 'carol' }))?.lastSeenAt;
-        return arrived !== undefined && left !== undefined && left > arrived;
-      }),
-    ).toBe(true);
   });
 
   it('marks where in the stream somebody left', async () => {

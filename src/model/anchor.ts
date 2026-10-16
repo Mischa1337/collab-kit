@@ -1,11 +1,21 @@
-import type { Document } from 'mongodb';
+import type { Document, ObjectId } from 'mongodb';
 
 import { matchOptional } from '../utils/optional.ts';
 
-/** Points at a whole thing. Kind is free, the service resolves only its own kinds. */
+/** The kinds the service keeps itself; only there can it decide who sees and does what. */
+export const REFERENCE_KINDS = ['room', 'workpiece', 'group', 'comment', 'task'] as const;
+
+export type ReferenceKind = (typeof REFERENCE_KINDS)[number];
+
+/** Points at a whole thing of the service, so a rule on who sees it always applies. */
 export interface Reference {
-  kind: string;
-  id: unknown;
+  kind: ReferenceKind;
+  id: ObjectId;
+}
+
+/** Whether a value names one of the kinds the service keeps. */
+export function isReferenceKind(kind: unknown): kind is ReferenceKind {
+  return (REFERENCE_KINDS as readonly unknown[]).includes(kind);
 }
 
 /** A reference, optionally narrowed to one unit inside the thing as the tool defines it. */
@@ -16,8 +26,8 @@ export interface Anchor extends Reference {
 
 /** Database schema of the fields of a Reference, for schemas that embed one. */
 export const referenceProperties = {
-  kind: { bsonType: 'string' },
-  id: {},
+  kind: { enum: [...REFERENCE_KINDS] },
+  id: { bsonType: 'objectId' },
 } satisfies Document;
 
 /** Database schema of an Anchor, for collections that embed one. */
@@ -35,8 +45,8 @@ export const WHOLE = null;
 
 /** A search for anchors on one thing, optionally narrowed by unit. */
 export interface AnchorQuery {
-  readonly kind: string;
-  readonly id: unknown;
+  readonly kind: ReferenceKind;
+  readonly id: ObjectId;
   /** Omitted: the thing and all its units. WHOLE: the thing only. A key: that unit. */
   readonly unit?: string | typeof WHOLE;
 }

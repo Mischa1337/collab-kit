@@ -9,6 +9,7 @@ import { createTokenCheck } from '../../src/auth/token.ts';
 import { applyDefinitions } from '../../src/db/apply.ts';
 import { connect, type Storage } from '../../src/db/client.ts';
 import { createComment } from '../../src/db/collections/comments.ts';
+import { recordEvent } from '../../src/db/collections/events.ts';
 import { setGrant } from '../../src/db/collections/grants.ts';
 import { createGroup } from '../../src/db/collections/groups.ts';
 import { createRoom } from '../../src/db/collections/rooms.ts';
@@ -16,7 +17,7 @@ import { createTask, type NewTask } from '../../src/db/collections/tasks.ts';
 import { appendUpdate } from '../../src/db/collections/updates.ts';
 import { foldState } from '../../src/db/collections/workpieces.ts';
 import { collectionDefinitions } from '../../src/db/schemas.ts';
-import { createWorkpieceHub } from '../../src/realtime/hub.ts';
+import { createWorkpieceHub } from '../../src/realtime/index.ts';
 import { createApi } from '../../src/routes/index.ts';
 import { createServer } from '../../src/routes/server.ts';
 
@@ -80,10 +81,10 @@ async function setUp(): Promise<{ roomId: string; groupId: string; workpieceId: 
     .send({ name: 'Entwurf', contract: { kind: 'sql-skript' } });
 
   const roomId = room.body._id as string;
-  const into = (entry: { kind: string; id: string }) =>
-    request(server).post(`/rooms/${roomId}/references`).set(as(alice)).send(entry);
-
-  await into({ kind: 'workpiece', id: workpiece.body._id as string });
+  await request(server)
+    .post(`/rooms/${roomId}/workpieces`)
+    .set(as(alice))
+    .send({ workpieceId: workpiece.body._id as string });
   // The group may into the room through a grant, as it did before through lying in it.
   await request(server)
     .put('/grants')
@@ -130,7 +131,7 @@ describe('setting a room up', () => {
     const room = await request(server).get(`/rooms/${roomId}`).set(as(bob));
     expect(room.status).toBe(200);
     // Only the workpiece lies in the room, the group may into it through a grant.
-    expect(room.body.references).toHaveLength(1);
+    expect(room.body.workpieces).toHaveLength(1);
 
     // bob is in a group with see at the room, so the workpiece is his to see.
     expect((await request(server).get(`/workpieces/${workpieceId}`).set(as(bob))).status).toBe(200);
@@ -156,18 +157,37 @@ describe('setting a room up', () => {
     expect((await request(server).post('/rooms').set(as(alice)).send({})).status).toBe(400);
   });
 
-  it('takes a reference out again, named in the query', async () => {
-    const { roomId, groupId } = await setUp();
-    const unnamed = await request(server).delete(`/rooms/${roomId}/references`).set(as(alice));
-    expect(unnamed.status).toBe(400);
+  it('takes a workpiece out again, named in the path', async () => {
+    const { roomId, workpieceId } = await setUp();
+    const malformed = await request(server)
+      .delete(`/rooms/${roomId}/workpieces/nonsense`)
+      .set(as(alice));
+    expect(malformed.status).toBe(400);
 
     const removed = await request(server)
-      .delete(`/rooms/${roomId}/references`)
-      .query({ kind: 'group', id: groupId })
+      .delete(`/rooms/${roomId}/workpieces/${workpieceId}`)
       .set(as(alice));
 
     expect(removed.status).toBe(200);
-    expect(removed.body.references).toEqual([{ kind: 'workpiece', id: expect.any(String) }]);
+    expect(removed.body.workpieces).toEqual([]);
+  });
+
+  it('puts a workpiece in once, the second time changes nothing', async () => {
+    const { roomId } = await setUp();
+    const workpiece = await request(server)
+      .post('/workpieces')
+      .set(as(alice))
+      .send({ name: 'Zweites' });
+    const put = () =>
+      request(server)
+        .post(`/rooms/${roomId}/workpieces`)
+        .set(as(alice))
+        .send({ workpieceId: workpiece.body._id as string });
+
+    expect((await put()).status).toBe(201);
+    const again = await put();
+    expect(again.status).toBe(200);
+    expect(again.body.workpieces).toHaveLength(2);
   });
 
   it('answers a malformed key with 400 and an unknown one with 404', async () => {
@@ -183,9 +203,9 @@ describe('who may change what', () => {
     const { roomId } = await setUp();
 
     const pushed = await request(server)
-      .post(`/rooms/${roomId}/references`)
+      .post(`/rooms/${roomId}/workpieces`)
       .set(as(bob))
-      .send({ kind: 'group', id: '000000000000000000000000' });
+      .send({ workpieceId: '000000000000000000000000' });
 
     expect(pushed.status).toBe(403);
   });
@@ -208,9 +228,9 @@ describe('who may change what', () => {
     });
 
     const pushed = await request(server)
-      .post(`/rooms/${room._id.toHexString()}/references`)
+      .post(`/rooms/${room._id.toHexString()}/workpieces`)
       .set(as(carol))
-      .send({ kind: 'workpiece', id: workpieceId });
+      .send({ workpieceId });
 
     expect(pushed.status).toBe(404);
   });
@@ -220,9 +240,9 @@ describe('who may change what', () => {
     const room = await createRoom(storage.db, { name: 'Eigen', createdBy: 'alice' });
     const statuses = async (id: unknown) => {
       const pushed = await request(server)
-        .post(`/rooms/${room._id.toHexString()}/references`)
+        .post(`/rooms/${room._id.toHexString()}/workpieces`)
         .set(as(alice))
-        .send({ kind: 'workpiece', id });
+        .send({ workpieceId: id });
       const traced = await request(server)
         .post('/events')
         .set(as(alice))
@@ -388,7 +408,7 @@ describe('the room as a channel', () => {
     expect(events.body.map((event: { kind: string }) => event.kind)).toContain('note');
   });
 
-  it('keeps out a trace of a made-up kind that borrows the id of the room', async () => {
+  it('refuses a trace of a made-up kind that borrows the id of the room', async () => {
     const { roomId } = await setUp();
     const carol = tokenFor('carol');
 
@@ -396,11 +416,8 @@ describe('the room as a channel', () => {
       .post('/events')
       .set(as(carol))
       .send({ kind: 'planted', anchor: { kind: 'made-up', id: roomId } });
-    expect(planted.status).toBe(201);
 
-    const events = await request(server).get(`/rooms/${roomId}/events`).set(as(bob));
-
-    expect(events.body.map((event: { kind: string }) => event.kind)).not.toContain('planted');
+    expect(planted.status).toBe(400);
   });
 
   it('shows who joined a group of the room only to whoever may see that group', async () => {
@@ -473,8 +490,151 @@ describe('the room as a channel', () => {
   });
 });
 
-/** An anchor of a kind the tool made up, so nothing but what a test reports sits at it. */
-const board = () => ({ kind: 'board', id: `b-${new ObjectId().toHexString()}` });
+/** A task as POST /tasks takes it, on an anchor, under a parent or on nothing. */
+const plainTask = (anchor?: object, parentId?: string) => ({
+  kind: 'task',
+  title: 'Entwurf',
+  state: 'offen',
+  ...(anchor === undefined ? {} : { anchor }),
+  ...(parentId === undefined ? {} : { parentId }),
+});
+
+describe('comments and tasks in the room stream', () => {
+  type Trace = { kind: string; createdBy: string; anchor: { id: string }; about?: object };
+  const send = (token: string, path: string, body: object) =>
+    request(server).post(path).set(as(token)).send(body);
+  const change = (token: string, path: string, body: object) =>
+    request(server).patch(path).set(as(token)).send(body);
+  /** The kinds the room shows at one comment or task, oldest first. */
+  const kindsAt = async (roomId: string, token: string, id: string) => {
+    const events = await request(server).get(`/rooms/${roomId}/events`).set(as(token));
+    return (events.body as Trace[])
+      .filter((event) => event.anchor.id === id)
+      .map((event) => event.kind);
+  };
+
+  it('shows a comment and its answer as they are said, and the state they move to', async () => {
+    const { roomId, workpieceId } = await setUp();
+    const anchor = onWorkpiece(workpieceId, 'statement-3');
+    const comment = await send(alice, '/comments', { kind: 'feedback', anchor, body: {} });
+    const id = comment.body._id as string;
+    const answer = await send(bob, '/comments', {
+      kind: 'comment',
+      anchor: onWorkpiece(workpieceId),
+      body: {},
+      parentId: id,
+    });
+    await change(bob, `/comments/${id}`, { state: 'gelesen' });
+
+    expect(await kindsAt(roomId, bob, id)).toEqual(['comment-created', 'comment-state']);
+    expect(await kindsAt(roomId, bob, answer.body._id as string)).toEqual(['comment-created']);
+
+    const events = await request(server).get(`/rooms/${roomId}/events`).set(as(bob));
+    const created = (events.body as Trace[]).find((event) => event.anchor.id === id);
+    expect(created).toMatchObject({
+      createdBy: 'alice',
+      about: { kind: 'workpiece', id: workpieceId },
+    });
+  });
+
+  it('shows a task as it is planned, moved and given', async () => {
+    const { roomId, workpieceId } = await setUp();
+    const task = await send(alice, '/tasks', plainTask(onWorkpiece(workpieceId)));
+    const id = task.body._id as string;
+    await change(bob, `/tasks/${id}`, { state: 'in Arbeit' });
+    await send(bob, `/tasks/${id}/assignees`, { kind: 'actor', id: 'carol' });
+
+    expect(await kindsAt(roomId, bob, id)).toEqual([
+      'task-created',
+      'task-state',
+      'assignee-added',
+    ]);
+  });
+
+  it('shows a subtask without an anchor of its own through its parent', async () => {
+    const { roomId, workpieceId } = await setUp();
+    const top = await send(alice, '/tasks', plainTask(onWorkpiece(workpieceId)));
+    const child = await send(alice, '/tasks', plainTask(undefined, top.body._id as string));
+
+    expect(await kindsAt(roomId, bob, child.body._id as string)).toEqual(['task-created']);
+  });
+
+  it('shows a comment on a task through what the task hangs on', async () => {
+    const { roomId, workpieceId } = await setUp();
+    const task = await send(alice, '/tasks', plainTask(onWorkpiece(workpieceId)));
+    const anchor = { kind: 'task', id: task.body._id as string };
+    const comment = await send(bob, '/comments', { kind: 'comment', anchor, body: {} });
+
+    expect(await kindsAt(roomId, bob, comment.body._id as string)).toEqual(['comment-created']);
+  });
+
+  it('keeps a task that hangs on nothing out of every room', async () => {
+    const { roomId } = await setUp();
+    const task = await send(alice, '/tasks', plainTask());
+    const id = task.body._id as string;
+
+    expect(await kindsAt(roomId, alice, id)).toEqual([]);
+    const traces = await request(server)
+      .get('/events')
+      .query({ anchorKind: 'task', anchorId: id })
+      .set(as(alice));
+    expect(traces.body).toEqual([expect.objectContaining({ kind: 'task-created' })]);
+    expect(traces.body[0]).not.toHaveProperty('about');
+  });
+
+  it('files a report at a comment under its own room, whatever about the body names', async () => {
+    const { roomId, workpieceId } = await setUp();
+    const other = await setUp();
+    const comment = await send(alice, '/comments', {
+      kind: 'comment',
+      anchor: onWorkpiece(workpieceId),
+      body: {},
+    });
+    const id = comment.body._id as string;
+
+    const read = await send(bob, '/events', {
+      kind: 'read',
+      anchor: { kind: 'comment', id },
+      about: { kind: 'workpiece', id: other.workpieceId },
+    });
+    expect(read.body.about).toEqual({ kind: 'workpiece', id: workpieceId });
+
+    expect(await kindsAt(roomId, bob, id)).toEqual(['comment-created', 'read']);
+    expect(await kindsAt(other.roomId, bob, id)).toEqual([]);
+  });
+
+  it('keeps what hangs on a group of the room from whoever may not see that group', async () => {
+    const { roomId, groupId } = await setUp();
+    const carol = tokenFor('carol');
+    const others = await send(alice, '/groups', { name: 'Andere', members: ['carol'] });
+    await request(server)
+      .put('/grants')
+      .set(as(alice))
+      .send({
+        groupId: others.body._id as string,
+        scope: { kind: 'room', id: roomId },
+        rights: ['see'],
+      });
+    const comment = await send(alice, '/comments', {
+      kind: 'comment',
+      anchor: { kind: 'group', id: groupId },
+      body: {},
+    });
+    const id = comment.body._id as string;
+
+    expect(await kindsAt(roomId, bob, id)).toEqual(['comment-created']);
+    expect(await kindsAt(roomId, carol, id)).toEqual([]);
+  });
+});
+
+/** A workpiece of its own, so nothing but what a test reports sits at it. */
+async function untouched(): Promise<{ kind: string; id: string }> {
+  const workpiece = await request(server)
+    .post('/workpieces')
+    .set(as(alice))
+    .send({ name: 'Tafel' });
+  return { kind: 'workpiece', id: workpiece.body._id as string };
+}
 
 describe('traces and marks', () => {
   const readAt = (anchor: { kind: string; id: string }, query: Record<string, string>) =>
@@ -492,12 +652,18 @@ describe('traces and marks', () => {
         .send({ kind, anchor: { kind: 'group', id: groupId }, detail: { actorId: 'mallory' } });
 
     expect((await report('member-added')).status).toBe(400);
+    expect((await report('workpiece-added')).status).toBe(400);
     expect((await report('checkpoint')).status).toBe(400);
+    expect((await report('comment-created')).status).toBe(400);
+    expect((await report('task-created')).status).toBe(400);
+    expect((await report('work-removed')).status).toBe(400);
+    expect((await report('work-replaced')).status).toBe(400);
+    expect((await report('work-lost')).status).toBe(400);
     expect((await report('visit')).status).toBe(201);
   });
 
   it('pages back through a history with before, and cuts a window with both', async () => {
-    const anchor = board();
+    const anchor = await untouched();
     const report = async (kind: string) => {
       const event = await request(server).post('/events').set(as(alice)).send({ kind, anchor });
       return event.body._id as string;
@@ -514,27 +680,69 @@ describe('traces and marks', () => {
   });
 
   it('refuses a cut it cannot read instead of turning the stream around', async () => {
-    const anchor = board();
+    const anchor = await untouched();
 
     expect((await readAt(anchor, { since: 'undefined' })).status).toBe(400);
     expect((await readAt(anchor, { before: 'undefined' })).status).toBe(400);
   });
 
   it('filters by an actor key exactly as the token gave it', async () => {
-    const anchor = board();
+    const anchor = await untouched();
     await request(server)
       .post('/events')
-      .set(as(tokenFor('u-17 ')))
+      .set(as(tokenFor('u-17 ', { globalRole: 'ADMIN' })))
       .send({ kind: 'visit', anchor });
 
     expect((await readAt(anchor, { createdBy: 'u-17 ' })).body).toHaveLength(1);
   });
 });
 
+describe('what concerns me', () => {
+  /** Notes that alice removed some of bob's work at this workpiece. */
+  const removedFromBob = async (workpieceId: string) =>
+    (
+      await recordEvent(storage.db, {
+        kind: 'work-removed',
+        createdBy: 'alice',
+        anchor: { kind: 'workpiece', id: new ObjectId(workpieceId) },
+        affects: ['bob'],
+      })
+    )._id.toHexString();
+  const mine = async (token: string, query: Record<string, string> = {}): Promise<string[]> =>
+    (await request(server).get('/me/events').query(query).set(as(token))).body.map(
+      (event: { _id: string }) => event._id,
+    );
+
+  it('shows bob what concerns him, carol nothing, and bob nothing he may no longer see', async () => {
+    const { groupId, workpieceId } = await setUp();
+    const removed = await removedFromBob(workpieceId);
+
+    expect(await mine(bob)).toContain(removed);
+    expect(await mine(tokenFor('carol'))).not.toContain(removed);
+
+    await request(server).delete(`/groups/${groupId}/members/bob`).set(as(alice));
+    expect(await mine(bob)).not.toContain(removed);
+  });
+
+  it('reads on past what bob may not see, so a page does not end early', async () => {
+    const { workpieceId } = await setUp();
+    const hidden = await untouched();
+    const first = await removedFromBob(workpieceId);
+    await removedFromBob(hidden.id);
+    await removedFromBob(hidden.id);
+    await removedFromBob(hidden.id);
+    const last = await removedFromBob(workpieceId);
+
+    expect(await mine(bob, { limit: '1' })).toEqual([last]);
+    expect(await mine(bob, { before: last, limit: '1' })).toEqual([first]);
+    expect(await mine(bob, { since: first, limit: '1' })).toEqual([last]);
+  });
+});
+
 describe('a value that was sent but cannot be used', () => {
   it('is refused instead of dropped unnoticed, in queries and in bodies', async () => {
     const { roomId, workpieceId } = await setUp();
-    const anchor = board();
+    const anchor = onWorkpiece(workpieceId);
     const read = (path: string, query: Record<string, string>) =>
       request(server).get(path).query(query).set(as(bob));
     const send = (path: string, body: object) => request(server).post(path).set(as(bob)).send(body);
@@ -545,6 +753,7 @@ describe('a value that was sent but cannot be used', () => {
     expect((await read(`/workpieces/${workpieceId}/updates`, { since: 'x' })).status).toBe(400);
     expect((await read('/events', { ...at, scope: 'wohle' })).status).toBe(400);
     expect((await read('/events', { ...at, limit: 'viele' })).status).toBe(400);
+    expect((await read('/me/events', { before: 'gestern' })).status).toBe(400);
     expect((await send('/events', { kind: 'note', anchor, reason: 42 })).status).toBe(400);
     expect((await send('/events', { kind: 'note', anchor, detail: 'frei' })).status).toBe(400);
     expect((await send(`/workpieces/${workpieceId}/checkpoints`, { reason: 42 })).status).toBe(400);
@@ -557,9 +766,9 @@ describe('a value that was sent but cannot be used', () => {
   });
 
   it('takes a unit only as text, in a body as in a query', async () => {
-    const anchor = board();
+    const { workpieceId } = await setUp();
+    const anchor = onWorkpiece(workpieceId);
     const at = { anchorKind: anchor.kind, anchorId: anchor.id };
-    // alice at the top may speak at a kind of the tool, which is no place a grant could reach.
     const say = (unit: unknown) =>
       request(server)
         .post('/comments')
@@ -579,6 +788,64 @@ describe('a value that was sent but cannot be used', () => {
 
     const trace = { kind: 'note', anchor: { ...anchor, unit: { row: 4 } } };
     expect((await request(server).post('/events').set(as(bob)).send(trace)).status).toBe(400);
+  });
+});
+
+describe('an anchor only at a thing of the service', () => {
+  it('refuses a kind of the tool and a key that is no ObjectId, even to the top', async () => {
+    const { workpieceId } = await setUp();
+    const foreign = [
+      { kind: 'board', id: workpieceId },
+      { kind: 'workpiece', id: 'b-1' },
+    ];
+    const tries = foreign.flatMap((anchor) => {
+      const at = { anchorKind: anchor.kind, anchorId: anchor.id };
+      const send = (path: string, body: object) =>
+        request(server).post(path).set(as(alice)).send(body);
+      const read = (path: string) => request(server).get(path).query(at).set(as(alice));
+      return [
+        () => send('/comments', { kind: 'comment', anchor, body: {} }),
+        () => send('/tasks', { title: 'x', anchor }),
+        () => send('/events', { kind: 'visit', anchor }),
+        () => read('/comments'),
+        () => read('/tasks'),
+        () => read('/events'),
+      ];
+    });
+
+    // One after another, as each request opens and closes the server for itself.
+    const answers = [];
+    for (const attempt of tries) {
+      // eslint-disable-next-line no-await-in-loop
+      answers.push(await attempt());
+    }
+    expect(answers.map((answer) => answer.status)).toEqual(tries.map(() => 400));
+    expect(answers[0]?.body.error).toContain('room, workpiece, group, comment or task');
+  });
+
+  it('puts only a workpiece into a room', async () => {
+    const { roomId } = await setUp();
+    const task = await request(server)
+      .post('/tasks')
+      .set(as(alice))
+      .send({ kind: 'task', title: 'x', state: 'offen' });
+
+    const added = await request(server)
+      .post(`/rooms/${roomId}/workpieces`)
+      .set(as(alice))
+      .send({ workpieceId: task.body._id as string });
+
+    expect(added.status).toBe(404);
+    expect(added.body.error).toBe('unknown workpiece');
+  });
+
+  it('refuses a kind of the tool when asked for rights', async () => {
+    const rights = await request(server)
+      .get('/me/rights')
+      .query({ kind: 'board', id: new ObjectId().toHexString() })
+      .set(as(bob));
+
+    expect(rights.status).toBe(400);
   });
 });
 
@@ -619,7 +886,12 @@ describe('the history of a workpiece', () => {
     const { workpieceId } = await setUp();
     const id = new ObjectId(workpieceId);
     const change = (size: number) =>
-      appendUpdate(storage.db, { workpieceId: id, bytes: new Uint8Array(size), createdBy: 'bob' });
+      appendUpdate(storage.db, {
+        workpieceId: id,
+        bytes: new Uint8Array(size),
+        clients: [],
+        createdBy: 'bob',
+      });
     await change(3);
     const second = await change(5);
     await change(7);
@@ -651,6 +923,7 @@ describe('the history of a workpiece', () => {
       const stored = await appendUpdate(storage.db, {
         workpieceId: new ObjectId(workpieceId),
         bytes,
+        clients: [],
         createdBy: 'bob',
       });
       ids.push(stored._id);
@@ -739,6 +1012,7 @@ describe('a workpiece as a thing', () => {
       _id: workpieceId,
       name: 'Entwurf',
       contract: { kind: 'sql-skript' },
+      units: [],
       createdAt: expect.any(String),
       createdBy: 'alice',
     });
@@ -751,6 +1025,46 @@ describe('a workpiece as a thing', () => {
       .send({ name: 'Entwurf', contract: 'sql' });
 
     expect(refused.status).toBe(400);
+  });
+
+  it('keeps where the units lie, each key exactly as sent', async () => {
+    const units = [{ path: ['cells'] }, { path: ['model', ' Zellen '] }];
+    const created = await request(server)
+      .post('/workpieces')
+      .set(as(alice))
+      .send({ name: 'Modell', units });
+
+    const described = await request(server)
+      .get(`/workpieces/${created.body._id as string}`)
+      .set(as(alice));
+    expect(created.status).toBe(201);
+    expect(described.body.units).toEqual(units);
+  });
+
+  it('takes no units as none, sent empty or not at all', async () => {
+    const empty = await request(server)
+      .post('/workpieces')
+      .set(as(alice))
+      .send({ name: 'Modell', units: [] });
+
+    expect(empty.status).toBe(201);
+    expect(empty.body.units).toEqual([]);
+  });
+
+  it('refuses units that do not fit, so nothing is dropped unnoticed', async () => {
+    const create = async (units: unknown) =>
+      (await request(server).post('/workpieces').set(as(alice)).send({ name: 'Modell', units }))
+        .status;
+    const map = { path: ['cells'] };
+
+    expect(await create({ path: ['cells'] })).toBe(400);
+    expect(await create([{ path: [] }])).toBe(400);
+    expect(await create([{ path: ['cells', ' '] }])).toBe(400);
+    expect(await create([{ path: ['cells', 7] }])).toBe(400);
+    expect(await create([{ path: Array.from({ length: 11 }, () => 'm') }])).toBe(400);
+    expect(await create([{ ...map, key: 'id' }])).toBe(400);
+    expect(await create(Array.from({ length: 21 }, () => map))).toBe(400);
+    expect(await create(Array.from({ length: 20 }, () => map))).toBe(201);
   });
 });
 
@@ -900,6 +1214,7 @@ describe('saying something about a thing', () => {
         createdBy: 'bob',
         reason: 'im Entwurf nachgezogen',
       }),
+      expect.objectContaining({ kind: 'comment-created', createdBy: 'alice' }),
     ]);
 
     expect((await mark(bob, {})).status).toBe(400);
@@ -1055,7 +1370,8 @@ describe('work to be done', () => {
     expect((await plan(alice, { title: 'x', order: 'erster' })).status).toBe(400);
     expect((await plan(alice, { title: 'x', detail: 'frei' })).status).toBe(400);
     expect((await plan(alice, { title: 'x', parentId: 'oben' })).status).toBe(400);
-    expect((await plan(alice, { title: 'x', anchor: { ...board(), unit: 4 } })).status).toBe(400);
+    const anchor = { kind: 'workpiece', id: new ObjectId().toHexString(), unit: 4 };
+    expect((await plan(alice, { title: 'x', anchor })).status).toBe(400);
   });
 
   it('lists at an anchor or under a parent, the tops alone, in their order', async () => {
@@ -1092,7 +1408,7 @@ describe('work to be done', () => {
   it('needs an anchor or a parent, so nobody lists every task of the service', async () => {
     const read = (query: Record<string, string>) =>
       request(server).get('/tasks').query(query).set(as(bob));
-    const anchor = board();
+    const anchor = { kind: 'workpiece', id: new ObjectId().toHexString() };
 
     expect((await read({})).status).toBe(400);
     expect((await read({ parentId: 'none' })).status).toBe(400);
@@ -1153,6 +1469,7 @@ describe('work to be done', () => {
       ['assignee-added', 'bob'],
       ['assignee-added', 'bob'],
       ['task-state', 'bob'],
+      ['task-created', 'alice'],
     ]);
     expect(traces.body[0]).toMatchObject({ reason: 'reicht allein', detail: group });
     expect(traces.body[2]).toMatchObject({ reason: 'kennt sich aus', detail: carol });

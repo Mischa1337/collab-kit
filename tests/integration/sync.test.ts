@@ -6,6 +6,7 @@ import * as encoding from 'lib0/encoding';
 import { ObjectId } from 'mongodb';
 import pino from 'pino';
 import { WebSocket } from 'ws';
+import { WebsocketProvider } from 'y-websocket';
 import * as Y from 'yjs';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
@@ -17,8 +18,7 @@ import { setGrant } from '../../src/db/collections/grants.ts';
 import { addToRoom, createRoom } from '../../src/db/collections/rooms.ts';
 import { createWorkpiece } from '../../src/db/collections/workpieces.ts';
 import { collectionDefinitions } from '../../src/db/schemas.ts';
-import { createWorkpieceHub } from '../../src/realtime/hub.ts';
-import { attachGateway, type Gateway } from '../../src/realtime/gateway.ts';
+import { createWorkpieceHub, attachGateway, type Gateway } from '../../src/realtime/index.ts';
 import { createServer } from '../../src/routes/server.ts';
 import { connectClient, waitFor } from './yjs-client.ts';
 
@@ -52,7 +52,7 @@ async function bundle(workpieceId: import('mongodb').ObjectId): Promise<void> {
     createdBy: 'alice',
     members: ['alice', 'bob', 'carol'],
   });
-  await addToRoom(storage.db, room._id, { kind: 'workpiece', id: workpieceId, addedBy: 'alice' });
+  await addToRoom(storage.db, room._id, { workpieceId, addedBy: 'alice' });
   // In through a grant at the room, as a group in it no longer opens anything.
   await setGrant(storage.db, {
     groupId: group._id,
@@ -131,6 +131,11 @@ async function watch(workpieceId: string, actor: string): Promise<Watcher> {
 }
 
 const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** The name one standard client sees for another, undefined while it sees nothing. */
+function nameSeen(by: WebsocketProvider, of: WebsocketProvider): unknown {
+  return by.awareness.getStates().get(of.doc.clientID)?.['name'];
+}
 
 /** Makes the database refuse every new change, as it would while it is down, or accept again. */
 async function refuseChanges(refuse: boolean): Promise<void> {
@@ -330,6 +335,40 @@ describe('following along without writing', () => {
     await alice.close();
   });
 
+  it('keeps a reader whose copy tidies up formatting by itself', async () => {
+    const workpieceId = await freshWorkpiece();
+    const alice = await open(workpieceId, 'alice');
+    const erin = await open(workpieceId, 'erin');
+    await Promise.all([alice.synced, erin.synced]);
+    let closedWith: number | undefined;
+    void erin.closed.then((code) => {
+      closedWith = code;
+    });
+    // Erin's copy knows the text as a text, as it must to show it.
+    const shown = erin.doc.getText('t');
+
+    // Made apart from each other: c made bold, and c deleted.
+    const start = new Y.Doc();
+    start.getText('t').insert(0, 'abcdef');
+    const bolding = new Y.Doc();
+    Y.applyUpdate(bolding, Y.encodeStateAsUpdate(start));
+    bolding.getText('t').format(2, 1, { bold: true });
+    const deleting = new Y.Doc();
+    Y.applyUpdate(deleting, Y.encodeStateAsUpdate(start));
+    deleting.getText('t').delete(2, 1);
+
+    // Alice's copy never takes them for a text, so only erin's tidies up the marks around nothing.
+    for (const change of [start, bolding, deleting]) {
+      Y.applyUpdate(alice.doc, Y.encodeStateAsUpdate(change));
+    }
+
+    expect(await waitFor(() => shown.toString() === 'abdef')).toBe(true);
+    await pause(200);
+    expect(closedWith).toBeUndefined();
+
+    await Promise.all([alice.close(), erin.close()]);
+  });
+
   it('lets a reader come back with everything it holds, deletions included', async () => {
     const workpieceId = await freshWorkpiece();
     const alice = await open(workpieceId, 'alice');
@@ -375,7 +414,7 @@ describe('who is there', () => {
     alice.socket.close();
   });
 
-  it('refuses a presence that belongs to somebody else', async () => {
+  it('skips a presence that belongs to somebody else and keeps the connection', async () => {
     const workpieceId = await freshWorkpiece();
     const alice = await watch(workpieceId, 'alice');
     alice.socket.send(presence(222, 1, { name: 'alice' }));
@@ -384,14 +423,60 @@ describe('who is there', () => {
 
     // A clock far ahead would lock alice out of her own entry, were it taken.
     bob.socket.send(presence(222, 99, { name: 'mallory' }));
-    await expect(bob.closed).resolves.toBe(1008);
+    // Still connected, so the own entry of bob right after goes through.
+    bob.socket.send(presence(224, 1, { name: 'bob' }));
 
     const carol = await watch(workpieceId, 'carol');
-    expect(await waitFor(() => carol.seen.has(222))).toBe(true);
+    expect(await waitFor(() => carol.seen.has(224))).toBe(true);
     expect(carol.seen.get(222)).toEqual({ name: 'alice' });
 
     alice.socket.close();
+    bob.socket.close();
     carol.socket.close();
+  });
+
+  it('keeps two people connected although y-websocket echoes every presence it gets', async () => {
+    const workpieceId = await freshWorkpiece();
+    const closes: number[] = [];
+
+    // The standard client, as a docking tool uses it, with the global WebSocket of Node.
+    const provide = (actor: string): WebsocketProvider => {
+      const provider = new WebsocketProvider(
+        `ws://127.0.0.1:${port}/ws`,
+        workpieceId,
+        new Y.Doc(),
+        {
+          protocols: ['bearer', tokenOf(actor)],
+          disableBc: true,
+        },
+      );
+      provider.awareness.setLocalStateField('name', actor);
+      provider.on('connection-close', (event) => closes.push(event?.code ?? 0));
+      return provider;
+    };
+
+    // On joining each gets the presence of the other and sends it straight back.
+    const alice = provide('alice');
+    const bob = provide('bob');
+    expect(
+      await waitFor(() => nameSeen(alice, bob) === 'bob' && nameSeen(bob, alice) === 'alice'),
+    ).toBe(true);
+
+    // A renewal every 15 s takes the same way; a new state takes it at once.
+    alice.awareness.setLocalStateField('name', 'alice, woanders');
+    expect(await waitFor(() => nameSeen(bob, alice) === 'alice, woanders')).toBe(true);
+    await pause(200);
+
+    expect(closes).toEqual([]);
+    const left = await storage.db
+      .collection('events')
+      .countDocuments({ 'anchor.id': new ObjectId(workpieceId), kind: 'left' });
+    expect(left).toBe(0);
+
+    for (const provider of [alice, bob]) {
+      provider.destroy();
+      provider.doc.destroy();
+    }
   });
 
   it('lets the same person take their client over on a new connection', async () => {

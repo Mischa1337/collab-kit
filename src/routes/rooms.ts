@@ -1,22 +1,28 @@
 import { Router } from 'express';
-import { ObjectId, type Db } from 'mongodb';
+import type { Db, ObjectId } from 'mongodb';
 
 import { may, maySee, roomsVisibleTo } from '../auth/access.ts';
-import { grantsAt, isScopeKind } from '../db/collections/grants.ts';
-import { readEventsSince } from '../db/collections/events.ts';
+import { grantsAt } from '../db/collections/grants.ts';
+import { latestPerActor, readEventsSince } from '../db/collections/events.ts';
 import {
   addToRoom,
   createRoom,
+  deleteRoom,
   findRoom,
   removeFromRoom,
+  renameRoom,
   setRoomSettings,
 } from '../db/collections/rooms.ts';
-import { asActorId, asCount, asObject, asObjectId, asReference, asText } from '../utils/input.ts';
+import { eventKeysOf, withNames } from '../db/names.ts';
+import type { Actor } from '../model/actor.ts';
+import type { Reference } from '../model/anchor.ts';
+import type { WorkpieceHub } from '../realtime/index.ts';
+import { asActorId, asCount, asObject, asObjectId, asText } from '../utils/input.ts';
 import { defined } from '../utils/optional.ts';
 import { actorOf, bodyOf, fail, guard, idOf, requireId, unusableField } from './http.ts';
 
-/** A room bundles: these routes move references, never create or delete what they point at. */
-export function roomRoutes(db: Db, recheckAccess: () => Promise<void>): Router {
+/** A room bundles: these routes move workpieces in and out, never create or delete them. */
+export function roomRoutes(db: Db, hub: WorkpieceHub, recheckAccess: () => Promise<void>): Router {
   const routes = Router();
 
   routes.param('id', requireId('room'));
@@ -55,67 +61,104 @@ export function roomRoutes(db: Db, recheckAccess: () => Promise<void>): Router {
       ...defined({ settings }),
     });
 
-    response.status(201).json(room);
+    response.status(201).json(await withNames(db, room));
   });
 
   routes.get('/rooms/:id', seeing, async (request, response) => {
-    response.json(await findRoom(db, idOf(request)));
+    response.json(await withNames(db, await findRoom(db, idOf(request))));
   });
 
   routes.patch('/rooms/:id', seeing, changing, async (request, response) => {
-    const settings = asObject(bodyOf(request)['settings']);
+    const body = bodyOf(request);
+    const name = asText(body['name']);
+    const settings = asObject(body['settings']);
+    const reason = asText(body['reason']);
 
-    if (settings === undefined) {
-      return fail(response, 400, 'settings must be an object');
+    const unusable = unusableField(body, { name, settings, reason });
+    if (unusable !== undefined) {
+      return fail(response, 400, `${unusable} is unusable`);
+    }
+    if (name === undefined && settings === undefined) {
+      return fail(response, 400, 'name or settings is needed');
     }
 
+    // Only the name leaves a trace; the settings are the tool's and never read here.
     const id = idOf(request);
-    await setRoomSettings(db, id, settings);
-    response.json(await findRoom(db, id));
+    if (name !== undefined) {
+      await renameRoom(db, id, {
+        name,
+        renamedBy: actorOf(request).actorId,
+        ...defined({ reason }),
+      });
+    }
+    if (settings !== undefined) {
+      await setRoomSettings(db, id, settings);
+    }
+    response.json(await withNames(db, await findRoom(db, id)));
   });
 
-  routes.post('/rooms/:id/references', seeing, changing, async (request, response) => {
-    const reference = asReference(bodyOf(request));
+  // The reason in the query, as a body on DELETE may get lost on the way.
+  routes.delete('/rooms/:id', seeing, changing, async (request, response) => {
+    const reason = asText(request.query['reason']);
 
-    if (reference === undefined) {
-      return fail(response, 400, 'kind and id are needed, both as text');
+    const unusable = unusableField(request.query, { reason });
+    if (unusable !== undefined) {
+      return fail(response, 400, `${unusable} is unusable`);
     }
-    // Who may into a room stands in its grants, a group in here would open nothing.
-    if (reference.kind === 'group') {
-      return fail(response, 400, 'a group gets into a room through PUT /grants');
+
+    const deleted = await deleteRoom(db, idOf(request), {
+      deletedBy: actorOf(request).actorId,
+      ...defined({ reason }),
+    });
+    // Without the room and its grants, open connections to what it opened would carry on.
+    if (deleted) {
+      await recheckAccess();
+    }
+    response.json({ deleted });
+  });
+
+  routes.post('/rooms/:id/workpieces', seeing, changing, async (request, response) => {
+    const workpieceId = asObjectId(bodyOf(request)['workpieceId']);
+
+    if (workpieceId === undefined) {
+      return fail(response, 400, 'workpieceId is missing');
     }
 
     const actor = actorOf(request);
-    if (!(await maySee(db, actor, reference))) {
-      return fail(response, 404, 'unknown reference');
+    const workpiece = { kind: 'workpiece' as const, id: workpieceId };
+    if (!(await maySee(db, actor, workpiece))) {
+      return fail(response, 404, 'unknown workpiece');
     }
-    // In here it gets the rights of the room, so a thing of the service takes manage at it too.
-    const own = isScopeKind(reference.kind) && reference.id instanceof ObjectId;
-    if (own && !(await may(db, actor, 'manage', reference))) {
+    // In here it gets the rights of the room, so it takes manage at it too.
+    if (!(await may(db, actor, 'manage', workpiece))) {
       return fail(response, 403, 'not allowed to hand this on');
     }
 
     const id = idOf(request);
-    const added = await addToRoom(db, id, { ...reference, addedBy: actor.actorId });
+    const added = await addToRoom(db, id, { workpieceId, addedBy: actor.actorId });
 
     // 200 if it was already in: adding it twice is no error, it just changes nothing.
-    response.status(added ? 201 : 200).json(await findRoom(db, id));
+    response.status(added ? 201 : 200).json(await withNames(db, await findRoom(db, id)));
   });
 
-  // In the query and not the body: a body on DELETE may get lost on the way.
-  routes.delete('/rooms/:id/references', seeing, changing, async (request, response) => {
-    const reference = asReference(request.query);
+  routes.delete(
+    '/rooms/:id/workpieces/:workpieceId',
+    seeing,
+    changing,
+    async (request, response) => {
+      const workpieceId = asObjectId(request.params['workpieceId']);
 
-    if (reference === undefined) {
-      return fail(response, 400, 'kind and id are needed, both as text');
-    }
+      if (workpieceId === undefined) {
+        return fail(response, 400, 'workpieceId is missing');
+      }
 
-    const id = idOf(request);
-    await removeFromRoom(db, id, { ...reference, removedBy: actorOf(request).actorId });
-    // Without the reference, open connections to what it opened would carry on as before.
-    await recheckAccess();
-    response.json(await findRoom(db, id));
-  });
+      const id = idOf(request);
+      await removeFromRoom(db, id, { workpieceId, removedBy: actorOf(request).actorId });
+      // Without the workpiece in here, open connections to it would carry on as before.
+      await recheckAccess();
+      response.json(await withNames(db, await findRoom(db, id)));
+    },
+  );
 
   /** The room and all it bundles, oldest first after since; hub traces anchor at workpieces. */
   routes.get('/rooms/:id/events', seeing, async (request, response) => {
@@ -129,31 +172,53 @@ export function roomRoutes(db: Db, recheckAccess: () => Promise<void>): Router {
       return fail(response, 400, `${unusable} is unusable`);
     }
 
-    const id = idOf(request);
-    const room = await findRoom(db, id);
-    // The groups that may into the room belong to its stream, as when they lay in it.
-    const holders = await grantsAt(db, { kind: 'room', id });
-    const bundled = [
-      ...(room?.references ?? []),
-      ...holders.map((grant) => ({ kind: 'group', id: grant.groupId })),
-    ];
-    // Only what the actor may see, so the room shows no more than /events would.
-    const actor = actorOf(request);
-    const visible = await Promise.all(bundled.map((reference) => maySee(db, actor, reference)));
-    const seen = bundled.filter((_, index) => visible[index]);
+    const references = await bundledIn(db, actorOf(request), idOf(request));
+    const events = await readEventsSince(db, {
+      references,
+      ...defined({ since, kind, createdBy, limit }),
+    });
+    response.json(await withNames(db, events, eventKeysOf));
+  });
 
-    response.json(
-      await readEventsSince(db, {
-        references: [{ kind: 'room', id }, ...seen],
-        ...defined({ since, kind, createdBy, limit }),
-      }),
+  /** Per person the last trace in the room and all it bundles, newest first (D1.10). */
+  routes.get('/rooms/:id/activity', seeing, async (request, response) => {
+    const references = await bundledIn(db, actorOf(request), idOf(request));
+    response.json(await withNames(db, await latestPerActor(db, references)));
+  });
+
+  /** Who is connected to which workpiece of the room right now, from the hub alone (D1.10). */
+  routes.get('/rooms/:id/presence', seeing, async (request, response) => {
+    const room = await findRoom(db, idOf(request));
+    // See at the room is see at every workpiece in it, so none needs a check of its own.
+    const presence = (room?.workpieces ?? []).flatMap((workpieceId) =>
+      hub
+        .presentAt(workpieceId)
+        .map(({ actorId, connections }) => ({ workpieceId, actorId, connections })),
     );
+    response.json(await withNames(db, presence));
   });
 
   /** Where a client starts: every room this token may see. */
   routes.get('/me/rooms', async (request, response) => {
-    response.json(await roomsVisibleTo(db, actorOf(request)));
+    response.json(await withNames(db, await roomsVisibleTo(db, actorOf(request))));
   });
 
   return routes;
+}
+
+/** The room and what it bundles, as far as the actor sees it: where its stream reads. */
+async function bundledIn(db: Db, actor: Actor, id: ObjectId): Promise<[Reference, ...Reference[]]> {
+  const room = await findRoom(db, id);
+  // The groups that may into the room belong to its stream, as when they lay in it.
+  const holders = await grantsAt(db, { kind: 'room', id });
+  const bundled: Reference[] = [
+    ...(room?.workpieces ?? []).map((workpieceId) => ({
+      kind: 'workpiece' as const,
+      id: workpieceId,
+    })),
+    ...holders.map((grant) => ({ kind: 'group' as const, id: grant.groupId })),
+  ];
+  // Only what the actor may see, so the room shows no more than /events would.
+  const visible = await Promise.all(bundled.map((reference) => maySee(db, actor, reference)));
+  return [{ kind: 'room', id }, ...bundled.filter((_, index) => visible[index])];
 }

@@ -18,7 +18,7 @@ let storage: Storage;
 
 /** A fresh workpiece key per test, so the collection stays shared but the anchors do not. */
 const on = (unit?: string) => ({
-  kind: 'workpiece',
+  kind: 'workpiece' as const,
   id: workpieceId,
   ...(unit === undefined ? {} : { unit }),
 });
