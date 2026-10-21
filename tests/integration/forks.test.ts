@@ -61,8 +61,8 @@ const tokenOf = (actor: string) =>
   jwt.sign({ sub: actor, name: actor }, secret, { expiresIn: '15m' });
 const as = (actor: string) => ({ Authorization: `Bearer ${tokenOf(actor)}` });
 
-/** A room where these people hold these rights. */
-async function roomFor(members: string[], rights: [Right, ...Right[]]): Promise<ObjectId> {
+/** A room where these people hold these rights, and the group they hold them through. */
+async function teamWith(members: string[], rights: [Right, ...Right[]]) {
   const room = await createRoom(storage.db, { name: 'Seminar', createdBy: 'alice' });
   const group = await createGroup(storage.db, { name: 'Team', createdBy: 'alice', members });
   await setGrant(storage.db, {
@@ -71,7 +71,12 @@ async function roomFor(members: string[], rights: [Right, ...Right[]]): Promise<
     rights,
     setBy: 'alice',
   });
-  return room._id;
+  return { roomId: room._id, groupId: group._id };
+}
+
+/** A room where these people hold these rights. */
+async function roomFor(members: string[], rights: [Right, ...Right[]]): Promise<ObjectId> {
+  return (await teamWith(members, rights)).roomId;
 }
 
 /** The room of the team: alice, bob and carol see, write and may put workpieces in it. */
@@ -144,6 +149,26 @@ async function forkInto(actor: string, sourceId: ObjectId, roomId: ObjectId): Pr
   expect(forked.status).toBe(201);
   return new ObjectId(forked.body._id as string);
 }
+
+/** A fork of the source in no room, by this person. */
+async function forkApart(actor: string, sourceId: ObjectId): Promise<ObjectId> {
+  const forked = await createWorkpiece(storage.db, {
+    name: 'Eigene Kopie',
+    createdBy: actor,
+    units: CELLS,
+    forkOf: { id: sourceId },
+  });
+  return forked._id;
+}
+
+/** The rights this person holds at the workpiece, as CK tells them. */
+const rightsOf = async (actor: string, workpieceId: ObjectId) =>
+  (
+    await request(server)
+      .get('/me/rights')
+      .query({ kind: 'workpiece', id: workpieceId.toHexString() })
+      .set(as(actor))
+  ).body as Right[];
 
 /** Merges as this person. */
 const merge = (actor: string, targetId: ObjectId, body: object) =>
@@ -640,6 +665,77 @@ describe('merging', () => {
     expect(merged.detail.count).toBe(1);
     expect((await textOf(groupWork)).split('').toSorted()).toEqual(['G', 'W']);
     await Promise.all([alice.close(), bob.close()]);
+  });
+});
+
+describe('an own fork', () => {
+  it('gives whoever forked what they hold at the source, and nobody else anything', async () => {
+    const roomId = await roomFor(['alice', 'bob'], ['see', 'edit']);
+    const own = await forkApart('alice', await workpieceIn(roomId));
+    const listed = async (actor: string) =>
+      ((await request(server).get('/workpieces').set(as(actor))).body as { _id: string }[]).map(
+        (entry) => entry._id,
+      );
+    const described = (actor: string) =>
+      request(server).get(`/workpieces/${own.toHexString()}`).set(as(actor));
+
+    expect(await rightsOf('alice', own)).toEqual(['see', 'edit']);
+    expect(await listed('alice')).toContain(own.toHexString());
+    expect((await described('alice')).status).toBe(200);
+    // bob sees the source through the same room, but the fork is not his.
+    expect(await rightsOf('bob', own)).toEqual([]);
+    expect(await listed('bob')).not.toContain(own.toHexString());
+    expect((await described('bob')).status).toBe(404);
+  });
+
+  it('follows the source, so edit taken there is gone at the fork, on the socket too', async () => {
+    const { roomId, groupId } = await teamWith(['alice'], ['see', 'edit']);
+    const own = await forkApart('alice', await workpieceIn(roomId));
+    const alice = await open(own, 'alice');
+    alice.doc.getText('t').insert(0, 'eigen');
+    await stored(own, 1);
+
+    await setGrant(storage.db, {
+      groupId,
+      scope: { kind: 'room', id: roomId },
+      rights: ['see'],
+      setBy: 'alice',
+    });
+    // The routes here never ask again, so the gateway is told directly.
+    await gateway.recheck();
+
+    await expect(alice.closed).resolves.toBe(4409);
+    expect(await rightsOf('alice', own)).toEqual(['see']);
+  });
+
+  it('reaches through a fork of the own fork, not through the fork of someone else', async () => {
+    const roomId = await roomFor(['alice', 'bob'], ['see', 'edit']);
+    const own = await forkApart('alice', await workpieceIn(roomId));
+    const ownOfOwn = await forkApart('alice', own);
+    const bobsOfAlices = await forkApart('bob', own);
+
+    expect(await rightsOf('alice', ownOfOwn)).toEqual(['see', 'edit']);
+    // bob holds nothing at the fork of alice, so his fork of it lends him nothing.
+    expect(await rightsOf('bob', bobsOfAlices)).toEqual([]);
+  });
+
+  it('gives a task there to no group without a grant of its own at the fork', async () => {
+    const { roomId, groupId } = await teamWith(['alice', 'bob'], ['see', 'edit', 'plan']);
+    const own = await forkApart('alice', await workpieceIn(roomId));
+    const plan = (assignee: object) =>
+      request(server)
+        .post('/tasks')
+        .set(as('alice'))
+        .send({
+          kind: 'task',
+          title: 'Prüfen',
+          state: 'open',
+          anchor: { kind: 'workpiece', id: own.toHexString() },
+          assignees: [assignee],
+        });
+
+    expect((await plan({ kind: 'group', id: groupId.toHexString() })).status).toBe(409);
+    expect((await plan({ kind: 'actor', id: 'alice' })).status).toBe(201);
   });
 });
 
