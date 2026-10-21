@@ -473,7 +473,7 @@ export interface GrantRoutes {
   list(query?: GrantQuery): Promise<Named<Grant>[]>;
 }
 
-/** A new workpiece, in a room or outside every room. */
+/** A new workpiece; creating one takes edit in the room, outside every room edit everywhere. */
 export interface NewWorkpiece {
   readonly name: string;
   readonly contract?: Free;
@@ -493,7 +493,7 @@ export interface NewCheckpoint {
   readonly reason?: string;
 }
 
-/** A fork up to the change at, or of all there is. */
+/** A fork up to the change at, or of all; it takes edit in the room, without one at the source. */
 export interface NewFork {
   readonly name: string;
   readonly at?: string;
