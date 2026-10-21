@@ -54,3 +54,6 @@ literatur-quellen*.zip
 
 # Lokale Hilfsskripte (Token, Seed, Lasttest), nicht Teil eines Release
 scripts/
+
+# Lokale Demoseite der Verwaltung, braucht ein Token aus scripts/
+client/demo/

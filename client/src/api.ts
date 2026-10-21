@@ -1,4 +1,4 @@
-/** What the client library shows, and the source of v1.d.ts: nothing of the library inside. */
+/** What v1.js and manage-v1.js show, and the source of v1.d.ts: nothing of the library inside. */
 
 // Entry: what a tool calls first, and what it gets back.
 
@@ -651,4 +651,25 @@ export interface MeRoutes {
   groups(): Promise<Named<Group>[]>;
   tasks(query?: MyTaskQuery): Promise<Named<Task>[]>;
   events(query?: MyEventQuery): Promise<Named<CollabEvent>[]>;
+}
+
+// Management: the element <ck-management> of manage-v1.js, working with the ck of v1.js.
+
+/**
+ * What a tool sets on <ck-management> as properties; nothing shows before ck. As attributes it
+ * takes lang, de or en, and theme, light or dark, left out the one of the system.
+ */
+export interface ManagementOptions {
+  /** The library of v1.js; every call goes out with its token. */
+  ck: CollabKitApi | undefined;
+  /** How the tool builds a workpiece, the element sets roomId; left out, it creates none. */
+  newWorkpiece: ((room: Room, name: string) => NewWorkpiece | Promise<NewWorkpiece>) | undefined;
+  /** People the tool knows for what was typed in; left out, a member is added by its key. */
+  findPeople: ((text: string) => Promise<readonly ActorName[]>) | undefined;
+}
+
+/** The detail of ck-open: the workpiece to open, and the room it was opened from. */
+export interface ManagementOpen {
+  readonly workpiece: Workpiece;
+  readonly room: Room;
 }
