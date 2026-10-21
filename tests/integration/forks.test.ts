@@ -150,15 +150,11 @@ async function forkInto(actor: string, sourceId: ObjectId, roomId: ObjectId): Pr
   return new ObjectId(forked.body._id as string);
 }
 
-/** A fork of the source in no room, by this person. */
+/** Forks apart from every room and gives the id of the fork. */
 async function forkApart(actor: string, sourceId: ObjectId): Promise<ObjectId> {
-  const forked = await createWorkpiece(storage.db, {
-    name: 'Eigene Kopie',
-    createdBy: actor,
-    units: CELLS,
-    forkOf: { id: sourceId },
-  });
-  return forked._id;
+  const forked = await fork(actor, sourceId, { name: 'Eigene Kopie' });
+  expect(forked.status).toBe(201);
+  return new ObjectId(forked.body._id as string);
 }
 
 /** The rights this person holds at the workpiece, as CK tells them. */
@@ -708,15 +704,26 @@ describe('an own fork', () => {
     expect(await rightsOf('alice', own)).toEqual(['see']);
   });
 
-  it('reaches through a fork of the own fork, not through the fork of someone else', async () => {
+  it('reaches through a fork of the own fork, but lends nothing to someone else', async () => {
     const roomId = await roomFor(['alice', 'bob'], ['see', 'edit']);
     const own = await forkApart('alice', await workpieceIn(roomId));
     const ownOfOwn = await forkApart('alice', own);
-    const bobsOfAlices = await forkApart('bob', own);
+    const readers = await createGroup(storage.db, {
+      name: 'Lesende',
+      createdBy: 'alice',
+      members: ['bob'],
+    });
+    await setGrant(storage.db, {
+      groupId: readers._id,
+      scope: { kind: 'workpiece', id: own },
+      rights: ['see'],
+      setBy: 'alice',
+    });
 
     expect(await rightsOf('alice', ownOfOwn)).toEqual(['see', 'edit']);
-    // bob holds nothing at the fork of alice, so his fork of it lends him nothing.
-    expect(await rightsOf('bob', bobsOfAlices)).toEqual([]);
+    // bob writes at the source, but at the fork of alice he holds only the grant there.
+    expect(await rightsOf('bob', own)).toEqual(['see']);
+    expect((await fork('bob', own, { name: 'Kopie' })).status).toBe(403);
   });
 
   it('gives a task there to no group without a grant of its own at the fork', async () => {
@@ -740,7 +747,25 @@ describe('an own fork', () => {
 });
 
 describe('who may fork and merge', () => {
-  it('forks only what one sees, into a room one manages, at a change of the source', async () => {
+  it('forks with edit where the fork will lie, as manage there is not enough', async () => {
+    const groupWork = await workpieceIn(await team());
+    const writing = await roomFor(['grace'], ['see', 'edit']);
+    const managing = await roomFor(['heidi'], ['see', 'manage']);
+    await addToRoom(storage.db, writing, { workpieceId: groupWork, addedBy: 'alice' });
+    await addToRoom(storage.db, managing, { workpieceId: groupWork, addedBy: 'alice' });
+    const apart = { name: 'Kopie' };
+
+    expect((await fork('grace', groupWork, apart)).status).toBe(201);
+    expect(
+      (await fork('grace', groupWork, { ...apart, roomId: writing.toHexString() })).status,
+    ).toBe(201);
+    expect((await fork('heidi', groupWork, apart)).status).toBe(403);
+    expect(
+      (await fork('heidi', groupWork, { ...apart, roomId: managing.toHexString() })).status,
+    ).toBe(403);
+  });
+
+  it('forks only what one sees, into a room one may edit, at a change of the source', async () => {
     const roomId = await team();
     const groupWork = await workpieceIn(roomId);
     const onlySeeing = await roomFor(['erin'], ['see']);
