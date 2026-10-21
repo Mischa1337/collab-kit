@@ -5,7 +5,13 @@ import type { Db, ObjectId } from 'mongodb';
 import type { Actor } from '../model/actor.ts';
 import type { Reference } from '../model/anchor.ts';
 import { RIGHTS, type Right } from '../model/right.ts';
-import { findWorkpieces, workpieceExists, type Workpiece } from '../db/collections/workpieces.ts';
+import {
+  findWorkpieces,
+  ownForks,
+  sourceOfOwnFork,
+  workpieceExists,
+  type Workpiece,
+} from '../db/collections/workpieces.ts';
 import { findComment, type CommentRecord } from '../db/collections/comments.ts';
 import { grantsOf, placesWhere, rightsHeld } from '../db/collections/grants.ts';
 import {
@@ -46,7 +52,7 @@ export async function rightsAt(
 
   const places = new Map<string, Reference>();
   if (target !== undefined) {
-    await collectPlaces(db, target, places);
+    await collectPlaces(db, target, places, actor.actorId);
   }
 
   return rightsHeld(
@@ -86,6 +92,7 @@ async function collectPlaces(
   db: Db,
   reference: Reference,
   places: Map<string, Reference>,
+  actorId?: string,
 ): Promise<void> {
   const key = `${reference.kind}:${reference.id.toHexString()}`;
   if (places.has(key)) {
@@ -96,15 +103,22 @@ async function collectPlaces(
   const place: Reference = { kind: reference.kind, id: reference.id };
   places.set(key, place);
 
-  const parents = await parentsOf(db, place);
-  await Promise.all(parents.map((parent) => collectPlaces(db, parent, places)));
+  const parents = await parentsOf(db, place, actorId);
+  await Promise.all(parents.map((parent) => collectPlaces(db, parent, places, actorId)));
 }
 
 /** Right above a place: the rooms of a workpiece, the parent and anchor of a task or comment. */
-async function parentsOf(db: Db, place: Reference): Promise<Reference[]> {
+async function parentsOf(db: Db, place: Reference, actorId?: string): Promise<Reference[]> {
   if (place.kind === 'workpiece') {
-    const rooms = await roomsContaining(db, place.id);
-    return rooms.map((room) => ({ kind: 'room', id: room._id }));
+    // To whoever forked it, the source of a fork lies above it too.
+    const [rooms, source] = await Promise.all([
+      roomsContaining(db, place.id),
+      actorId === undefined ? undefined : sourceOfOwnFork(db, place.id, actorId),
+    ]);
+    return [
+      ...rooms.map((room) => ({ kind: 'room' as const, id: room._id })),
+      ...(source === undefined ? [] : [{ kind: 'workpiece' as const, id: source }]),
+    ];
   }
   if (place.kind === 'task') {
     const task = await findTask(db, place.id);
@@ -173,12 +187,17 @@ export async function workpiecesVisibleTo(db: Db, actor: Actor): Promise<Workpie
 
   // Seen at the workpiece itself, or at a room it lies in.
   const groups = (await groupsOf(db, actor.actorId)).map((group) => group._id);
-  const [direct, roomIds] = await Promise.all([
+  const [direct, roomIds, forks] = await Promise.all([
     placesWhere(db, groups, 'see', 'workpiece'),
     placesWhere(db, groups, 'see', 'room'),
+    ownForks(db, actor.actorId),
   ]);
   const inRooms = (await findRooms(db, roomIds)).flatMap((room) => room.workpieces);
-  return findWorkpieces(db, [...direct, ...inRooms]);
+
+  // An own fork through its source, which may lie anywhere, so each one is asked.
+  const seen = await Promise.all(forks.map((id) => maySee(db, actor, { kind: 'workpiece', id })));
+  const ownSeen = forks.filter((_, index) => seen[index] === true);
+  return findWorkpieces(db, [...direct, ...inRooms, ...ownSeen]);
 }
 
 /** Every group the actor sees, as one list; the same rule as maySeeGroup. */
@@ -242,7 +261,7 @@ export async function maySeeGroup(
 /** May the actor see what a reference names? What is not there nobody sees. */
 export async function maySee(db: Db, actor: Actor, target: Reference): Promise<boolean> {
   if (target.kind === 'workpiece' || target.kind === 'room') {
-    // Seen from a grant at it or above; creating it gives nothing.
+    // From a grant at it or above; creating gives nothing, but a fork lends its forker the source.
     return (await placeExists(db, target)) && may(db, actor, 'see', target);
   }
   if (target.kind === 'group') {
@@ -359,6 +378,7 @@ export async function assigneeSees(
     return true;
   }
 
+  // Without an actor, as a fork lends its source to the person who forked it, never to a group.
   const places = new Map<string, Reference>();
   await collectPlaces(db, anchor, places);
   return (await rightsHeld(db, [assignee.id], [...places.values()])).has('see');

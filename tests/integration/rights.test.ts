@@ -474,8 +474,8 @@ describe('rooms and workpieces under grants', () => {
     expect((await listed(bob)).find((entry) => entry._id === single)).not.toHaveProperty('fold');
   });
 
-  it('creates a workpiece in a room with manage there, outside every room with manage everywhere', async () => {
-    const { roomId } = await course();
+  it('creates a workpiece in a room with edit there, outside every room with edit everywhere', async () => {
+    const { roomId, team, at } = await course();
     const create = (token: string, more: object) =>
       request(server)
         .post('/workpieces')
@@ -492,6 +492,15 @@ describe('rooms and workpieces under grants', () => {
     expect((await create(alice, { roomId })).status).toBe(404);
     expect((await create(tutor, { roomId: new ObjectId().toHexString() })).status).toBe(404);
     expect((await create(tutor, { roomId: 'kein-schluessel' })).status).toBe(400);
+
+    // Creating is work: edit is enough, manage alone is not.
+    await grant(team, at, ['see', 'edit']);
+    await grant(await group(['heidi']), at, ['see', 'manage']);
+    expect((await create(alice, { roomId })).status).toBe(201);
+    expect((await create(tokenFor('heidi'), { roomId })).status).toBe(403);
+
+    await grant(await group(['grace']), undefined, ['edit']);
+    expect((await create(tokenFor('grace'), {})).status).toBe(201);
   });
 
   it('hands a workpiece into another room only with manage at both', async () => {

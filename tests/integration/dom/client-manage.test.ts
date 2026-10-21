@@ -294,6 +294,24 @@ describe('<ck-management>', () => {
     expect(textOf(element)).toContain('Klassendiagramm');
   });
 
+  it('offers creating a workpiece with edit at the room, not with manage alone', async () => {
+    const room = await alice.rooms.create({ name: 'Übung 7' });
+    const team = await alice.groups.create({ name: 'Team F', members: ['bob'] });
+    const scope = { kind: 'room' as const, id: room._id };
+    await alice.grants.set({ groupId: team._id, scope, rights: ['see', 'manage'] });
+
+    const managing = await mount(bob, { newWorkpiece: (_room, name) => ({ name }) });
+    await click(managing, 'Übung 7');
+    expect(textOf(managing)).not.toContain('Werkstück anlegen');
+
+    await alice.grants.set({ groupId: team._id, scope, rights: ['see', 'edit'] });
+    const editing = await mount(bob, { newWorkpiece: (_room, name) => ({ name }) });
+    await click(editing, 'Übung 7');
+    await click(editing, 'Werkstück anlegen');
+    await fill(editing, 'Entwurf');
+    expect((await alice.rooms.get(room._id)).workpieces).toHaveLength(1);
+  });
+
   it('tells a refusal of CK in its own words', async () => {
     const room = await alice.rooms.create({ name: 'Übung 6' });
     const team = await alice.groups.create({ name: 'Team E', members: ['bob'] });

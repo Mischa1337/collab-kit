@@ -18,6 +18,8 @@ export interface RoomView {
   readonly groups: readonly Group[];
   /** Whether the own person holds manage at the room. */
   readonly manages: boolean;
+  /** Whether the own person holds edit at the room, which creating a workpiece there takes. */
+  readonly edits: boolean;
   /** The grants at the room, read only with manage there. */
   readonly grants: readonly Grant[] | undefined;
   /** Whether the tool gave newWorkpiece, so workpieces can be created here. */
@@ -44,7 +46,7 @@ export function roomView(view: RoomView): TemplateResult {
         : room.workpieces.map((id) => workpieceRow(view, id))
     }
     ${
-      view.manages && view.creates
+      view.edits && view.creates
         ? html`<button class="link" @click=${() => view.openForm('workpiece')}>
               ${plus} ${t.newWorkpiece}
             </button>

@@ -43,17 +43,20 @@ export function workpieceRoutes(db: Db, hub: WorkpieceHub): Router {
     'not allowed to change this workpiece',
   );
 
-  /** Why creating a workpiece there is refused: it takes manage in the room, else everywhere. */
+  /** Why a new workpiece is refused: it takes edit where it lies, room, source or everywhere. */
   async function refusalToCreate(
     actor: Actor,
     roomId: ObjectId | undefined,
+    sourceId?: ObjectId,
   ): Promise<[number, string] | undefined> {
-    // Outside every room it lies in nothing, so manage everywhere.
     const room = roomId === undefined ? undefined : { kind: 'room' as const, id: roomId };
     if (room !== undefined && !(await maySee(db, actor, room))) {
       return [404, 'unknown room'];
     }
-    if (!(await may(db, actor, 'manage', room))) {
+    // In a room it lies there, a fork apart from rooms under its source, anything else in nothing.
+    const source =
+      sourceId === undefined ? undefined : { kind: 'workpiece' as const, id: sourceId };
+    if (!(await may(db, actor, 'edit', room ?? source))) {
       return [403, 'not allowed to create a workpiece here'];
     }
     return undefined;
@@ -192,9 +195,9 @@ export function workpieceRoutes(db: Db, hub: WorkpieceHub): Router {
     if (at !== undefined && !(await isUpdateOf(db, id, at))) {
       return fail(response, 404, 'unknown change');
     }
-    // The same rule as creating one; reading the source took only seeing it.
+    // The same rule as creating one; into a room, reading the source took only seeing it.
     const actor = actorOf(request);
-    const refused = await refusalToCreate(actor, roomId);
+    const refused = await refusalToCreate(actor, roomId, id);
     if (refused !== undefined) {
       return fail(response, ...refused);
     }

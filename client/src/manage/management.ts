@@ -144,6 +144,7 @@ export class Management extends LitElement implements ManagementOptions {
       workpieces: store.state.workpieces,
       groups: store.state.groups,
       manages,
+      edits: detail?.rights.includes('edit') === true,
       grants: detail?.grants,
       creates: this.newWorkpiece !== undefined,
       busy: store.state.busy,

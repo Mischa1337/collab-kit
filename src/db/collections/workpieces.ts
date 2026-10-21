@@ -83,6 +83,8 @@ export const workpiecesDefinition: CollectionDefinition = {
       createdBy: { bsonType: 'string' },
     },
   },
+  // Whose forks a workpiece is, as the own forks lend their source.
+  indexes: [{ key: { createdBy: 1 }, name: 'created_by' }],
 };
 
 export interface NewWorkpiece {
@@ -147,6 +149,29 @@ export async function workpieceExists(db: Db, id: ObjectId): Promise<boolean> {
     .findOne({ _id: id }, { projection: { _id: 1 } });
 
   return found !== null;
+}
+
+/** Where the workpiece was forked from, if this actor forked it; anything else has no source. */
+export async function sourceOfOwnFork(
+  db: Db,
+  id: ObjectId,
+  actorId: string,
+): Promise<ObjectId | undefined> {
+  const found = await db
+    .collection<WorkpieceRecord>('workpieces')
+    .findOne({ _id: id, createdBy: actorId }, { projection: { forkOf: 1 } });
+
+  return found?.forkOf?.id;
+}
+
+/** Every fork this actor made, as keys only. */
+export async function ownForks(db: Db, actorId: string): Promise<ObjectId[]> {
+  const found = await db
+    .collection<WorkpieceRecord>('workpieces')
+    .find({ createdBy: actorId, forkOf: { $exists: true } }, { projection: { _id: 1 } })
+    .toArray();
+
+  return found.map((workpiece) => workpiece._id);
 }
 
 export interface Fold {
