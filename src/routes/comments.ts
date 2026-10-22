@@ -2,7 +2,7 @@ import { Router } from 'express';
 import type { Db } from 'mongodb';
 
 import { mayChangeComment, mayCreateAt, maySee, maySetCommentState } from '../auth/access.ts';
-import { stampsFor } from '../auth/anonymity.ts';
+import { readerOf, stampsFor, unstampedFor } from '../auth/anonymity.ts';
 import { aboutOf, subjectOf } from '../db/about.ts';
 import {
   createComment,
@@ -12,7 +12,7 @@ import {
   setCommentBody,
   setCommentState,
 } from '../db/collections/comments.ts';
-import { withNames } from '../db/names.ts';
+import { itself, withNames } from '../db/names.ts';
 import {
   ANCHOR_QUERY_RULE,
   ANCHOR_RULE,
@@ -27,6 +27,9 @@ import {
 import type { Reference } from '../model/anchor.ts';
 import { defined } from '../utils/optional.ts';
 import { actorOf, bodyOf, fail, guard, idOf, requireId, unusableField } from './http.ts';
+
+/** Each comment goes out masked at itself, where manage lets the reader see through. */
+const COMMENTS = { placeOf: itself('comment') };
 
 /** Comment, feedback, message and reaction alike: one form, told apart by kind. */
 export function commentRoutes(db: Db, decisions: readonly string[]): Router {
@@ -105,11 +108,20 @@ export function commentRoutes(db: Db, decisions: readonly string[]): Router {
       anonymous,
       ...defined({ parentId, state, about }),
     });
-    response.status(201).json(await withNames(db, comment));
+    response
+      .status(201)
+      .json(await withNames(db, comment, readerOf(db, actorOf(request)), COMMENTS));
   });
 
   routes.get('/comments/:id', seeing, async (request, response) => {
-    response.json(await withNames(db, await findComment(db, idOf(request))));
+    response.json(
+      await withNames(
+        db,
+        await findComment(db, idOf(request)),
+        readerOf(db, actorOf(request)),
+        COMMENTS,
+      ),
+    );
   });
 
   /** Everything said about one thing, oldest first; with since only what came after it. */
@@ -128,15 +140,17 @@ export function commentRoutes(db: Db, decisions: readonly string[]): Router {
     if (unusable !== undefined) {
       return fail(response, 400, `${unusable} is unusable`);
     }
-    if (!(await maySee(db, actorOf(request), anchor))) {
+    const actor = actorOf(request);
+    if (!(await maySee(db, actor, anchor))) {
       return fail(response, 404, 'unknown anchor');
     }
 
+    const unstamped = await unstampedFor(db, actor, createdBy, anchor);
     const comments = await readComments(db, {
       anchor,
-      ...defined({ parentId, kind, state, createdBy, since }),
+      ...defined({ parentId, kind, state, createdBy, unstamped, since }),
     });
-    response.json(await withNames(db, comments));
+    response.json(await withNames(db, comments, readerOf(db, actorOf(request)), COMMENTS));
   });
 
   /** Moves the state; who moved it and why land in the events of the comment, D8.16. */
@@ -189,7 +203,7 @@ export function commentRoutes(db: Db, decisions: readonly string[]): Router {
             changedBy: actor.actorId,
             ...defined({ reason, about }),
           });
-    response.json(await withNames(db, changed));
+    response.json(await withNames(db, changed, readerOf(db, actorOf(request)), COMMENTS));
   });
 
   /** Takes the words away for good; the shell stays, so the answers keep their thread. */
@@ -222,7 +236,9 @@ export function commentRoutes(db: Db, decisions: readonly string[]): Router {
       anonymous,
       ...defined({ reason, about }),
     });
-    response.json(await withNames(db, await findComment(db, id)));
+    response.json(
+      await withNames(db, await findComment(db, id), readerOf(db, actorOf(request)), COMMENTS),
+    );
   });
 
   return routes;

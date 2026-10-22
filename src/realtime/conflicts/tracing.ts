@@ -2,17 +2,20 @@ import type { Db, Document, ObjectId } from 'mongodb';
 import type { Logger } from 'pino';
 
 import type { Anchor } from '../../model/anchor.ts';
-import { recordEvent, type NewEvent } from '../../db/collections/events.ts';
+import { recordEvent, type EventRecord, type NewEvent } from '../../db/collections/events.ts';
 import type { Author } from '../../db/collections/pseudonyms.ts';
 import { creatorsOf } from '../../db/collections/updates.ts';
-import { eventKeysOf, withNames } from '../../db/names.ts';
+import { EVENTS_AT_ANCHOR, withNames } from '../../db/names.ts';
 import { encodeEvent } from '../connection/protocol.ts';
 import { deleterOf } from '../hub/persistence.ts';
 import { idKey, type Loss, type Removal } from './deletions.ts';
 import { lossEvents, removalEvents } from './events.ts';
 
-/** Whoever may hear of an event as it happens: whether they asked, and how to reach them. */
+/** Whoever may hear of an event as it happens: who, whether they asked, how to reach them. */
 interface Listener {
+  readonly actor: { readonly actorId: string };
+  /** Whether they manage the workpiece and so see the true keys behind its pseudonyms. */
+  readonly seesThrough?: boolean;
   readonly wantsEvents: boolean;
   send(message: Uint8Array): void;
 }
@@ -145,7 +148,7 @@ export function createTracing(db: Db, logger: Logger): Tracing {
         events.map(async (event) => {
           const record = await recordEvent(db, withDetail(event, extra));
           // Only what is written goes out, so nobody hears of an event that is nowhere kept.
-          notify(loaded.workpiece, encodeEvent(await withNames(db, record, eventKeysOf)));
+          await notify(db, loaded.workpiece, record);
         }),
       );
     } catch (error) {
@@ -159,13 +162,24 @@ export function createTracing(db: Db, logger: Logger): Tracing {
   return { traceRemovals, traceLosses };
 }
 
-/** Sends a message to every connection on the workpiece that asked for events. */
-function notify(workpiece: TraceTarget['workpiece'], message: Uint8Array): void {
-  for (const connection of workpiece.connections) {
-    if (connection.wantsEvents) {
-      connection.send(message);
-    }
-  }
+/** Sends an event to every connection on the workpiece that asked, each masked as it may see it. */
+async function notify(
+  db: Db,
+  workpiece: TraceTarget['workpiece'],
+  event: EventRecord,
+): Promise<void> {
+  const listening = [...workpiece.connections].filter((connection) => connection.wantsEvents);
+
+  await Promise.all(
+    listening.map(async (connection) => {
+      // The event lies at the workpiece, where the connection was let in as it sees it.
+      const reader = {
+        actorId: connection.actor.actorId,
+        seesThrough: () => Promise.resolve(connection.seesThrough === true),
+      };
+      connection.send(encodeEvent(await withNames(db, event, reader, EVENTS_AT_ANCHOR)));
+    }),
+  );
 }
 
 /** An event with more in its detail, such as the merge it came from. */

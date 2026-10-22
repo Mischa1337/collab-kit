@@ -12,6 +12,7 @@ import {
   renameGroup,
   setGroupSettings,
 } from '../db/collections/groups.ts';
+import { readerOf } from '../auth/anonymity.ts';
 import { withNames } from '../db/names.ts';
 import { isPseudonym } from '../model/actor.ts';
 import { asActorId, asEvery, asObject, asText, PSEUDONYM_RULE } from '../utils/input.ts';
@@ -77,12 +78,18 @@ export function groupRoutes(db: Db, recheckAccess: () => Promise<void>): Router 
       ...defined({ settings }),
     });
 
-    response.status(201).json(await withNames(db, group));
+    response.status(201).json(await withNames(db, group, readerOf(db, actorOf(request))));
   });
 
   /** Every group this token may see, its own and others; at the top all of them. */
   routes.get('/groups', async (request, response) => {
-    response.json(await withNames(db, await groupsVisibleTo(db, actorOf(request))));
+    response.json(
+      await withNames(
+        db,
+        await groupsVisibleTo(db, actorOf(request)),
+        readerOf(db, actorOf(request)),
+      ),
+    );
   });
 
   routes.get('/groups/:id', async (request, response) => {
@@ -92,7 +99,7 @@ export function groupRoutes(db: Db, recheckAccess: () => Promise<void>): Router 
       return fail(response, 404, 'unknown group');
     }
 
-    response.json(await withNames(db, group));
+    response.json(await withNames(db, group, readerOf(db, actorOf(request))));
   });
 
   routes.patch('/groups/:id', seeing, changing, async (request, response) => {
@@ -121,7 +128,7 @@ export function groupRoutes(db: Db, recheckAccess: () => Promise<void>): Router 
     if (settings !== undefined) {
       await setGroupSettings(db, id, settings);
     }
-    response.json(await withNames(db, await findGroup(db, id)));
+    response.json(await withNames(db, await findGroup(db, id), readerOf(db, actorOf(request))));
   });
 
   // The reason in the query, as a body on DELETE may get lost on the way.
@@ -160,7 +167,9 @@ export function groupRoutes(db: Db, recheckAccess: () => Promise<void>): Router 
     if (added) {
       await recheckAccess();
     }
-    response.status(added ? 201 : 200).json(await withNames(db, await findGroup(db, id)));
+    response
+      .status(added ? 201 : 200)
+      .json(await withNames(db, await findGroup(db, id), readerOf(db, actorOf(request))));
   });
 
   routes.delete('/groups/:id/members/:actorId', seeing, changing, async (request, response) => {
@@ -174,12 +183,18 @@ export function groupRoutes(db: Db, recheckAccess: () => Promise<void>): Router 
     await removeMember(db, id, { actorId, removedBy: actorOf(request).actorId });
     // An open connection of the removed actor would otherwise carry on as before.
     await recheckAccess();
-    response.json(await withNames(db, await findGroup(db, id)));
+    response.json(await withNames(db, await findGroup(db, id), readerOf(db, actorOf(request))));
   });
 
   /** The groups this token is in; the rooms it may see are at /me/rooms. */
   routes.get('/me/groups', async (request, response) => {
-    response.json(await withNames(db, await groupsOf(db, actorOf(request).actorId)));
+    response.json(
+      await withNames(
+        db,
+        await groupsOf(db, actorOf(request).actorId),
+        readerOf(db, actorOf(request)),
+      ),
+    );
   });
 
   return routes;

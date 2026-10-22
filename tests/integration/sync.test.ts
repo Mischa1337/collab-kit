@@ -393,6 +393,9 @@ describe('following along without writing', () => {
 });
 
 describe('who is there', () => {
+  /** Who alice is in her presence, as the service sets it from her token. */
+  const ALICE = { id: 'alice', name: 'alice' };
+
   it('shows somebody alone nobody else, not even the service', async () => {
     const workpieceId = await freshWorkpiece();
     const alice = await watch(workpieceId, 'alice');
@@ -410,7 +413,7 @@ describe('who is there', () => {
     alice.socket.send(presence(111, 1, { name: 'alice' }));
 
     expect(await waitFor(() => alice.seen.has(111))).toBe(true);
-    expect(alice.seen.get(111)).toEqual({ name: 'alice' });
+    expect(alice.seen.get(111)).toEqual({ name: 'alice', person: ALICE });
     alice.socket.close();
   });
 
@@ -428,7 +431,7 @@ describe('who is there', () => {
 
     const carol = await watch(workpieceId, 'carol');
     expect(await waitFor(() => carol.seen.has(224))).toBe(true);
-    expect(carol.seen.get(222)).toEqual({ name: 'alice' });
+    expect(carol.seen.get(222)).toEqual({ name: 'alice', person: ALICE });
 
     alice.socket.close();
     bob.socket.close();
@@ -494,7 +497,7 @@ describe('who is there', () => {
     const bob = await watch(workpieceId, 'bob');
 
     expect(await waitFor(() => bob.seen.has(333))).toBe(true);
-    expect(bob.seen.get(333)).toEqual({ name: 'alice', where: 'neues Netz' });
+    expect(bob.seen.get(333)).toEqual({ name: 'alice', where: 'neues Netz', person: ALICE });
     expect(after.socket.readyState).toBe(WebSocket.OPEN);
 
     after.socket.close();

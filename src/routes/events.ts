@@ -2,6 +2,7 @@ import { Router } from 'express';
 import type { Db } from 'mongodb';
 
 import { maySee } from '../auth/access.ts';
+import { readerOf, unstampedFor } from '../auth/anonymity.ts';
 import { aboutOf } from '../db/about.ts';
 import {
   readEvents,
@@ -11,7 +12,7 @@ import {
   type EventQuery,
   type EventRecord,
 } from '../db/collections/events.ts';
-import { eventKeysOf, withNames } from '../db/names.ts';
+import { EVENTS_AT_ANCHOR, withNames } from '../db/names.ts';
 import type { Actor } from '../model/actor.ts';
 import {
   ANCHOR_QUERY_RULE,
@@ -47,18 +48,20 @@ export function eventRoutes(db: Db): Router {
     if (unusable !== undefined) {
       return fail(response, 400, `${unusable} is unusable`);
     }
-    if (!(await maySee(db, actorOf(request), anchor))) {
+    const actor = actorOf(request);
+    if (!(await maySee(db, actor, anchor))) {
       return fail(response, 404, 'unknown anchor');
     }
 
-    const query = { anchor, ...defined({ kind, createdBy, before, limit }) };
+    const unstamped = await unstampedFor(db, actor, createdBy, anchor);
+    const query = { anchor, ...defined({ kind, createdBy, unstamped, before, limit }) };
 
     // With a cut a stream, read forwards; without one a history, read backwards.
     const events =
       since === undefined
         ? await readEvents(db, query)
         : await readEventsSince(db, { ...query, since });
-    response.json(await withNames(db, events, eventKeysOf));
+    response.json(await withNames(db, events, readerOf(db, actorOf(request)), EVENTS_AT_ANCHOR));
   });
 
   /** What concerns this token, such as its work somebody removed, wherever it may still see. */
@@ -78,7 +81,7 @@ export function eventRoutes(db: Db): Router {
       affects: actor.actorId,
       ...defined({ since, before, kind, limit }),
     });
-    response.json(await withNames(db, events, eventKeysOf));
+    response.json(await withNames(db, events, readerOf(db, actorOf(request)), EVENTS_AT_ANCHOR));
   });
 
   /** What the tool reports itself, a visit or a reading mark; the kind is free. */
@@ -119,7 +122,9 @@ export function eventRoutes(db: Db): Router {
       anchor,
       ...defined({ about, at, label, reason, detail }),
     });
-    response.status(201).json(await withNames(db, event, eventKeysOf));
+    response
+      .status(201)
+      .json(await withNames(db, event, readerOf(db, actorOf(request)), EVENTS_AT_ANCHOR));
   });
 
   return routes;

@@ -5,7 +5,7 @@ import type * as Y from 'yjs';
 import { createActorNotes } from '../../db/collections/actors.ts';
 import { workpieceExists } from '../../db/collections/workpieces.ts';
 import { recordEvent, type EventRecord } from '../../db/collections/events.ts';
-import { stampsOf, type Author } from '../../db/collections/pseudonyms.ts';
+import { stampField, stampsOf, type Author } from '../../db/collections/pseudonyms.ts';
 import { newestUpdateId } from '../../db/collections/updates.ts';
 import { defined } from '../../utils/optional.ts';
 import { enqueue, foldNow, loadWorkpiece, storeUpdate, type Stored } from './persistence.ts';
@@ -108,6 +108,11 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
           const speaker = announcedBy.get(clientId);
           return speaker === undefined || speaker.actor.actorId === connection.actor.actorId;
         },
+        // Who it is comes from the token of whoever speaks for the client, never from the client.
+        awarenessFor: (receiver, clientIds) =>
+          encodeAwareness(awareness, clientIds, (clientId, state) =>
+            presenceFor(state, announcedBy.get(clientId), receiver),
+          ),
       },
       stored,
       announcedBy,
@@ -259,8 +264,10 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
       }
     }
 
-    // Back to the sender too: a y-websocket client counts it as a sign of life.
-    broadcast(loaded.workpiece, encodeAwareness(loaded.workpiece.awareness, touched), undefined);
+    // Back to the sender too: a y-websocket client counts it as a sign of life; each as they may see it.
+    for (const connection of loaded.workpiece.connections) {
+      connection.send(loaded.workpiece.awarenessFor(connection, touched));
+    }
   }
 
   /** Holds a workpiece, loading it if nobody holds it yet. */
@@ -491,15 +498,22 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
     presentAt: (workpieceId) => {
       const connections = heldByKey.get(workpieceId.toHexString())?.connections ?? [];
 
-      // One entry per person, however many tabs they have open.
-      const counted = new Map<string, number>();
+      // One entry per person and pseudonym, however many tabs they have open.
+      const counted = new Map<string, { author: Author; count: number }>();
       for (const connection of connections) {
-        const { actorId } = connection.actor;
-        counted.set(actorId, (counted.get(actorId) ?? 0) + 1);
+        const author = writerOf(connection);
+        const key = JSON.stringify([author.actorId, author.as ?? null]);
+        counted.set(key, { author, count: (counted.get(key)?.count ?? 0) + 1 });
       }
-      return [...counted]
-        .toSorted(([one], [other]) => one.localeCompare(other))
-        .map(([actorId, count]) => ({ actorId, connections: count }));
+      // By what is shown, so a masked entry does not stand where its true key would.
+      return [...counted.values()]
+        .toSorted((one, other) => shownAs(one.author).localeCompare(shownAs(other.author)))
+        .map(({ author, count }) =>
+          Object.assign(
+            { actorId: author.actorId, connections: count },
+            stampField(stampsOf([author])),
+          ),
+        );
     },
 
     close: async () => {
@@ -528,6 +542,34 @@ function broadcast(
       connection.send(message);
     }
   }
+}
+
+/** A presence with person set from the speaker's token: masked unless it is the receiver's own. */
+function presenceFor(
+  state: Record<string, unknown>,
+  speaker: Connection | undefined,
+  receiver: Connection,
+): Record<string, unknown> {
+  // Whatever the client put there counts for nothing.
+  const shown = Object.fromEntries(Object.entries(state).filter(([name]) => name !== 'person'));
+  if (speaker === undefined) {
+    return shown;
+  }
+
+  const { actorId, label } = speaker.actor;
+  const masked =
+    speaker.pseudonym !== undefined &&
+    receiver.actor.actorId !== actorId &&
+    receiver.seesThrough !== true;
+  if (masked) {
+    return { ...shown, person: { id: speaker.pseudonym } };
+  }
+  return { ...shown, person: label === undefined ? { id: actorId } : { id: actorId, name: label } };
+}
+
+/** What an author shows as to those who do not see through: the pseudonym, else the key. */
+function shownAs(author: Author): string {
+  return author.as ?? author.actorId;
 }
 
 /** Whom a connection writes as: its actor, under the pseudonym if it has one. */

@@ -10,7 +10,7 @@ import {
 import { eventStamps } from '../../auth/anonymity.ts';
 import { defined } from '../../utils/optional.ts';
 import type { CollectionDefinition } from '../apply.ts';
-import { stampField, stampsSchema, type Stamp } from './pseudonyms.ts';
+import { stampField, stampsSchema, unstampedBy, type Stamp } from './pseudonyms.ts';
 
 /** Where a chain of comments and tasks ends: the thing it is all about. */
 export interface About {
@@ -172,6 +172,8 @@ export interface EventQuery {
   /** Anchored at or about any of these things; how a room asks about what it bundles. */
   readonly references?: readonly [Reference, ...Reference[]];
   readonly createdBy?: string;
+  /** Only events in which this key is not stamped, for a createdBy the reader may not see through. */
+  readonly unstamped?: string;
   /** Only what concerns this actor, the way /me/events asks. */
   readonly affects?: string;
   readonly kind?: string;
@@ -197,6 +199,7 @@ function filterOf(query: EventQuery): Filter<EventRecord> {
           ]),
         }),
     ...defined({ createdBy: query.createdBy, affects: query.affects, kind: query.kind }),
+    ...(query.unstamped === undefined ? {} : unstampedBy(query.unstamped)),
     ...(Object.keys(window).length === 0 ? {} : { _id: window }),
   } as Filter<EventRecord>;
 }
@@ -221,7 +224,28 @@ export interface Activity {
   /** When the newest event of this person happened. */
   at: Date;
   kind: string;
+  /** Where that event hangs, so manage there decides who sees through; never passed on. */
+  anchor: Anchor;
+  /** The pseudonym, when the person left these traces anonymously; open ones are a row apart. */
+  anonymous?: Stamp[];
 }
+
+/** The pseudonym under which createdBy left an event, missing when openly; for $group. */
+const AUTHOR_PSEUDONYM = {
+  $first: {
+    $map: {
+      input: {
+        $filter: {
+          input: { $ifNull: ['$anonymous', []] },
+          as: 'stamp',
+          cond: { $eq: ['$$stamp.key', '$createdBy'] },
+        },
+      },
+      as: 'stamp',
+      in: '$$stamp.as',
+    },
+  },
+};
 
 /** The newest event per person among these places, newest first (D1.10). */
 export async function latestPerActor(
@@ -240,11 +264,45 @@ export async function latestPerActor(
         },
       },
       { $sort: { _id: -1 } },
-      { $group: { _id: '$createdBy', at: { $first: '$createdAt' }, kind: { $first: '$kind' } } },
-      { $sort: { at: -1, _id: 1 } },
-      { $project: { _id: 0, actorId: '$_id', at: 1, kind: 1 } },
+      // Open and anonymous traces of one person apart, or the newest would tie the two together.
+      {
+        $group: {
+          _id: { actorId: '$createdBy', as: AUTHOR_PSEUDONYM },
+          at: { $first: '$createdAt' },
+          kind: { $first: '$kind' },
+          anchor: { $first: '$anchor' },
+        },
+      },
+      // A tie by the pseudonym first, so a masked row does not stand where its true key would.
+      { $sort: { at: -1, '_id.as': 1, '_id.actorId': 1 } },
+      {
+        $project: {
+          _id: 0,
+          actorId: '$_id.actorId',
+          at: 1,
+          kind: 1,
+          anchor: 1,
+          anonymous: {
+            $cond: [
+              { $eq: [{ $type: '$_id.as' }, 'string'] },
+              [{ key: '$_id.actorId', as: '$_id.as' }],
+              '$$REMOVE',
+            ],
+          },
+        },
+      },
     ])
     .toArray();
+}
+
+/** An activity as it goes out: where its newest trace hangs only decided who sees through. */
+export function withoutAnchor<T extends { readonly anchor: Anchor }>(
+  activity: T,
+): Omit<T, 'anchor'> {
+  return Object.fromEntries(Object.entries(activity).filter(([name]) => name !== 'anchor')) as Omit<
+    T,
+    'anchor'
+  >;
 }
 
 /** The newest merge from one workpiece into another; its upTo is where the next one starts. */

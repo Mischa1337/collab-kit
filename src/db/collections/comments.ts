@@ -4,7 +4,7 @@ import { anchorSchema, anchoredAt, type Anchor, type AnchorQuery } from '../../m
 import { defined, matchOptional } from '../../utils/optional.ts';
 import type { CollectionDefinition } from '../apply.ts';
 import { changeWithEvent, writeWithEvents, type About, type NewEvent } from './events.ts';
-import { stampField, stampsSchema, type Stamp } from './pseudonyms.ts';
+import { stampField, stampsSchema, unstampedBy, type Stamp } from './pseudonyms.ts';
 
 /** Something a person said about a place; feedback, chat and reactions differ only in kind. */
 export interface CommentRecord {
@@ -238,6 +238,8 @@ export interface CommentQuery {
   readonly kind?: string;
   readonly state?: string;
   readonly createdBy?: string;
+  /** Only comments in which this key is not stamped, for a createdBy the reader may not see through. */
+  readonly unstamped?: string;
   readonly anchor?: AnchorQuery;
   /** Left out matches every comment, ROOT only those that answer nothing. */
   readonly parentId?: ObjectId | null;
@@ -250,6 +252,7 @@ export async function readComments(db: Db, query: CommentQuery = {}): Promise<Co
   const filter: Document = {
     ...(query.anchor === undefined ? {} : anchoredAt(query.anchor)),
     ...defined({ kind: query.kind, state: query.state, createdBy: query.createdBy }),
+    ...(query.unstamped === undefined ? {} : unstampedBy(query.unstamped)),
     ...matchOptional('parentId', query.parentId),
     ...(query.since === undefined ? {} : { _id: { $gt: query.since } }),
   };

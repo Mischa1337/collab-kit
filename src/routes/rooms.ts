@@ -2,8 +2,9 @@ import { Router } from 'express';
 import type { Db, ObjectId } from 'mongodb';
 
 import { may, maySee, roomsVisibleTo } from '../auth/access.ts';
+import { readerOf, unstampedFor } from '../auth/anonymity.ts';
 import { grantsAt } from '../db/collections/grants.ts';
-import { latestPerActor, readEventsSince } from '../db/collections/events.ts';
+import { latestPerActor, readEventsSince, withoutAnchor } from '../db/collections/events.ts';
 import {
   addToRoom,
   createRoom,
@@ -13,7 +14,7 @@ import {
   renameRoom,
   setRoomSettings,
 } from '../db/collections/rooms.ts';
-import { eventKeysOf, withNames } from '../db/names.ts';
+import { atAnchor, EVENTS_AT_ANCHOR, withNames } from '../db/names.ts';
 import type { Actor } from '../model/actor.ts';
 import type { Reference } from '../model/anchor.ts';
 import type { WorkpieceHub } from '../realtime/index.ts';
@@ -61,11 +62,13 @@ export function roomRoutes(db: Db, hub: WorkpieceHub, recheckAccess: () => Promi
       ...defined({ settings }),
     });
 
-    response.status(201).json(await withNames(db, room));
+    response.status(201).json(await withNames(db, room, readerOf(db, actorOf(request))));
   });
 
   routes.get('/rooms/:id', seeing, async (request, response) => {
-    response.json(await withNames(db, await findRoom(db, idOf(request))));
+    response.json(
+      await withNames(db, await findRoom(db, idOf(request)), readerOf(db, actorOf(request))),
+    );
   });
 
   routes.patch('/rooms/:id', seeing, changing, async (request, response) => {
@@ -94,7 +97,7 @@ export function roomRoutes(db: Db, hub: WorkpieceHub, recheckAccess: () => Promi
     if (settings !== undefined) {
       await setRoomSettings(db, id, settings);
     }
-    response.json(await withNames(db, await findRoom(db, id)));
+    response.json(await withNames(db, await findRoom(db, id), readerOf(db, actorOf(request))));
   });
 
   // The reason in the query, as a body on DELETE may get lost on the way.
@@ -142,7 +145,9 @@ export function roomRoutes(db: Db, hub: WorkpieceHub, recheckAccess: () => Promi
     }
 
     // 200 if it was already in: adding it twice is no error, it just changes nothing.
-    response.status(added ? 201 : 200).json(await withNames(db, await findRoom(db, id)));
+    response
+      .status(added ? 201 : 200)
+      .json(await withNames(db, await findRoom(db, id), readerOf(db, actorOf(request))));
   });
 
   routes.delete(
@@ -160,7 +165,7 @@ export function roomRoutes(db: Db, hub: WorkpieceHub, recheckAccess: () => Promi
       await removeFromRoom(db, id, { workpieceId, removedBy: actorOf(request).actorId });
       // Without the workpiece in here, open connections to it would carry on as before.
       await recheckAccess();
-      response.json(await withNames(db, await findRoom(db, id)));
+      response.json(await withNames(db, await findRoom(db, id), readerOf(db, actorOf(request))));
     },
   );
 
@@ -176,18 +181,34 @@ export function roomRoutes(db: Db, hub: WorkpieceHub, recheckAccess: () => Promi
       return fail(response, 400, `${unusable} is unusable`);
     }
 
-    const references = await bundledIn(db, actorOf(request), idOf(request));
+    const actor = actorOf(request);
+    const id = idOf(request);
+    const references = await bundledIn(db, actor, id);
+    const unstamped = await unstampedFor(db, actor, createdBy, { kind: 'room', id });
     const events = await readEventsSince(db, {
       references,
-      ...defined({ since, kind, createdBy, limit }),
+      ...defined({ since, kind, createdBy, limit, unstamped }),
     });
-    response.json(await withNames(db, events, eventKeysOf));
+    const named = await withNames(db, events, readerOf(db, actor), EVENTS_AT_ANCHOR);
+    // Manage at the room is none at a group of its stream, so what stayed masked there goes too.
+    response.json(
+      createdBy === undefined ? named : named.filter((event) => event.createdBy === createdBy),
+    );
   });
 
   /** Per person the last trace in the room and all it bundles, newest first (D1.10). */
   routes.get('/rooms/:id/activity', seeing, async (request, response) => {
-    const references = await bundledIn(db, actorOf(request), idOf(request));
-    response.json(await withNames(db, await latestPerActor(db, references)));
+    const actor = actorOf(request);
+    const references = await bundledIn(db, actor, idOf(request));
+    const activity = await withNames(
+      db,
+      await latestPerActor(db, references),
+      readerOf(db, actor),
+      {
+        placeOf: atAnchor,
+      },
+    );
+    response.json(activity.map(withoutAnchor));
   });
 
   /** Who is connected to which workpiece of the room right now, from the hub alone (D1.10). */
@@ -195,16 +216,25 @@ export function roomRoutes(db: Db, hub: WorkpieceHub, recheckAccess: () => Promi
     const room = await findRoom(db, idOf(request));
     // See at the room is see at every workpiece in it, so none needs a check of its own.
     const presence = (room?.workpieces ?? []).flatMap((workpieceId) =>
-      hub
-        .presentAt(workpieceId)
-        .map(({ actorId, connections }) => ({ workpieceId, actorId, connections })),
+      hub.presentAt(workpieceId).map((present) => Object.assign({ workpieceId }, present)),
     );
-    response.json(await withNames(db, presence));
+    // Masked as the connection writes, at the workpiece it is connected to.
+    response.json(
+      await withNames(db, presence, readerOf(db, actorOf(request)), {
+        placeOf: (entry) => ({ kind: 'workpiece', id: entry.workpieceId }),
+      }),
+    );
   });
 
   /** Where a client starts: every room this token may see. */
   routes.get('/me/rooms', async (request, response) => {
-    response.json(await withNames(db, await roomsVisibleTo(db, actorOf(request))));
+    response.json(
+      await withNames(
+        db,
+        await roomsVisibleTo(db, actorOf(request)),
+        readerOf(db, actorOf(request)),
+      ),
+    );
   });
 
   return routes;

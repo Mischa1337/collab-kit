@@ -140,6 +140,11 @@ export function authorOf(stored: {
   return { actorId: stored.createdBy, ...defined({ as }) };
 }
 
+/** Matches what this key is not stamped in, so a filter by the key names none of its pseudonyms. */
+export function unstampedBy(key: string): Document {
+  return { anonymous: { $not: { $elemMatch: { key } } } };
+}
+
 /** The field anonymous as a record keeps it: only when somebody in it wrote anonymously. */
 export function stampField(stamps: readonly Stamp[]): { anonymous?: Stamp[] } {
   return stamps.length === 0 ? {} : { anonymous: [...stamps] };

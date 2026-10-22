@@ -179,6 +179,8 @@ export interface UpdateSummary {
   createdBy: string;
   createdAt: Date;
   bytes: number;
+  /** Read along, so the routes mask the author; never passed on. */
+  anonymous?: Stamp[];
 }
 
 /** Like readUpdatesSince, but MongoDB counts the bytes instead of sending them; limit caps it. */
@@ -191,7 +193,7 @@ export async function summarizeUpdatesSince(
   const found = db
     .collection<UpdateRecord>('updates')
     .find<UpdateSummary>(after(workpieceId, since), {
-      projection: { createdBy: 1, createdAt: 1, bytes: { $binarySize: '$bytes' } },
+      projection: { createdBy: 1, createdAt: 1, bytes: { $binarySize: '$bytes' }, anonymous: 1 },
     })
     .sort({ _id: 1 });
 

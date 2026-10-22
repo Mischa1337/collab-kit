@@ -4,6 +4,7 @@ import type { Db } from 'mongodb';
 import { may, mayHandOn, maySeeGroup, placeExists, rightsAt } from '../auth/access.ts';
 import { findGrant, grantsAt, grantsOf, removeGrant, setGrant } from '../db/collections/grants.ts';
 import { findGroup } from '../db/collections/groups.ts';
+import { isAnonymousAt, readerOf } from '../auth/anonymity.ts';
 import { withNames } from '../db/names.ts';
 import type { Actor } from '../model/actor.ts';
 import type { Reference } from '../model/anchor.ts';
@@ -72,7 +73,9 @@ export function grantRoutes(db: Db, recheckAccess: () => Promise<void>): Router 
     if (changed) {
       await recheckAccess();
     }
-    response.json(await withNames(db, await findGrant(db, groupId, scope)));
+    response.json(
+      await withNames(db, await findGrant(db, groupId, scope), readerOf(db, actorOf(request))),
+    );
   });
 
   // In the query and not the body: a body on DELETE may get lost on the way.
@@ -133,7 +136,7 @@ export function grantRoutes(db: Db, recheckAccess: () => Promise<void>): Router 
     }
 
     const grants = groupId === undefined ? await grantsAt(db, scope) : await grantsOf(db, groupId);
-    response.json(await withNames(db, grants));
+    response.json(await withNames(db, grants, readerOf(db, actorOf(request))));
   });
 
   /** What this token may do at a thing, or everywhere without one, so a tool can shape its view. */
@@ -147,6 +150,19 @@ export function grantRoutes(db: Db, recheckAccess: () => Promise<void>): Router 
 
     const held = await rightsAt(db, actorOf(request), target);
     response.json(RIGHTS.filter((right) => held.has(right)));
+  });
+
+  /** Whether this token writes anonymously at a thing, or everywhere without one, so a tool leaves names out. */
+  routes.get('/me/anonymous', async (request, response) => {
+    const { kind, id } = request.query;
+    const target = asReference({ kind, id });
+
+    if ((kind !== undefined || id !== undefined) && target === undefined) {
+      return fail(response, 400, REFERENCE_RULE);
+    }
+
+    // No pseudonym: whoever asks sees themselves openly anyway.
+    response.json({ anonymous: await isAnonymousAt(db, actorOf(request).actorId, target) });
   });
 
   return routes;

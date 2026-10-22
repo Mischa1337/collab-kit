@@ -4,7 +4,7 @@ import { anchorSchema, anchoredAt, type Anchor, type AnchorQuery } from '../../m
 import { defined, matchOptional } from '../../utils/optional.ts';
 import type { CollectionDefinition } from '../apply.ts';
 import { changeWithEvent, writeWithEvents, type About, type NewEvent } from './events.ts';
-import { stampField, stampsSchema, type Stamp } from './pseudonyms.ts';
+import { stampField, stampsSchema, unstampedBy, type Stamp } from './pseudonyms.ts';
 
 /** Who a task is assigned to: a person by actor key, or a group; a change cannot hold one. */
 export type Assignee = { kind: 'actor'; id: string } | { kind: 'group'; id: ObjectId };
@@ -261,6 +261,8 @@ export interface TaskQuery {
   readonly state?: string;
   /** Assigned to any of these; a person and their groups is how "mine" is asked for. */
   readonly assignees?: readonly [Assignee, ...Assignee[]];
+  /** Only tasks in which this key is not stamped, for an assignee the reader may not see through. */
+  readonly unstamped?: string;
   readonly anchor?: AnchorQuery;
   /** Left out matches every task, TOP only those without a parent. */
   readonly parentId?: ObjectId | null;
@@ -280,6 +282,7 @@ export async function readTasks(db: Db, query: TaskQuery = {}): Promise<TaskReco
           })),
         }),
     ...matchOptional('parentId', query.parentId),
+    ...(query.unstamped === undefined ? {} : unstampedBy(query.unstamped)),
   };
 
   return db

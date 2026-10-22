@@ -1,10 +1,13 @@
 import type { AddressInfo } from 'node:net';
 
 import jwt from 'jsonwebtoken';
+import * as decoding from 'lib0/decoding';
+import * as encoding from 'lib0/encoding';
 import { ObjectId } from 'mongodb';
 import pino from 'pino';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { WebSocket } from 'ws';
 import * as Y from 'yjs';
 
 import { createTokenCheck } from '../../src/auth/token.ts';
@@ -113,16 +116,70 @@ const eventsAt = async (anchor: Reference, kind: string): Promise<EventRecord[]>
 const stampOf = (stamps: readonly Stamp[] | undefined, key: string) =>
   stamps?.find((stamp) => stamp.key === key);
 
-/** Opens the workpiece as this person. */
-const open = async (workpieceId: ObjectId, actor: string, doc = new Y.Doc()) => {
+/** Opens the workpiece as this person, asking for events if told to. */
+const open = async (workpieceId: ObjectId, actor: string, doc = new Y.Doc(), events = false) => {
   const client = await connectClient(
-    `ws://127.0.0.1:${port}/ws/${workpieceId.toHexString()}`,
+    `ws://127.0.0.1:${port}/ws/${workpieceId.toHexString()}${events ? '?events=1' : ''}`,
     ['bearer', tokenOf(actor)],
     doc,
   );
   await client.synced;
   return client;
 };
+
+/** A doc with this client id, so it is known whose value wins a key: the larger id. */
+const docOf = (clientID: number): Y.Doc => {
+  const doc = new Y.Doc();
+  doc.clientID = clientID;
+  return doc;
+};
+
+/** Reads a route as this person. */
+const read = (actor: string, path: string, query: Record<string, string> = {}) =>
+  request(server).get(path).query(query).set(as(actor));
+
+/** One awareness entry as a client sends it: which client, its clock, and its state. */
+function presence(clientId: number, clock: number, state: unknown): Uint8Array {
+  const update = encoding.createEncoder();
+  encoding.writeVarUint(update, 1);
+  encoding.writeVarUint(update, clientId);
+  encoding.writeVarUint(update, clock);
+  encoding.writeVarString(update, JSON.stringify(state));
+
+  const message = encoding.createEncoder();
+  encoding.writeVarUint(message, 1);
+  encoding.writeVarUint8Array(message, encoding.toUint8Array(update));
+  return encoding.toUint8Array(message);
+}
+
+/** A bare connection that records the latest awareness state it is sent per client. */
+async function watch(workpieceId: ObjectId, actor: string) {
+  const socket = new WebSocket(`ws://127.0.0.1:${port}/ws/${workpieceId.toHexString()}`, [
+    'bearer',
+    tokenOf(actor),
+  ]);
+  const seen = new Map<number, Record<string, unknown>>();
+
+  socket.on('message', (data: Buffer) => {
+    const message = decoding.createDecoder(new Uint8Array(data));
+    if (decoding.readVarUint(message) !== 1) {
+      return;
+    }
+    const update = decoding.createDecoder(decoding.readVarUint8Array(message));
+    const count = decoding.readVarUint(update);
+    for (let entry = 0; entry < count; entry += 1) {
+      const clientId = decoding.readVarUint(update);
+      decoding.readVarUint(update);
+      seen.set(clientId, JSON.parse(decoding.readVarString(update)) as Record<string, unknown>);
+    }
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    socket.once('open', () => resolve());
+    socket.once('error', reject);
+  });
+  return { socket, seen };
+}
 
 /** Waits until this many changes of the workpiece are stored. */
 const stored = async (workpieceId: ObjectId, count: number) =>
@@ -286,8 +343,8 @@ describe('stamps when written', () => {
       .send({ kind: 'read', anchor: { kind: 'comment', id: hidden._id.toHexString() } });
     await request(server).delete(`/comments/${hidden._id.toHexString()}`).set(as('carol'));
 
-    const [read] = await eventsAt({ kind: 'comment', id: hidden._id }, 'read');
-    expect(read?.anonymous).toEqual([stamp]);
+    const [mark] = await eventsAt({ kind: 'comment', id: hidden._id }, 'read');
+    expect(mark?.anonymous).toEqual([stamp]);
     const [gone] = await eventsAt({ kind: 'comment', id: hidden._id }, 'comment-deleted');
     expect(gone?.anonymous).toEqual([stamp]);
     expect((await findComment(storage.db, hidden._id))?.anonymous).toEqual([stamp]);
@@ -422,8 +479,8 @@ describe('stamps over the socket', () => {
     expect(stamp?.as).toBe(await pseudonymOf(storage.db, anchor, 'carol'));
     expect(his?.anonymous).toBeUndefined();
 
-    const presence = [...(await eventsAt(anchor, 'joined')), ...(await eventsAt(anchor, 'left'))];
-    for (const event of presence) {
+    const traces = [...(await eventsAt(anchor, 'joined')), ...(await eventsAt(anchor, 'left'))];
+    for (const event of traces) {
       expect(event.anonymous).toEqual(event.createdBy === 'carol' ? [stamp] : undefined);
     }
   });
@@ -548,5 +605,236 @@ describe('forks and merges', () => {
     expect(brought?.anonymous).toEqual([{ key: 'carol', as: there }]);
     const [event] = await eventsAt({ kind: 'workpiece', id: target._id }, 'workpiece-merged');
     expect(event?.anonymous).toEqual([{ key: 'carol', as: there }]);
+  });
+});
+
+describe('what goes out', () => {
+  it('shows others a pseudonym without a name, the person themselves and manage the true key', async () => {
+    const { workpieceId } = await seminar();
+    await say('carol', workpieceId);
+    await say('bob', workpieceId);
+    const query = { anchorKind: 'workpiece', anchorId: workpieceId.toHexString() };
+    const pseudonym = await pseudonymOf(
+      storage.db,
+      { kind: 'workpiece', id: workpieceId },
+      'carol',
+    );
+
+    const [toBob, bobs] = (await read('bob', '/comments', query)).body as Record<string, unknown>[];
+    expect(toBob).toMatchObject({ createdBy: pseudonym });
+    expect(toBob?.['names']).toBeUndefined();
+    expect(toBob?.['anonymous']).toBeUndefined();
+    // Without the flag, as before.
+    expect((await read('carol', '/comments', query)).body[1]).toMatchObject({
+      createdBy: 'bob',
+      names: { bob: 'bob' },
+    });
+    expect(bobs).toMatchObject({ createdBy: 'bob' });
+
+    const through = await Promise.all(
+      ['carol', 'alice'].map((reader) => read(reader, '/comments', query)),
+    );
+    for (const answer of through) {
+      const [shown] = answer.body as Record<string, unknown>[];
+      expect(shown).toMatchObject({ createdBy: 'carol', names: { carol: 'carol' } });
+      expect(shown?.['anonymous']).toBeUndefined();
+    }
+  });
+
+  it('masks the traces, the changes and the persons given a task alike', async () => {
+    const { workpieceId } = await seminar();
+    const anchor = { kind: 'workpiece', id: workpieceId.toHexString() };
+    const pseudonym = await pseudonymOf(
+      storage.db,
+      { kind: 'workpiece', id: workpieceId },
+      'carol',
+    );
+    const comment = await say('carol', workpieceId);
+    const task = await request(server)
+      .post('/tasks')
+      .set(as('bob'))
+      .send({
+        kind: 'task',
+        title: 'Prüfen',
+        state: 'open',
+        anchor,
+        assignees: [{ kind: 'actor', id: 'carol' }],
+      });
+    const carol = await open(workpieceId, 'carol');
+    carol.doc.getText('t').insert(0, 'a');
+    await stored(workpieceId, 1);
+    await carol.close();
+
+    const [created] = (
+      await read('bob', '/events', { anchorKind: 'comment', anchorId: comment._id.toHexString() })
+    ).body as Record<string, unknown>[];
+    expect(created).toMatchObject({ kind: 'comment-created', createdBy: pseudonym });
+    expect((await read('bob', `/tasks/${task.body._id as string}`)).body.assignees).toEqual([
+      { kind: 'actor', id: pseudonym },
+    ]);
+    const [change] = (await read('bob', `/workpieces/${workpieceId.toHexString()}/updates`))
+      .body as Record<string, unknown>[];
+    expect(change).toMatchObject({ createdBy: pseudonym });
+    expect(change?.['anonymous']).toBeUndefined();
+  });
+
+  it('finds by key only what that key wrote openly, unless the reader may see through', async () => {
+    const { roomId, workpieceId } = await seminar();
+    await say('carol', workpieceId);
+    const anchor = { kind: 'workpiece', id: workpieceId.toHexString() };
+    await request(server)
+      .post('/tasks')
+      .set(as('bob'))
+      .send({
+        kind: 'task',
+        title: 'Prüfen',
+        state: 'open',
+        anchor,
+        assignees: [{ kind: 'actor', id: 'carol' }],
+      });
+
+    const byCarol = {
+      anchorKind: 'workpiece',
+      anchorId: workpieceId.toHexString(),
+      createdBy: 'carol',
+    };
+    const toCarol = {
+      anchorKind: 'workpiece',
+      anchorId: workpieceId.toHexString(),
+      assigneeKind: 'actor',
+      assigneeId: 'carol',
+    };
+    const room = `/rooms/${roomId.toHexString()}/events`;
+
+    expect((await read('bob', '/comments', byCarol)).body).toEqual([]);
+    expect((await read('bob', '/tasks', toCarol)).body).toEqual([]);
+    expect((await read('bob', room, { createdBy: 'carol' })).body).toEqual([]);
+    const through = await Promise.all(
+      ['carol', 'alice'].map((reader) =>
+        Promise.all([
+          read(reader, '/comments', byCarol),
+          read(reader, '/tasks', toCarol),
+          read(reader, room, { createdBy: 'carol' }),
+        ]),
+      ),
+    );
+    for (const [comments, tasks, events] of through) {
+      expect(comments.body).toHaveLength(1);
+      expect(tasks.body).toHaveLength(1);
+      expect((events.body as unknown[]).length).toBeGreaterThan(0);
+    }
+  });
+
+  it('keeps open and anonymous activity of one person apart, without telling where', async () => {
+    const { roomId, workpieceId, bobs } = await seminar();
+    await say('bob', workpieceId);
+    await grant(bobs, roomId, true);
+    await say('bob', workpieceId);
+    const pseudonym = await pseudonymOf(storage.db, { kind: 'workpiece', id: workpieceId }, 'bob');
+
+    const activity = (await read('carol', `/workpieces/${workpieceId.toHexString()}/activity`))
+      .body as Record<string, unknown>[];
+    expect(activity.map((entry) => entry['actorId']).toSorted()).toEqual(
+      ['bob', pseudonym].toSorted(),
+    );
+    expect(
+      activity.every((entry) => entry['anchor'] === undefined && entry['anonymous'] === undefined),
+    ).toBe(true);
+    const throughRoom = (await read('alice', `/rooms/${roomId.toHexString()}/activity`))
+      .body as Record<string, unknown>[];
+    expect(throughRoom.filter((entry) => entry['actorId'] === 'bob')).toHaveLength(2);
+  });
+
+  it('tells a token whether it writes anonymously at a place', async () => {
+    const { workpieceId } = await seminar();
+    const at = { kind: 'workpiece', id: workpieceId.toHexString() };
+
+    expect((await read('carol', '/me/anonymous', at)).body).toEqual({ anonymous: true });
+    expect((await read('bob', '/me/anonymous', at)).body).toEqual({ anonymous: false });
+    expect((await read('carol', '/me/anonymous')).body).toEqual({ anonymous: false });
+    expect((await read('carol', '/me/anonymous', { kind: 'stuhl', id: 'x' })).status).toBe(400);
+  });
+});
+
+describe('what goes out over the socket', () => {
+  it('sets person from the token, masked unless it is the own one or the reader manages', async () => {
+    const { roomId, workpieceId } = await seminar();
+    const pseudonym = await pseudonymOf(
+      storage.db,
+      { kind: 'workpiece', id: workpieceId },
+      'carol',
+    );
+    const carol = await watch(workpieceId, 'carol');
+    const bob = await watch(workpieceId, 'bob');
+    const alice = await watch(workpieceId, 'alice');
+
+    // What carol claims there counts for nothing.
+    carol.socket.send(presence(501, 1, { cursor: 3, person: { id: 'mallory', name: 'Mallory' } }));
+    bob.socket.send(presence(502, 1, { cursor: 4 }));
+    expect(
+      await waitFor(() =>
+        [carol, bob, alice].every((watcher) => watcher.seen.has(501) && watcher.seen.has(502)),
+      ),
+    ).toBe(true);
+
+    expect(bob.seen.get(501)).toEqual({ cursor: 3, person: { id: pseudonym } });
+    expect(carol.seen.get(501)).toEqual({ cursor: 3, person: { id: 'carol', name: 'carol' } });
+    expect(alice.seen.get(501)).toEqual({ cursor: 3, person: { id: 'carol', name: 'carol' } });
+    expect(carol.seen.get(502)).toEqual({ cursor: 4, person: { id: 'bob', name: 'bob' } });
+
+    // Who is there, masked the same way.
+    const shown = (await read('bob', `/rooms/${roomId.toHexString()}/presence`)).body as Record<
+      string,
+      unknown
+    >[];
+    expect(shown.map((entry) => entry['actorId']).toSorted()).toEqual(
+      ['alice', 'bob', pseudonym].toSorted(),
+    );
+
+    for (const watcher of [carol, bob, alice]) {
+      watcher.socket.close();
+    }
+  });
+
+  it('tells a conflict at once, each listener seeing it as they may', async () => {
+    const { workpieceId } = await seminar();
+    const pseudonym = await pseudonymOf(
+      storage.db,
+      { kind: 'workpiece', id: workpieceId },
+      'carol',
+    );
+
+    // Bob works on offline with the larger client id, so his value wins over carol's.
+    const away = await open(workpieceId, 'bob', docOf(200));
+    await away.close();
+    const alice = await open(workpieceId, 'alice', docOf(300), true);
+    const carol = await open(workpieceId, 'carol', docOf(100));
+    carol.doc.getMap('m').set('x', 'C');
+    await stored(workpieceId, 1);
+    away.doc.getMap('m').set('x', 'B');
+    const bob = await open(workpieceId, 'bob', away.doc, true);
+    expect(await waitFor(() => bob.events.length === 1 && alice.events.length === 1)).toBe(true);
+
+    expect(bob.events[0]).toMatchObject({ kind: 'work-lost', affects: [pseudonym, 'bob'] });
+    expect(bob.events[0]?.['names']).toEqual({ bob: 'bob' });
+    expect(alice.events[0]).toMatchObject({ affects: ['carol', 'bob'] });
+
+    await Promise.all([alice.close(), carol.close(), bob.close()]);
+  });
+
+  it('closes with 4409 when the reader comes to manage the workpiece, so it sees anew', async () => {
+    const { roomId, workpieceId, bobs } = await seminar();
+    const bob = await open(workpieceId, 'bob');
+
+    await request(server)
+      .put('/grants')
+      .set(as('alice'))
+      .send({
+        groupId: bobs.toHexString(),
+        scope: { kind: 'room', id: roomId.toHexString() },
+        rights: [...WRITING, 'manage'],
+      });
+
+    expect(await bob.closed).toBe(4409);
   });
 });

@@ -7,10 +7,11 @@ import { findComment } from '../db/collections/comments.ts';
 import type { NewEvent } from '../db/collections/events.ts';
 import { pseudonymOf, type Stamp } from '../db/collections/pseudonyms.ts';
 import { findTask } from '../db/collections/tasks.ts';
-import { eventKeysOf, keysOf } from '../db/names.ts';
+import { eventKeysOf, keysOf, type Reader } from '../db/names.ts';
+import type { Actor } from '../model/actor.ts';
 import type { Reference } from '../model/anchor.ts';
 import { defined } from '../utils/optional.ts';
-import { anonymousAmong } from './access.ts';
+import { anonymousAmong, may } from './access.ts';
 
 /** A record a trace is written into or about, as far as stamping needs it. */
 type Known = object & { readonly anonymous?: readonly Stamp[] };
@@ -63,6 +64,45 @@ export async function eventStamps(db: Db, event: NewEvent): Promise<Stamp[]> {
   const place: Reference = { kind: event.anchor.kind, id: event.anchor.id };
   const [about, known] = await Promise.all([subjectOf(db, place), recordAt(db, place)]);
   return stampsFor(db, keys, { places: [place], about, ...defined({ known }) });
+}
+
+/** Who reads an answer: sees their own key, and true keys behind pseudonyms where they manage. */
+export function readerOf(db: Db, actor: Actor): Reader {
+  // Asked once per place, however many entries of the answer lie there.
+  const asked = new Map<string, Promise<boolean>>();
+
+  return {
+    actorId: actor.actorId,
+    seesThrough: (place) => {
+      const key = `${place.kind}:${place.id.toHexString()}`;
+      const answer = asked.get(key) ?? may(db, actor, 'manage', place);
+      asked.set(key, answer);
+      return answer;
+    },
+  };
+}
+
+/** The key a filter must not find behind a stamp: somebody else's, where the reader does not manage. */
+export async function unstampedFor(
+  db: Db,
+  actor: Actor,
+  key: string | undefined,
+  place: Reference,
+): Promise<string | undefined> {
+  if (key === undefined || key === actor.actorId) {
+    return undefined;
+  }
+  // Otherwise the filter would say whose the pseudonym is that it finds.
+  return (await may(db, actor, 'manage', place)) ? undefined : key;
+}
+
+/** Whether the actor writes anonymously at the place, as the flag says now; for GET /me/anonymous. */
+export async function isAnonymousAt(
+  db: Db,
+  actorId: string,
+  place: Reference | undefined,
+): Promise<boolean> {
+  return (await anonymousAmong(db, [actorId], place === undefined ? [] : [place])).has(actorId);
 }
 
 /** The pseudonym the actor writes under at the workpiece, or undefined while openly. */
