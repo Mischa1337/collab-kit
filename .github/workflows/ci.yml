@@ -53,5 +53,9 @@ jobs:
           MONGODB_URI: mongodb://localhost:24203/?replicaSet=rs0&directConnection=true
           MONGODB_DB: collab_kit_test
 
+      # Shows the mongod message when the container does not start or a test fails.
+      - if: failure()
+        run: docker compose logs mongo
+
       - if: always()
         run: docker compose down -v

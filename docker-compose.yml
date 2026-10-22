@@ -2,7 +2,7 @@ services:
   # Single-node replica set. Without --replSet and a one-time rs.initiate() there are
   # no transactions across documents, which the service needs later on.
   mongo:
-    image: mongo:8.0
+    image: mongo:8.0.32
     container_name: collab-kit-mongo
     command: ['mongod', '--replSet', 'rs0', '--bind_ip_all']
     ports:
