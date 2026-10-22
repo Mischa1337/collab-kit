@@ -32,7 +32,10 @@ jobs:
 
   integration:
     name: integration tests against a real database
-    runs-on: ubuntu-latest
+    # mongod 8.0 does not start on the kernel of ubuntu-24.04 since image 20261018: it reads
+    # 7.0.0 from uname and exits, although the kernel carries the fix (SERVER-131779).
+    # Back to ubuntu-latest once mongo:8.0.35 is out.
+    runs-on: ubuntu-22.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7.0.1
