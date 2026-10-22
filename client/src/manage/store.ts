@@ -18,6 +18,9 @@ import type { Texts } from './look/texts.ts';
 /** The six rights in the order CK names them. */
 export const RIGHTS: readonly Right[] = ['see', 'speak', 'edit', 'plan', 'decide', 'manage'];
 
+/** What one chip of a grant switches: a right, or whether its members write anonymously. */
+export type Switch = Right | 'anonymous';
+
 /** Which list is shown. */
 export type Tab = 'rooms' | 'groups';
 
@@ -223,9 +226,11 @@ export class Store {
     });
   }
 
-  /** Switches one right of a grant; without any right left the grant goes. */
-  async toggle(grant: Grant, right: Right): Promise<void> {
-    const rights = switched(grant.rights, right);
+  /** Switches one right of a grant or its flag; without any right left the grant goes. */
+  async toggle(grant: Grant, chip: Switch): Promise<void> {
+    const rights = chip === 'anonymous' ? [...grant.rights] : switched(grant.rights, chip);
+    // Set whole, so the flag goes along with every right switched, and stays as it was.
+    const anonymous = (grant.anonymous === true) !== (chip === 'anonymous');
     const which =
       grant.scope === undefined
         ? { groupId: grant.groupId }
@@ -237,7 +242,7 @@ export class Store {
         this.changeGrants((grants) => grants.filter((each) => each._id !== grant._id));
         return;
       }
-      const changed = await this.ck().grants.set({ ...which, rights });
+      const changed = await this.ck().grants.set({ ...which, rights, anonymous });
       this.takeNames(changed);
       this.changeGrants((grants) =>
         grants.map((each) => (each._id === grant._id ? changed : each)),

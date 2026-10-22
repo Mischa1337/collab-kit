@@ -2,7 +2,8 @@
 
 import { html, nothing, type TemplateResult } from 'lit';
 
-import type { ActorName, Grant, Group, Reference, Right } from '../../api.ts';
+import type { ActorName, Grant, Group, Reference } from '../../api.ts';
+import type { Switch } from '../store.ts';
 import { cross, plus } from '../look/icons.ts';
 import type { Texts } from '../look/texts.ts';
 import { accessRow } from './access.ts';
@@ -30,7 +31,7 @@ export interface GroupView {
   openForm(kind: 'member'): void;
   pick(person: ActorName): void;
   dismiss(actorId: string): void;
-  toggle(grant: Grant, right: Right): void;
+  toggle(grant: Grant, chip: Switch): void;
 }
 
 /** The group with its members, and with manage the places where it may do something. */

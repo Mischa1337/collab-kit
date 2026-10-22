@@ -4,7 +4,7 @@ import type { Awareness } from 'y-protocols/awareness';
 
 import type { Me, Person, Presence, PresenceClient } from './api.ts';
 
-/** Writes who this is into the own entry, so the others see a person and not only a client. */
+/** Writes who this is into the own entry for the own view; CK sets it from the token for the others. */
 export function announce(awareness: Awareness, me: Me): void {
   awareness.setLocalStateField(
     'person',
@@ -12,20 +12,20 @@ export function announce(awareness: Awareness, me: Me): void {
   );
 }
 
-/** The presence of a session; self is asked at every call, as GET /me may answer anew. */
-export function presenceOf(awareness: Awareness, self: () => string | undefined): Presence {
+/** The presence of a session; awareness and self are asked at every call, as both may change. */
+export function presenceOf(
+  awareness: () => Awareness,
+  self: () => string | undefined,
+  listen: (listener: () => void) => () => void,
+): Presence {
   return {
     set: (fields) => {
-      const own = awareness.getLocalState() ?? {};
+      const own = awareness().getLocalState() ?? {};
       // person stays what GET /me said, whatever the fields bring.
-      awareness.setLocalState({ ...own, ...fields, person: own['person'] });
+      awareness().setLocalState({ ...own, ...fields, person: own['person'] });
     },
-    people: () => peopleIn(awareness.getStates(), self()),
-    onChange: (listener) => {
-      const observer = (): void => listener();
-      awareness.on('change', observer);
-      return () => awareness.off('change', observer);
-    },
+    people: () => peopleIn(awareness().getStates(), self()),
+    onChange: listen,
   };
 }
 

@@ -312,6 +312,28 @@ describe('<ck-management>', () => {
     expect((await alice.rooms.get(room._id)).workpieces).toHaveLength(1);
   });
 
+  it('switches whether a group writes anonymously, and keeps it while a right is switched', async () => {
+    const room = await alice.rooms.create({ name: 'Übung 8' });
+    const team = await alice.groups.create({ name: 'Team F', members: ['bob'] });
+    const scope = { kind: 'room', id: room._id };
+    await alice.grants.set({ groupId: team._id, scope, rights: ['see'] });
+
+    const element = await mount(alice);
+    await click(element, 'Übung 8');
+    await toggle(element, 'Team F', 'anonymous');
+    expect(await alice.grants.list({ scope })).toMatchObject([
+      { rights: ['see'], anonymous: true },
+    ]);
+
+    await toggle(element, 'Team F', 'edit');
+    expect(await alice.grants.list({ scope })).toMatchObject([
+      { rights: ['see', 'edit'], anonymous: true },
+    ]);
+    await toggle(element, 'Team F', 'anonymous');
+    const [open] = await alice.grants.list({ scope });
+    expect(open?.anonymous).toBeUndefined();
+  });
+
   it('tells a refusal of CK in its own words', async () => {
     const room = await alice.rooms.create({ name: 'Übung 6' });
     const team = await alice.groups.create({ name: 'Team E', members: ['bob'] });
