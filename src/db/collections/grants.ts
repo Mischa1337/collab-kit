@@ -14,6 +14,8 @@ export interface GrantRecord {
   scope?: Reference;
   /** Replaced as a whole; who changed them, when and why is kept in events. */
   rights: Right[];
+  /** Its members write anonymously at the place and below; set and replaced with the rights. */
+  anonymous?: true;
   createdAt: Date;
   createdBy: string;
 }
@@ -37,6 +39,10 @@ export const grantsDefinition: CollectionDefinition = {
         uniqueItems: true,
         items: { enum: [...RIGHTS] },
       },
+      anonymous: {
+        enum: [true],
+        description: 'its members write anonymously here and below, left out they write openly',
+      },
       createdAt: { bsonType: 'date' },
       createdBy: { bsonType: 'string' },
     },
@@ -54,6 +60,8 @@ export interface GrantChange {
   /** Left out, the rights hold in the whole instance. */
   readonly scope?: Reference;
   readonly rights: readonly [Right, ...Right[]];
+  /** Its members write anonymously there; left out, openly, as the grant is replaced whole. */
+  readonly anonymous?: true;
   readonly setBy: string;
   readonly reason?: string;
 }
@@ -61,6 +69,11 @@ export interface GrantChange {
 /** Sets what the group may do at the place, replacing what it had; answers whether that changed. */
 export async function setGrant(db: Db, input: GrantChange, now = new Date()): Promise<boolean> {
   const rights = [...new Set(input.rights)];
+  // Replaced whole like the rights, so a grant set without the flag loses it.
+  const change =
+    input.anonymous === true
+      ? { $set: { rights, anonymous: true as const } }
+      : { $set: { rights }, $unset: { anonymous: '' as const } };
 
   return writeWithEvents(
     db,
@@ -70,13 +83,18 @@ export async function setGrant(db: Db, input: GrantChange, now = new Date()): Pr
         .collection<GrantRecord>('grants')
         .updateOne(
           grantAt(input.groupId, input.scope),
-          { $set: { rights }, $setOnInsert: { createdAt: now, createdBy: input.setBy } },
+          { ...change, $setOnInsert: { createdAt: now, createdBy: input.setBy } },
           { upsert: true, session },
         );
 
       return result.upsertedCount === 1 || result.modifiedCount === 1;
     },
-    [grantEvent('grant-set', input, input.setBy, { rights })],
+    [
+      grantEvent('grant-set', input, input.setBy, {
+        rights,
+        ...defined({ anonymous: input.anonymous }),
+      }),
+    ],
     now,
   );
 }
@@ -191,6 +209,28 @@ export async function rightsHeld(
   return new Set(found.flatMap((grant) => grant.rights));
 }
 
+/** Whether one of these groups holds a grant with the flag at one of these places or everywhere. */
+export async function flaggedAt(
+  db: Db,
+  groupIds: readonly ObjectId[],
+  places: readonly Reference[],
+): Promise<boolean> {
+  if (groupIds.length === 0) {
+    return false;
+  }
+
+  const found = await db.collection<GrantRecord>('grants').findOne(
+    {
+      groupId: { $in: [...groupIds] },
+      anonymous: true,
+      $or: [{ scope: { $exists: false } }, ...places.map(atPlace)],
+    } as Filter<GrantRecord>,
+    { projection: { _id: 1 } },
+  );
+
+  return found !== null;
+}
+
 /** The places of one kind where one of these groups holds the right, by key. */
 export async function placesWhere(
   db: Db,
@@ -233,7 +273,7 @@ function grantEvent(
   kind: string,
   input: { readonly groupId: ObjectId; readonly scope?: Reference; readonly reason?: string },
   by: string,
-  extra: { readonly rights?: Right[] } = {},
+  extra: { readonly rights?: Right[]; readonly anonymous?: true } = {},
 ): NewEvent {
   const anchor: Reference = input.scope ?? { kind: 'group', id: input.groupId };
 

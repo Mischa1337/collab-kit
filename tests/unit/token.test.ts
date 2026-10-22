@@ -74,6 +74,12 @@ describe('createTokenCheck', () => {
     );
   });
 
+  it('refuses a key like a pseudonym, so nobody passes for someone writing anonymously', async () => {
+    await expect(check(sign({ sub: 'anon-1234' }, { expiresIn: '15m' }))).rejects.toThrowError(
+      'token rejected',
+    );
+  });
+
   it('refuses another algorithm even when the signature fits', async () => {
     const token = jwt.sign({ sub: 'u-8134' }, secret, { algorithm: 'HS512', expiresIn: '15m' });
 

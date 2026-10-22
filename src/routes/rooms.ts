@@ -136,6 +136,10 @@ export function roomRoutes(db: Db, hub: WorkpieceHub, recheckAccess: () => Promi
 
     const id = idOf(request);
     const added = await addToRoom(db, id, { workpieceId, addedBy: actor.actorId });
+    // In here it may be writable or anonymous for whoever has it open, so they are asked again.
+    if (added) {
+      await recheckAccess();
+    }
 
     // 200 if it was already in: adding it twice is no error, it just changes nothing.
     response.status(added ? 201 : 200).json(await withNames(db, await findRoom(db, id)));

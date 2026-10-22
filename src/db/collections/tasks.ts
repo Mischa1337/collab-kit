@@ -4,6 +4,7 @@ import { anchorSchema, anchoredAt, type Anchor, type AnchorQuery } from '../../m
 import { defined, matchOptional } from '../../utils/optional.ts';
 import type { CollectionDefinition } from '../apply.ts';
 import { changeWithEvent, writeWithEvents, type About, type NewEvent } from './events.ts';
+import { stampField, stampsSchema, type Stamp } from './pseudonyms.ts';
 
 /** Who a task is assigned to: a person by actor key, or a group; a change cannot hold one. */
 export type Assignee = { kind: 'actor'; id: string } | { kind: 'group'; id: ObjectId };
@@ -25,6 +26,8 @@ export interface TaskRecord {
   detail?: Document;
   createdAt: Date;
   createdBy: string;
+  /** Who in it wrote or was given it anonymously, each with the pseudonym; decided when it was. */
+  anonymous?: Stamp[];
 }
 
 export const tasksDefinition: CollectionDefinition = {
@@ -57,6 +60,7 @@ export const tasksDefinition: CollectionDefinition = {
       detail: { bsonType: 'object', description: 'free, the service never reads it' },
       createdAt: { bsonType: 'date' },
       createdBy: { bsonType: 'string' },
+      anonymous: stampsSchema,
     },
   },
   indexes: [
@@ -67,6 +71,8 @@ export const tasksDefinition: CollectionDefinition = {
 };
 
 export interface NewTask {
+  /** Chosen beforehand when its pseudonyms belong to it, as for a task that hangs on nothing. */
+  readonly id?: ObjectId;
   readonly kind: string;
   readonly title: string;
   /** No default: naming the first state is the business of the tool. */
@@ -80,12 +86,15 @@ export interface NewTask {
   readonly detail?: Document;
   /** What its anchor or parent hangs on in the end, for the trace; the route looks it up. */
   readonly about?: About;
+  /** Who of its author and the persons given it is anonymous, decided by the route; left out, nobody. */
+  readonly anonymous?: readonly Stamp[];
 }
 
 /** Stores the task and records task-created in one transaction, its content not in it. */
 export async function createTask(db: Db, input: NewTask, now = new Date()): Promise<TaskRecord> {
+  const stamps = input.anonymous ?? [];
   const task: TaskRecord = {
-    _id: new ObjectId(),
+    _id: input.id ?? new ObjectId(),
     kind: input.kind,
     title: input.title,
     state: input.state,
@@ -98,8 +107,10 @@ export async function createTask(db: Db, input: NewTask, now = new Date()): Prom
       order: input.order,
       detail: input.detail,
     }),
+    ...stampField(stamps),
   };
 
+  // Its trace names only the author, stamped as in the task, which is not there to be asked yet.
   await writeWithEvents(
     db,
     async (session) => {
@@ -112,6 +123,7 @@ export async function createTask(db: Db, input: NewTask, now = new Date()): Prom
         createdBy: input.createdBy,
         anchor: { kind: 'task', id: task._id },
         ...defined({ about: input.about }),
+        anonymous: stamps.filter((stamp) => stamp.key === input.createdBy),
       },
     ],
     now,
@@ -184,6 +196,8 @@ export interface Assignment {
   /** Why it was given or taken, D6.6. */
   readonly reason?: string;
   readonly about?: About;
+  /** Who of the changer and the person given is anonymous, decided against the task; else nobody. */
+  readonly anonymous?: readonly Stamp[];
 }
 
 /** Gives the task to one more person or group if new and records it; answers whether it was new. */
@@ -193,20 +207,27 @@ export async function addAssignee(
   input: Assignment,
   now = new Date(),
 ): Promise<boolean> {
+  const stamps = input.anonymous ?? [];
+  // Only the person given it joins the stamps of the task; who gave it is in the trace alone.
+  const given = stamps.filter(
+    (stamp) => input.assignee.kind === 'actor' && stamp.key === input.assignee.id,
+  );
+
   return writeWithEvents(
     db,
     async (session) => {
-      const result = await db
-        .collection<TaskRecord>('tasks')
-        .updateOne(
-          { _id: taskId, assignees: { $not: { $elemMatch: input.assignee } } },
-          { $push: { assignees: input.assignee } },
-          { session },
-        );
+      const result = await db.collection<TaskRecord>('tasks').updateOne(
+        { _id: taskId, assignees: { $not: { $elemMatch: input.assignee } } },
+        {
+          $push: { assignees: input.assignee },
+          ...(given.length === 0 ? {} : { $addToSet: { anonymous: { $each: given } } }),
+        },
+        { session },
+      );
 
       return result.modifiedCount === 1;
     },
-    [assigneeEvent('assignee-added', taskId, input)],
+    [{ ...assigneeEvent('assignee-added', taskId, input), anonymous: stamps }],
     now,
   );
 }

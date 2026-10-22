@@ -13,7 +13,8 @@ import {
   setGroupSettings,
 } from '../db/collections/groups.ts';
 import { withNames } from '../db/names.ts';
-import { asActorId, asEvery, asObject, asText } from '../utils/input.ts';
+import { isPseudonym } from '../model/actor.ts';
+import { asActorId, asEvery, asObject, asText, PSEUDONYM_RULE } from '../utils/input.ts';
 import { defined } from '../utils/optional.ts';
 import { actorOf, bodyOf, fail, guard, idOf, requireId, unusableField } from './http.ts';
 
@@ -58,6 +59,9 @@ export function groupRoutes(db: Db, recheckAccess: () => Promise<void>): Router 
     const members = asMembers(body['members']);
     if (members === undefined) {
       return fail(response, 400, 'members must be a list of actor keys');
+    }
+    if (members.some(isPseudonym)) {
+      return fail(response, 400, PSEUDONYM_RULE);
     }
 
     const settings = asObject(body['settings']);
@@ -145,6 +149,9 @@ export function groupRoutes(db: Db, recheckAccess: () => Promise<void>): Router 
 
     if (actorId === undefined) {
       return fail(response, 400, 'actorId is missing');
+    }
+    if (isPseudonym(actorId)) {
+      return fail(response, 400, PSEUDONYM_RULE);
     }
 
     const id = idOf(request);

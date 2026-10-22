@@ -2,6 +2,7 @@ import { Binary, ObjectId, type Db, type Document } from 'mongodb';
 
 import { defined } from '../../utils/optional.ts';
 import type { CollectionDefinition } from '../apply.ts';
+import { stampField, stampsSchema, type Stamp } from './pseudonyms.ts';
 
 /** The loading shortcut: the folded Yjs state and the last update it contains. */
 export interface FoldedState {
@@ -35,6 +36,8 @@ export interface WorkpieceRecord {
   fold?: FoldedState;
   createdAt: Date;
   createdBy: string;
+  /** Whether whoever created it wrote anonymously, with the pseudonym; decided when they did. */
+  anonymous?: Stamp[];
 }
 
 export const workpiecesDefinition: CollectionDefinition = {
@@ -81,6 +84,7 @@ export const workpiecesDefinition: CollectionDefinition = {
       },
       createdAt: { bsonType: 'date' },
       createdBy: { bsonType: 'string' },
+      anonymous: stampsSchema,
     },
   },
   // Whose forks a workpiece is, as the own forks lend their source.
@@ -95,6 +99,8 @@ export interface NewWorkpiece {
   readonly contract?: Document;
   readonly units?: UnitContainer[];
   readonly forkOf?: ForkOrigin;
+  /** Whether its creator writes anonymously, decided by the route; left out, openly. */
+  readonly anonymous?: readonly Stamp[];
 }
 
 /** Creates an empty workpiece without a start state: every change, even the first, is an update. */
@@ -111,6 +117,7 @@ export async function createWorkpiece(
     ...defined({ forkOf: input.forkOf }),
     createdAt: now,
     createdBy: input.createdBy,
+    ...stampField(input.anonymous ?? []),
   };
 
   await db.collection<WorkpieceRecord>('workpieces').insertOne(created);

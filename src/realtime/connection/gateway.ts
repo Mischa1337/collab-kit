@@ -7,7 +7,9 @@ import { WebSocketServer, type WebSocket } from 'ws';
 
 import type { Actor } from '../../model/actor.ts';
 import { workpieceAccess } from '../../auth/access.ts';
+import { writesAs } from '../../auth/anonymity.ts';
 import { asObjectId } from '../../utils/input.ts';
+import { defined } from '../../utils/optional.ts';
 import { isAllowedOrigin } from '../../utils/origin.ts';
 import type { Connection, WorkpieceHub, OpenWorkpiece } from '../hub/types.ts';
 import {
@@ -59,6 +61,8 @@ interface Admitted {
   readonly actor: Actor;
   /** Fixed for the life of the connection; when it changes, recheck closes it with 4409. */
   readonly mayWrite: boolean;
+  /** What the actor writes under here, from the flag on grants; fixed as mayWrite is. */
+  readonly pseudonym?: string;
   /** Whether it asked with ?events=1 to hear of events as they happen. */
   readonly wantsEvents: boolean;
 }
@@ -152,6 +156,13 @@ export function attachGateway(options: GatewayOptions): Gateway {
               // A fresh connection is admitted with the new rights, Yjs loses nothing on the way.
               options.logger.info(who, 'rights changed, connection closed');
               ws.close(4409, 'rights changed');
+            } else if (
+              (await writesAs(options.db, admitted.actor.actorId, admitted.workpieceId)) !==
+              admitted.pseudonym
+            ) {
+              // Its changes would otherwise go on under the old stamp, open or anonymous.
+              options.logger.info(who, 'anonymity changed, connection closed');
+              ws.close(4409, 'anonymity changed');
             }
           } catch (error) {
             options.logger.error({ err: error }, 'could not check access again');
@@ -196,6 +207,7 @@ async function serveConnection(
   // What the hub knows of this socket: who is on it and how to reach them.
   const connection: Connection = {
     actor: admitted.actor,
+    ...defined({ pseudonym: admitted.pseudonym }),
     wantsEvents: admitted.wantsEvents,
     send: (message) => {
       if (ws.readyState === ws.OPEN) {
@@ -409,7 +421,14 @@ async function admit(
 
   // Only who asks hears of events: a plain y-websocket client would not know message 101.
   const wantsEvents = new URLSearchParams(query).get('events') === '1';
-  return { workpieceId, actor, mayWrite: access === 'write', wantsEvents };
+  const pseudonym = await writesAs(options.db, actor.actorId, workpieceId);
+  return {
+    workpieceId,
+    actor,
+    mayWrite: access === 'write',
+    wantsEvents,
+    ...defined({ pseudonym }),
+  };
 }
 
 /** A catch for work nobody waits for: a failure is logged instead of ending the process. */

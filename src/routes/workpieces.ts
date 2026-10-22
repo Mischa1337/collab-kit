@@ -1,7 +1,8 @@
 import { Router } from 'express';
-import type { Db, ObjectId } from 'mongodb';
+import { ObjectId, type Db } from 'mongodb';
 
 import { may, maySee, workpiecesVisibleTo } from '../auth/access.ts';
+import { stampsFor } from '../auth/anonymity.ts';
 import { addToRoom } from '../db/collections/rooms.ts';
 import { createWorkpiece, findWorkpiece } from '../db/collections/workpieces.ts';
 import { latestPerActor } from '../db/collections/events.ts';
@@ -84,9 +85,17 @@ export function workpieceRoutes(db: Db, hub: WorkpieceHub): Router {
       return fail(response, ...refused);
     }
 
+    // Asked where it will lie, in the room or in nothing; its pseudonyms belong to itself.
+    const id = new ObjectId();
+    const anonymous = await stampsFor(db, [actor.actorId], {
+      places: roomId === undefined ? [] : [{ kind: 'room', id: roomId }],
+      about: { kind: 'workpiece', id },
+    });
     const workpiece = await createWorkpiece(db, {
+      id,
       name,
       createdBy: actor.actorId,
+      anonymous,
       ...defined({ contract, units }),
     });
     if (roomId !== undefined) {

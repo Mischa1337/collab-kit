@@ -2,7 +2,8 @@ import { Router } from 'express';
 import type { Db } from 'mongodb';
 
 import { mayChangeComment, mayCreateAt, maySee, maySetCommentState } from '../auth/access.ts';
-import { aboutOf } from '../db/about.ts';
+import { stampsFor } from '../auth/anonymity.ts';
+import { aboutOf, subjectOf } from '../db/about.ts';
 import {
   createComment,
   deleteComment,
@@ -91,11 +92,17 @@ export function commentRoutes(db: Db, decisions: readonly string[]): Router {
 
     // Looked up here and never read from the body, so no comment lands in another room's stream.
     const about = await aboutOf(db, anchor);
+    // Whether the author writes anonymously where it hangs, decided now and kept with it.
+    const anonymous = await stampsFor(db, [actor.actorId], {
+      places,
+      about: await subjectOf(db, anchor),
+    });
     const comment = await createComment(db, {
       kind,
       anchor,
       createdBy: actor.actorId,
       body: content,
+      anonymous,
       ...defined({ parentId, state, about }),
     });
     response.status(201).json(await withNames(db, comment));
@@ -203,7 +210,18 @@ export function commentRoutes(db: Db, decisions: readonly string[]): Router {
 
     // Deleting twice is no mistake, it only leaves no second trace.
     const about = await aboutOf(db, comment.anchor);
-    await deleteComment(db, id, { deletedBy: actor.actorId, ...defined({ reason, about }) });
+    // Asked against the comment, so its author deleting it stays as the comment has them.
+    const at = { kind: 'comment' as const, id };
+    const anonymous = await stampsFor(db, [actor.actorId], {
+      places: [at],
+      about: await subjectOf(db, at),
+      known: comment,
+    });
+    await deleteComment(db, id, {
+      deletedBy: actor.actorId,
+      anonymous,
+      ...defined({ reason, about }),
+    });
     response.json(await withNames(db, await findComment(db, id)));
   });
 

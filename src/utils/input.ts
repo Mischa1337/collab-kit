@@ -4,6 +4,7 @@ import { ObjectId, type Document } from 'mongodb';
 
 import type { Assignee } from '../db/collections/tasks.ts';
 import type { UnitContainer } from '../db/collections/workpieces.ts';
+import { isPseudonym, PSEUDONYM_PREFIX } from '../model/actor.ts';
 import {
   isReferenceKind,
   REFERENCE_KINDS,
@@ -67,6 +68,11 @@ export function asEvery<T>(raw: unknown, read: (entry: unknown) => T | undefined
 /** A finite number as sent in a body, fractions and negatives included, otherwise undefined. */
 export function asNumber(raw: unknown): number | undefined {
   return typeof raw === 'number' && Number.isFinite(raw) ? raw : undefined;
+}
+
+/** true or false as JSON sends it, otherwise undefined. */
+export function asBoolean(raw: unknown): boolean | undefined {
+  return typeof raw === 'boolean' ? raw : undefined;
 }
 
 /** A whole number above zero, also from text like "20", otherwise undefined. */
@@ -167,6 +173,14 @@ export function asAssignee(raw: unknown): Assignee | undefined {
     return id === undefined ? undefined : { kind, id };
   }
   return undefined;
+}
+
+/** Why a person's key is refused where it comes in, so no one passes for somebody's pseudonym. */
+export const PSEUDONYM_RULE = `no key of a person may begin with ${PSEUDONYM_PREFIX}, which marks a pseudonym`;
+
+/** Whether an assignee names a person by a key that looks like a pseudonym. */
+export function isPseudonymAssignee(assignee: Assignee): boolean {
+  return assignee.kind === 'actor' && isPseudonym(assignee.id);
 }
 
 /** A list of assignees as asAssignee reads each; one entry that does not fit spoils the list. */

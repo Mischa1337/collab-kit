@@ -11,6 +11,8 @@ import type { UpdateRecord } from '../../db/collections/updates.ts';
 /** What the hub needs from a connection, so it does not depend on the transport. */
 export interface Connection {
   readonly actor: Actor;
+  /** What its actor writes under at this workpiece; absent while they write openly. */
+  readonly pseudonym?: string;
   /** Whether it asked with ?events=1 to hear of events as they happen, as message 101. */
   readonly wantsEvents: boolean;
   send(message: Uint8Array): void;
@@ -47,6 +49,8 @@ export interface Merge {
   readonly from: ObjectId;
   /** Its changes after the mark, oldest first, each still under its author. */
   readonly rows: readonly UpdateRecord[];
+  /** The pseudonym each change is stored under at the target, by its id; any other goes openly. */
+  readonly writers: ReadonlyMap<string, string>;
   /** The last change of from the target holds afterwards, the mark for the next merge. */
   readonly upTo?: ObjectId;
   readonly createdBy: string;

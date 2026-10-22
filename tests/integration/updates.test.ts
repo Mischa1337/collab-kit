@@ -328,7 +328,7 @@ describe('folding', () => {
     doc.on('update', (update: Uint8Array) => pending.push(update));
     doc.getText('t').insert(6, ' nachher');
     await foldNow(storage.db, stored, doc);
-    await storeUpdate(storage.db, stored, pending[0]!, 'alice');
+    await storeUpdate(storage.db, stored, pending[0]!, { actorId: 'alice' });
 
     const reloaded = await loadWorkpiece(storage.db, workpieceId);
     expect(reloaded.doc.getText('t').toString()).toBe('vorher nachher');
@@ -349,7 +349,7 @@ describe('folding', () => {
     const later: Uint8Array[] = [];
     second.doc.on('update', (update: Uint8Array) => later.push(update));
     second.doc.getText('t').insert(4, ' zwei');
-    await storeUpdate(storage.db, second.stored, later[0]!, 'bob');
+    await storeUpdate(storage.db, second.stored, later[0]!, { actorId: 'bob' });
 
     await expect(foldNow(storage.db, first.stored, first.doc)).resolves.toBe(true);
     await expect(foldNow(storage.db, second.stored, second.doc)).resolves.toBe(false);

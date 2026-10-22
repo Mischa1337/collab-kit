@@ -634,7 +634,13 @@ describe('merging', () => {
         later = later.then(() => {});
       }
       const merged = await later.then(() =>
-        hub.merge(target, { from: source, rows, upTo: rows[0]!._id, createdBy: 'alice' }),
+        hub.merge(target, {
+          from: source,
+          rows,
+          writers: new Map(),
+          upTo: rows[0]!._id,
+          createdBy: 'alice',
+        }),
       );
       await leaving;
 

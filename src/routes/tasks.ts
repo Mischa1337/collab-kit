@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import type { Db } from 'mongodb';
+import { ObjectId, type Db } from 'mongodb';
 
 import {
   assigneeSees,
@@ -10,7 +10,8 @@ import {
   maySee,
   maySetTaskState,
 } from '../auth/access.ts';
-import { aboutOf, aboutOfTask } from '../db/about.ts';
+import { stampsFor } from '../auth/anonymity.ts';
+import { aboutOf, aboutOfTask, subjectOf } from '../db/about.ts';
 import {
   addAssignee,
   createTask,
@@ -33,6 +34,8 @@ import {
   asObjectId,
   asParentId,
   asText,
+  isPseudonymAssignee,
+  PSEUDONYM_RULE,
 } from '../utils/input.ts';
 import { defined } from '../utils/optional.ts';
 import { actorOf, bodyOf, fail, guard, idOf, requireId, unusableField } from './http.ts';
@@ -75,6 +78,9 @@ export function taskRoutes(db: Db, decisions: readonly string[]): Router {
     if (body['assignees'] !== undefined && assignees === undefined) {
       return fail(response, 400, `assignees must be a list; ${ASSIGNEE_RULE}`);
     }
+    if (assignees?.some(isPseudonymAssignee) === true) {
+      return fail(response, 400, PSEUDONYM_RULE);
+    }
     const unusable = unusableField(body, { anchor, parentId, order, detail });
     if (unusable !== undefined) {
       return fail(response, 400, `${unusable} is unusable`);
@@ -112,11 +118,24 @@ export function taskRoutes(db: Db, decisions: readonly string[]): Router {
 
     // Looked up here and never read from the body, so no task lands in another room's stream.
     const about = await aboutOfTask(db, { anchor, parentId });
+    // Author and persons given it, asked where it hangs; on nothing, the task is what it is about.
+    const id = new ObjectId();
+    const hangsOn = anchor ?? (parentId === undefined ? undefined : { kind: 'task', id: parentId });
+    const anonymous = await stampsFor(
+      db,
+      [actor.actorId, ...given.flatMap((entry) => (entry.kind === 'actor' ? [entry.id] : []))],
+      {
+        places,
+        about: hangsOn === undefined ? { kind: 'task', id } : await subjectOf(db, hangsOn),
+      },
+    );
     const task = await createTask(db, {
+      id,
       kind,
       title,
       state,
       createdBy: actor.actorId,
+      anonymous,
       ...defined({ anchor, parentId, assignees, order, detail, about }),
     });
     response.status(201).json(await withNames(db, task));
@@ -206,6 +225,9 @@ export function taskRoutes(db: Db, decisions: readonly string[]): Router {
     if (assignee === undefined) {
       return fail(response, 400, ASSIGNEE_RULE);
     }
+    if (isPseudonymAssignee(assignee)) {
+      return fail(response, 400, PSEUDONYM_RULE);
+    }
     const unusable = unusableField(body, { reason });
     if (unusable !== undefined) {
       return fail(response, 400, `${unusable} is unusable`);
@@ -222,9 +244,17 @@ export function taskRoutes(db: Db, decisions: readonly string[]): Router {
     }
 
     const about = await aboutOf(db, { kind: 'task', id });
+    // Whoever gives it and the person given, asked against the task, which keeps whom it knows.
+    const at = { kind: 'task' as const, id };
+    const anonymous = await stampsFor(
+      db,
+      [actor.actorId, ...(assignee.kind === 'actor' ? [assignee.id] : [])],
+      { places: [at], about: await subjectOf(db, at), ...defined({ known: task ?? undefined }) },
+    );
     const added = await addAssignee(db, id, {
       assignee,
       changedBy: actor.actorId,
+      anonymous,
       ...defined({ reason, about }),
     });
 

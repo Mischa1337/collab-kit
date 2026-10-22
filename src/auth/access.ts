@@ -13,7 +13,7 @@ import {
   type Workpiece,
 } from '../db/collections/workpieces.ts';
 import { findComment, type CommentRecord } from '../db/collections/comments.ts';
-import { grantsOf, placesWhere, rightsHeld } from '../db/collections/grants.ts';
+import { flaggedAt, grantsOf, placesWhere, rightsHeld } from '../db/collections/grants.ts';
 import {
   findGroup,
   findGroups,
@@ -85,6 +85,33 @@ export async function mayAddMember(db: Db, actor: Actor, groupId: ObjectId): Pro
     grants.map((grant) => mayHandOn(db, actor, grant.scope, grant.rights)),
   );
   return allowed.every(Boolean);
+}
+
+/** Which of these keys write anonymously at the places: by a flagged grant there, above or everywhere. */
+export async function anonymousAmong(
+  db: Db,
+  keys: readonly string[],
+  places: readonly Reference[],
+): Promise<Set<string>> {
+  const flagged = await Promise.all(
+    keys.map(async (key) => {
+      // Without a group there is no grant, so the places need not be looked up.
+      const groups = await groupsOf(db, key);
+      if (groups.length === 0) {
+        return false;
+      }
+
+      // Each key along its own chain, as an own fork lies under its source only for its forker.
+      const chain = new Map<string, Reference>();
+      await Promise.all(places.map((place) => collectPlaces(db, place, chain, key)));
+      return flaggedAt(
+        db,
+        groups.map((group) => group._id),
+        [...chain.values()],
+      );
+    }),
+  );
+  return new Set(keys.filter((_, index) => flagged[index] === true));
 }
 
 /** Adds the reference and every place above it, each once, so a chain never runs in a circle. */

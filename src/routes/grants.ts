@@ -9,6 +9,7 @@ import type { Actor } from '../model/actor.ts';
 import type { Reference } from '../model/anchor.ts';
 import { RIGHTS } from '../model/right.ts';
 import {
+  asBoolean,
   asObjectId,
   asReference,
   asRights,
@@ -29,6 +30,7 @@ export function grantRoutes(db: Db, recheckAccess: () => Promise<void>): Router 
     const groupId = asObjectId(body['groupId']);
     const scope = asReference(body['scope']);
     const rights = asRights(body['rights']);
+    const anonymous = asBoolean(body['anonymous']);
     const reason = asText(body['reason']);
 
     if (groupId === undefined) {
@@ -40,7 +42,7 @@ export function grantRoutes(db: Db, recheckAccess: () => Promise<void>): Router 
     if (rights === undefined) {
       return fail(response, 400, RIGHTS_RULE);
     }
-    const unusable = unusableField(body, { reason });
+    const unusable = unusableField(body, { anonymous, reason });
     if (unusable !== undefined) {
       return fail(response, 400, `${unusable} is unusable`);
     }
@@ -58,13 +60,15 @@ export function grantRoutes(db: Db, recheckAccess: () => Promise<void>): Router 
       return fail(response, 403, 'not allowed to hand these rights on here');
     }
 
+    // The flag goes with whoever may set the grant, as it is no right of its own.
     const changed = await setGrant(db, {
       groupId,
       rights,
       setBy: actor.actorId,
+      ...(anonymous === true ? { anonymous } : {}),
       ...defined({ scope, reason }),
     });
-    // Replacing may take rights away, so open connections are asked again.
+    // Replacing may take rights away or change who is anonymous, so open connections are asked again.
     if (changed) {
       await recheckAccess();
     }

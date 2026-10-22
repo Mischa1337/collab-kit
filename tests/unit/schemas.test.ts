@@ -13,6 +13,7 @@ describe('collectionDefinitions', () => {
       'events',
       'grants',
       'groups',
+      'pseudonyms',
       'rooms',
       'tasks',
       'updates',

@@ -584,8 +584,8 @@ describe('whose pieces they are', () => {
 
     const creators = await creatorsOf(storage.db, workpieceId, [7, 8, 9]);
     expect([...creators].toSorted()).toEqual([
-      [7, 'alice'],
-      [8, 'bob'],
+      [7, { actorId: 'alice' }],
+      [8, { actorId: 'bob' }],
     ]);
   });
 });

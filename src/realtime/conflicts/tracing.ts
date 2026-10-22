@@ -3,6 +3,7 @@ import type { Logger } from 'pino';
 
 import type { Anchor } from '../../model/anchor.ts';
 import { recordEvent, type NewEvent } from '../../db/collections/events.ts';
+import type { Author } from '../../db/collections/pseudonyms.ts';
 import { creatorsOf } from '../../db/collections/updates.ts';
 import { eventKeysOf, withNames } from '../../db/names.ts';
 import { encodeEvent } from '../connection/protocol.ts';
@@ -22,7 +23,7 @@ export interface TraceTarget {
     readonly workpieceId: ObjectId;
     readonly connections: Iterable<Listener>;
   };
-  readonly authors: Map<number, string>;
+  readonly authors: Map<number, Author>;
 }
 
 /** What the hub and a merge may ask of tracing. */
@@ -31,7 +32,7 @@ export interface Tracing {
   traceRemovals(
     loaded: TraceTarget,
     removals: readonly Removal[],
-    createdBy: string,
+    createdBy: Author,
     at: ObjectId,
     extra?: Document,
   ): Promise<void>;
@@ -39,7 +40,7 @@ export interface Tracing {
   traceLosses(
     loaded: TraceTarget,
     losses: readonly Loss[],
-    sender: string,
+    sender: Author,
     at: ObjectId,
     extra?: Document,
   ): Promise<void>;
@@ -51,7 +52,7 @@ export function createTracing(db: Db, logger: Logger): Tracing {
   async function authorsOf(
     loaded: TraceTarget,
     clients: readonly number[],
-  ): Promise<ReadonlyMap<number, string>> {
+  ): Promise<ReadonlyMap<number, Author>> {
     const workpieceId = loaded.workpiece.workpieceId;
     const missing = [...new Set(clients)].filter((client) => !loaded.authors.has(client));
     if (missing.length > 0) {
@@ -75,7 +76,7 @@ export function createTracing(db: Db, logger: Logger): Tracing {
   async function traceRemovals(
     loaded: TraceTarget,
     removals: readonly Removal[],
-    createdBy: string,
+    createdBy: Author,
     at: ObjectId,
     extra: Document = {},
   ): Promise<void> {
@@ -104,7 +105,7 @@ export function createTracing(db: Db, logger: Logger): Tracing {
   async function traceLosses(
     loaded: TraceTarget,
     losses: readonly Loss[],
-    sender: string,
+    sender: Author,
     at: ObjectId,
     extra: Document = {},
   ): Promise<void> {
@@ -125,7 +126,7 @@ export function createTracing(db: Db, logger: Logger): Tracing {
           .filter((loss) => loss.cause === 'place-removed')
           .map((loss) => [idKey(loss.other), loss]),
       );
-      const deleters = new Map<string, string>();
+      const deleters = new Map<string, Author>();
       await Promise.all(
         [...places].map(async ([key, loss]) => {
           const deleter = loss.removedNow ? sender : await deleterOf(db, workpieceId, loss.other);
