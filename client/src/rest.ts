@@ -104,6 +104,13 @@ export function createRoutes(baseUrl: string, getToken: () => string | Promise<s
     me: {
       who: () => read('/me'),
       rights: (target) => read('/me/rights', { kind: target?.kind, id: target?.id }),
+      anonymous: async (target) =>
+        (
+          await read<{ readonly anonymous: boolean }>('/me/anonymous', {
+            kind: target?.kind,
+            id: target?.id,
+          })
+        ).anonymous,
       rooms: () => read('/me/rooms'),
       groups: () => read('/me/groups'),
       tasks: (query = {}) => read('/me/tasks', { ...query }),

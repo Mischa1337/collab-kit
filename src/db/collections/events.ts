@@ -7,8 +7,10 @@ import {
   type AnchorQuery,
   type Reference,
 } from '../../model/anchor.ts';
+import { eventStamps } from '../../auth/anonymity.ts';
 import { defined } from '../../utils/optional.ts';
 import type { CollectionDefinition } from '../apply.ts';
+import { stampField, stampsSchema, unstampedBy, type Stamp } from './pseudonyms.ts';
 
 /** Where a chain of comments and tasks ends: the thing it is all about. */
 export interface About {
@@ -34,6 +36,8 @@ export interface EventRecord {
   reason?: string;
   /** Free, the service never reads it. */
   detail?: Document;
+  /** Who in it wrote anonymously, each with the pseudonym; decided when it was written. */
+  anonymous?: Stamp[];
   createdAt: Date;
 }
 
@@ -67,6 +71,7 @@ export const eventsDefinition: CollectionDefinition = {
       label: { bsonType: 'string', description: 'only when a person named this moment' },
       reason: { bsonType: 'string', description: 'the why, D6.6, can only come from a person' },
       detail: { bsonType: 'object', description: 'free, the service never reads it' },
+      anonymous: stampsSchema,
       createdAt: { bsonType: 'date' },
     },
   },
@@ -120,6 +125,8 @@ export interface NewEvent {
   readonly label?: string;
   readonly reason?: string;
   readonly detail?: Document;
+  /** Given, even empty, it is final, as a change or connection decided it; else the flags do. */
+  readonly anonymous?: readonly Stamp[];
 }
 
 /** With a session, the event lands in the same transaction as the change it traces. */
@@ -129,14 +136,19 @@ export async function recordEvent(
   now = new Date(),
   session?: ClientSession,
 ): Promise<EventRecord> {
-  const record = recordOf(input, now);
+  const record = recordOf(input, now, await stampsOfEvent(db, input));
 
   await db.collection<EventRecord>('events').insertOne(record, defined({ session }));
 
   return record;
 }
 
-function recordOf(input: NewEvent, now: Date): EventRecord {
+/** The stamps the event brings, or those the flags at its anchor give it; asked without a session. */
+async function stampsOfEvent(db: Db, input: NewEvent): Promise<readonly Stamp[]> {
+  return input.anonymous ?? eventStamps(db, input);
+}
+
+function recordOf(input: NewEvent, now: Date, stamps: readonly Stamp[]): EventRecord {
   return {
     _id: new ObjectId(),
     kind: input.kind,
@@ -151,6 +163,7 @@ function recordOf(input: NewEvent, now: Date): EventRecord {
       reason: input.reason,
       detail: input.detail,
     }),
+    ...stampField(stamps),
   };
 }
 
@@ -159,6 +172,8 @@ export interface EventQuery {
   /** Anchored at or about any of these things; how a room asks about what it bundles. */
   readonly references?: readonly [Reference, ...Reference[]];
   readonly createdBy?: string;
+  /** Only events in which this key is not stamped, for a createdBy the reader may not see through. */
+  readonly unstamped?: string;
   /** Only what concerns this actor, the way /me/events asks. */
   readonly affects?: string;
   readonly kind?: string;
@@ -184,6 +199,7 @@ function filterOf(query: EventQuery): Filter<EventRecord> {
           ]),
         }),
     ...defined({ createdBy: query.createdBy, affects: query.affects, kind: query.kind }),
+    ...(query.unstamped === undefined ? {} : unstampedBy(query.unstamped)),
     ...(Object.keys(window).length === 0 ? {} : { _id: window }),
   } as Filter<EventRecord>;
 }
@@ -208,7 +224,28 @@ export interface Activity {
   /** When the newest event of this person happened. */
   at: Date;
   kind: string;
+  /** Where that event hangs, so manage there decides who sees through; never passed on. */
+  anchor: Anchor;
+  /** The pseudonym, when the person left these traces anonymously; open ones are a row apart. */
+  anonymous?: Stamp[];
 }
+
+/** The pseudonym under which createdBy left an event, missing when openly; for $group. */
+const AUTHOR_PSEUDONYM = {
+  $first: {
+    $map: {
+      input: {
+        $filter: {
+          input: { $ifNull: ['$anonymous', []] },
+          as: 'stamp',
+          cond: { $eq: ['$$stamp.key', '$createdBy'] },
+        },
+      },
+      as: 'stamp',
+      in: '$$stamp.as',
+    },
+  },
+};
 
 /** The newest event per person among these places, newest first (D1.10). */
 export async function latestPerActor(
@@ -227,11 +264,45 @@ export async function latestPerActor(
         },
       },
       { $sort: { _id: -1 } },
-      { $group: { _id: '$createdBy', at: { $first: '$createdAt' }, kind: { $first: '$kind' } } },
-      { $sort: { at: -1, _id: 1 } },
-      { $project: { _id: 0, actorId: '$_id', at: 1, kind: 1 } },
+      // Open and anonymous traces of one person apart, or the newest would tie the two together.
+      {
+        $group: {
+          _id: { actorId: '$createdBy', as: AUTHOR_PSEUDONYM },
+          at: { $first: '$createdAt' },
+          kind: { $first: '$kind' },
+          anchor: { $first: '$anchor' },
+        },
+      },
+      // A tie by the pseudonym first, so a masked row does not stand where its true key would.
+      { $sort: { at: -1, '_id.as': 1, '_id.actorId': 1 } },
+      {
+        $project: {
+          _id: 0,
+          actorId: '$_id.actorId',
+          at: 1,
+          kind: 1,
+          anchor: 1,
+          anonymous: {
+            $cond: [
+              { $eq: [{ $type: '$_id.as' }, 'string'] },
+              [{ key: '$_id.actorId', as: '$_id.as' }],
+              '$$REMOVE',
+            ],
+          },
+        },
+      },
     ])
     .toArray();
+}
+
+/** An activity as it goes out: where its newest trace hangs only decided who sees through. */
+export function withoutAnchor<T extends { readonly anchor: Anchor }>(
+  activity: T,
+): Omit<T, 'anchor'> {
+  return Object.fromEntries(Object.entries(activity).filter(([name]) => name !== 'anchor')) as Omit<
+    T,
+    'anchor'
+  >;
 }
 
 /** The newest merge from one workpiece into another; its upTo is where the next one starts. */
@@ -300,13 +371,16 @@ export async function writeWithEvents(
   events: readonly NewEvent[],
   now = new Date(),
 ): Promise<boolean> {
+  // Before the transaction, as drawing a pseudonym there could end it.
+  const stamps = await Promise.all(events.map((event) => stampsOfEvent(db, event)));
+
   return inTransaction(db, async (session) => {
     if (!(await write(session))) {
       return false;
     }
 
     if (events.length > 0) {
-      const records = events.map((event) => recordOf(event, now));
+      const records = events.map((event, index) => recordOf(event, now, stamps[index] ?? []));
       await db.collection<EventRecord>('events').insertMany(records, { session });
     }
 
@@ -326,7 +400,9 @@ export async function writeReturningEvents(
       return false;
     }
 
-    const records = events.map((event) => recordOf(event, now));
+    // Asked without the session, so a pseudonym drawn here cannot end the transaction.
+    const stamps = await Promise.all(events.map((event) => stampsOfEvent(db, event)));
+    const records = events.map((event, index) => recordOf(event, now, stamps[index] ?? []));
     await db.collection<EventRecord>('events').insertMany(records, { session });
     return true;
   });

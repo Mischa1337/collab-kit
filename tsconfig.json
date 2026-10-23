@@ -24,5 +24,7 @@
 
     "skipLibCheck": true
   },
-  "include": ["src/**/*.ts", "tests/**/*.ts", "vitest.config.ts", "client/vite.config.ts"]
+  "include": ["src/**/*.ts", "tests/**/*.ts", "vitest.config.ts", "client/vite.config.ts"],
+  // Tests of elements need the DOM types, tsconfig.dom.json checks them.
+  "exclude": ["tests/integration/dom/**"]
 }

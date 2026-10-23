@@ -6,7 +6,7 @@ import * as Y from 'yjs';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 
 import { CollabKitError, type CollabKitApi, type Session } from '../../client/src/api.ts';
-import { createCollabKitApi } from '../../client/src/index.ts';
+import { createCollabKitApi, isPseudonym } from '../../client/src/index.ts';
 import { createTokenCheck } from '../../src/auth/token.ts';
 import { applyDefinitions } from '../../src/db/apply.ts';
 import { connect, type Storage } from '../../src/db/client.ts';
@@ -29,6 +29,7 @@ const silent = pino({ level: 'silent' });
 const ROUTES = [
   'GET /me',
   'GET /me/rights',
+  'GET /me/anonymous',
   'GET /me/rooms',
   'GET /me/groups',
   'GET /me/tasks',
@@ -179,6 +180,12 @@ describe('the REST wrapper', () => {
     expect(await alice.me.who()).toEqual({ actorId: 'alice', label: 'Alice' });
     expect(await alice.me.rights()).toEqual(['see', 'speak', 'edit', 'plan', 'decide', 'manage']);
     expect(await bob.me.rights()).toEqual([]);
+    expect(await alice.me.anonymous()).toBe(false);
+  });
+
+  it('tells a pseudonym from a key', () => {
+    expect(isPseudonym('anon-0042')).toBe(true);
+    expect(isPseudonym('alice')).toBe(false);
   });
 
   it('builds a room with a group in it, and takes both down again', async () => {
@@ -212,6 +219,12 @@ describe('the REST wrapper', () => {
     expect(await alice.grants.list({ scope })).toHaveLength(1);
     expect(await alice.grants.list({ groupId: group._id })).toHaveLength(1);
     expect(await bob.me.rights(scope)).toEqual(['see', 'speak']);
+    // With the flag bob writes anonymously there; set again without it, openly.
+    const flagged = { groupId: group._id, scope, rights: ['see', 'speak'] as const };
+    expect((await alice.grants.set({ ...flagged, anonymous: true })).anonymous).toBe(true);
+    expect(await bob.me.anonymous(scope)).toBe(true);
+    await alice.grants.set(flagged);
+    expect(await bob.me.anonymous(scope)).toBe(false);
     expect((await bob.me.rooms()).map((each) => each._id)).toEqual([room._id]);
 
     const workpiece = await alice.workpieces.create({ name: 'Entwurf' });

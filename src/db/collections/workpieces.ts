@@ -2,6 +2,7 @@ import { Binary, ObjectId, type Db, type Document } from 'mongodb';
 
 import { defined } from '../../utils/optional.ts';
 import type { CollectionDefinition } from '../apply.ts';
+import { stampField, stampsSchema, type Stamp } from './pseudonyms.ts';
 
 /** The loading shortcut: the folded Yjs state and the last update it contains. */
 export interface FoldedState {
@@ -35,6 +36,8 @@ export interface WorkpieceRecord {
   fold?: FoldedState;
   createdAt: Date;
   createdBy: string;
+  /** Whether whoever created it wrote anonymously, with the pseudonym; decided when they did. */
+  anonymous?: Stamp[];
 }
 
 export const workpiecesDefinition: CollectionDefinition = {
@@ -81,8 +84,11 @@ export const workpiecesDefinition: CollectionDefinition = {
       },
       createdAt: { bsonType: 'date' },
       createdBy: { bsonType: 'string' },
+      anonymous: stampsSchema,
     },
   },
+  // Whose forks a workpiece is, as the own forks lend their source.
+  indexes: [{ key: { createdBy: 1 }, name: 'created_by' }],
 };
 
 export interface NewWorkpiece {
@@ -93,6 +99,8 @@ export interface NewWorkpiece {
   readonly contract?: Document;
   readonly units?: UnitContainer[];
   readonly forkOf?: ForkOrigin;
+  /** Whether its creator writes anonymously, decided by the route; left out, openly. */
+  readonly anonymous?: readonly Stamp[];
 }
 
 /** Creates an empty workpiece without a start state: every change, even the first, is an update. */
@@ -109,6 +117,7 @@ export async function createWorkpiece(
     ...defined({ forkOf: input.forkOf }),
     createdAt: now,
     createdBy: input.createdBy,
+    ...stampField(input.anonymous ?? []),
   };
 
   await db.collection<WorkpieceRecord>('workpieces').insertOne(created);
@@ -147,6 +156,29 @@ export async function workpieceExists(db: Db, id: ObjectId): Promise<boolean> {
     .findOne({ _id: id }, { projection: { _id: 1 } });
 
   return found !== null;
+}
+
+/** Where the workpiece was forked from, if this actor forked it; anything else has no source. */
+export async function sourceOfOwnFork(
+  db: Db,
+  id: ObjectId,
+  actorId: string,
+): Promise<ObjectId | undefined> {
+  const found = await db
+    .collection<WorkpieceRecord>('workpieces')
+    .findOne({ _id: id, createdBy: actorId }, { projection: { forkOf: 1 } });
+
+  return found?.forkOf?.id;
+}
+
+/** Every fork this actor made, as keys only. */
+export async function ownForks(db: Db, actorId: string): Promise<ObjectId[]> {
+  const found = await db
+    .collection<WorkpieceRecord>('workpieces')
+    .find({ createdBy: actorId, forkOf: { $exists: true } }, { projection: { _id: 1 } })
+    .toArray();
+
+  return found.map((workpiece) => workpiece._id);
 }
 
 export interface Fold {

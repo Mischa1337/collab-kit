@@ -1,19 +1,27 @@
 import { ObjectId, type Db } from 'mongodb';
 
+import { anonymousAmong } from '../../auth/access.ts';
+import { stampsFor } from '../../auth/anonymity.ts';
 import {
   latestEvent,
   latestMerge,
   recordEvent,
   type EventRecord,
 } from '../../db/collections/events.ts';
+import { copyPseudonyms, pseudonymOf } from '../../db/collections/pseudonyms.ts';
 import { addToRoom } from '../../db/collections/rooms.ts';
-import { copyUpdates, readUpdatesSince, readUpdatesUntil } from '../../db/collections/updates.ts';
+import {
+  copyUpdates,
+  readUpdatesSince,
+  readUpdatesUntil,
+  type UpdateRecord,
+} from '../../db/collections/updates.ts';
 import {
   createWorkpiece,
   findWorkpiece,
   type WorkpieceRecord,
 } from '../../db/collections/workpieces.ts';
-import { WHOLE } from '../../model/anchor.ts';
+import { WHOLE, type Reference } from '../../model/anchor.ts';
 import { defined } from '../../utils/optional.ts';
 import type { WorkpieceHub } from '../hub/types.ts';
 
@@ -53,6 +61,14 @@ export async function forkWorkpiece(
   // The history first: should it break off, it lies there without a workpiece nobody sees.
   const id = new ObjectId();
   const copies = await copyUpdates(db, rows, id);
+  // Before anyone draws one there, so the copied stamps keep their pseudonyms and none repeats.
+  const forked: Reference = { kind: 'workpiece', id };
+  await copyPseudonyms(db, { kind: 'workpiece', id: sourceId }, forked);
+  // Asked where it lies: under its source, and in the room if it goes into one.
+  const places: Reference[] = [
+    { kind: 'workpiece', id: sourceId },
+    ...(input.roomId === undefined ? [] : [{ kind: 'room' as const, id: input.roomId }]),
+  ];
   const fork = await createWorkpiece(db, {
     id,
     name: input.name,
@@ -60,6 +76,7 @@ export async function forkWorkpiece(
     contract: source.contract,
     units: source.units,
     forkOf: { id: sourceId, ...defined({ at }) },
+    anonymous: await stampsFor(db, [input.createdBy], { places, about: forked }),
   });
   if (input.roomId !== undefined) {
     await addToRoom(db, input.roomId, { workpieceId: id, addedBy: input.createdBy });
@@ -89,9 +106,43 @@ export async function mergeWorkpiece(
   return hub.merge(targetId, {
     from: input.from,
     rows,
+    writers: await writersAt(db, targetId, rows),
     createdBy: input.createdBy,
     ...defined({ upTo: rows.at(-1)?._id ?? mark, reason: input.reason }),
   });
+}
+
+/** The pseudonym each change comes in under: anonymous if it was or the target says so, never less. */
+async function writersAt(
+  db: Db,
+  targetId: ObjectId,
+  rows: readonly UpdateRecord[],
+): Promise<Map<string, string>> {
+  const target: Reference = { kind: 'workpiece', id: targetId };
+  const flagged = await anonymousAmong(
+    db,
+    [...new Set(rows.map((row) => row.createdBy))],
+    [target],
+  );
+  const anonymous = rows.filter(
+    (row) =>
+      flagged.has(row.createdBy) ||
+      row.anonymous?.some((stamp) => stamp.key === row.createdBy) === true,
+  );
+
+  // One pseudonym per author, from the target, as its other work there has it.
+  const authors = [...new Set(anonymous.map((row) => row.createdBy))];
+  const pseudonyms = new Map(
+    await Promise.all(
+      authors.map(async (author) => [author, await pseudonymOf(db, target, author)] as const),
+    ),
+  );
+  return new Map(
+    anonymous.flatMap((row) => {
+      const as = pseudonyms.get(row.createdBy);
+      return as === undefined ? [] : [[row._id.toHexString(), as] as const];
+    }),
+  );
 }
 
 /** The last change of the source the target holds already; undefined to start from the start. */

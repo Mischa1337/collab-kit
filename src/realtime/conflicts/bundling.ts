@@ -1,5 +1,6 @@
 import type { ObjectId } from 'mongodb';
 
+import type { Author } from '../../db/collections/pseudonyms.ts';
 import { defined } from '../../utils/optional.ts';
 import type { Removal } from './deletions.ts';
 import type { TraceTarget, Tracing } from './tracing.ts';
@@ -14,6 +15,8 @@ export interface BundleTimes {
 
 /** The removals of one person at one workpiece, gathered until a pause. */
 interface Bundle {
+  /** Who removed them, as the connection wrote them. */
+  readonly person: Author;
   removals: Removal[];
   /** The last change stored before the first of the bundle; undefined if there was none. */
   readonly since: ObjectId | undefined;
@@ -29,7 +32,7 @@ export interface Bundling {
   /** Adds what one stored change of the person removed and starts the pause anew. */
   add(
     target: TraceTarget,
-    person: string,
+    person: Author,
     removals: readonly Removal[],
     since: ObjectId | undefined,
     at: ObjectId,
@@ -45,14 +48,14 @@ export function createBundling(tracing: Tracing, times: BundleTimes): Bundling {
   const writing = new WeakMap<TraceTarget, Set<Promise<void>>>();
 
   /** Takes the bundle of the person out and writes it; tracing only logs a failure. */
-  function write(target: TraceTarget, person: string): void {
+  function write(target: TraceTarget, key: string): void {
     const bundles = open.get(target);
-    const bundle = bundles?.get(person);
+    const bundle = bundles?.get(key);
     if (bundles === undefined || bundle === undefined) {
       return;
     }
     clearTimeout(bundle.timer);
-    bundles.delete(person);
+    bundles.delete(key);
 
     // Kept until written, so a flush can wait for it.
     const running = writing.get(target) ?? new Set<Promise<void>>();
@@ -60,7 +63,7 @@ export function createBundling(tracing: Tracing, times: BundleTimes): Bundling {
     const work = tracing.traceRemovals(
       target,
       bundle.removals,
-      person,
+      bundle.person,
       bundle.at,
       defined({ since: bundle.since }),
     );
@@ -69,8 +72,8 @@ export function createBundling(tracing: Tracing, times: BundleTimes): Bundling {
   }
 
   /** Writes the bundle once the time is up. */
-  function schedule(target: TraceTarget, person: string, delay: number) {
-    return setTimeout(() => write(target, person), Math.max(0, delay));
+  function schedule(target: TraceTarget, key: string, delay: number) {
+    return setTimeout(() => write(target, key), Math.max(0, delay));
   }
 
   return {
@@ -78,16 +81,19 @@ export function createBundling(tracing: Tracing, times: BundleTimes): Bundling {
       const bundles = open.get(target) ?? new Map<string, Bundle>();
       open.set(target, bundles);
       const now = Date.now();
-      const bundle = bundles.get(person);
+      // Open and anonymous removals of one person never share a bundle.
+      const key = JSON.stringify([person.actorId, person.as ?? null]);
+      const bundle = bundles.get(key);
 
       // The first removal opens the bundle and says where it starts.
       if (bundle === undefined) {
-        bundles.set(person, {
+        bundles.set(key, {
+          person,
           removals: [...removals],
           since,
           at,
           startedAt: now,
-          timer: schedule(target, person, Math.min(times.pause, times.limit)),
+          timer: schedule(target, key, Math.min(times.pause, times.limit)),
         });
         return;
       }
@@ -98,15 +104,15 @@ export function createBundling(tracing: Tracing, times: BundleTimes): Bundling {
       clearTimeout(bundle.timer);
       bundle.timer = schedule(
         target,
-        person,
+        key,
         Math.min(times.pause, bundle.startedAt + times.limit - now),
       );
     },
 
     flush: async (target) => {
       // Every open bundle; a map still reaches the rest while writing takes each one out.
-      for (const person of open.get(target)?.keys() ?? []) {
-        write(target, person);
+      for (const key of open.get(target)?.keys() ?? []) {
+        write(target, key);
       }
       await Promise.all(writing.get(target) ?? []);
     },
