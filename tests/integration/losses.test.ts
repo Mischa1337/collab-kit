@@ -415,9 +415,9 @@ describe('who deleted a piece', () => {
     const [written, deleting] = await readUpdatesSince(storage.db, workpieceId);
     expect(written?.deletes).toBeUndefined();
     expect(deleting?.deletes).toEqual([ALICE]);
-    await expect(deleterOf(storage.db, workpieceId, { client: ALICE, clock: 1 })).resolves.toBe(
-      'bob',
-    );
+    await expect(deleterOf(storage.db, workpieceId, { client: ALICE, clock: 1 })).resolves.toEqual({
+      actorId: 'bob',
+    });
     await expect(
       deleterOf(storage.db, workpieceId, { client: ALICE, clock: 0 }),
     ).resolves.toBeUndefined();

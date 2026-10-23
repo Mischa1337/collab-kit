@@ -2,10 +2,10 @@ import type { ObjectId } from 'mongodb';
 import * as awarenessProtocol from 'y-protocols/awareness';
 import type * as Y from 'yjs';
 
-import type { Actor } from '../../model/actor.ts';
 import { createActorNotes } from '../../db/collections/actors.ts';
 import { workpieceExists } from '../../db/collections/workpieces.ts';
 import { recordEvent, type EventRecord } from '../../db/collections/events.ts';
+import { stampField, stampsOf, type Author } from '../../db/collections/pseudonyms.ts';
 import { newestUpdateId } from '../../db/collections/updates.ts';
 import { defined } from '../../utils/optional.ts';
 import { enqueue, foldNow, loadWorkpiece, storeUpdate, type Stored } from './persistence.ts';
@@ -52,7 +52,7 @@ interface Loaded {
   /** Which connection speaks for each awareness client; its entry goes when that one leaves. */
   readonly announcedBy: Map<number, Connection>;
   /** Whose pieces each Yjs client brought, filled only from the database, so both agree. */
-  readonly authors: Map<number, string>;
+  readonly authors: Map<number, Author>;
   /** Merges running into it; while there are any, it stays loaded without anybody connected. */
   readonly merges: MergeCount;
 }
@@ -108,6 +108,11 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
           const speaker = announcedBy.get(clientId);
           return speaker === undefined || speaker.actor.actorId === connection.actor.actorId;
         },
+        // Who it is comes from the token of whoever speaks for the client, never from the client.
+        awarenessFor: (receiver, clientIds) =>
+          encodeAwareness(awareness, clientIds, (clientId, state) =>
+            presenceFor(state, announcedBy.get(clientId), receiver),
+          ),
       },
       stored,
       announcedBy,
@@ -150,13 +155,15 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
   }
 
   /** Writes an event of the service; a failure is only logged, a trace may never break work. */
-  async function trace(workpieceId: ObjectId, kind: string, createdBy: string, at?: ObjectId) {
+  async function trace(workpieceId: ObjectId, kind: string, author: Author, at?: ObjectId) {
     try {
+      // Stamped as the connection writes, not as the flag says by now, which may have closed it.
       await recordEvent(options.db, {
         kind,
-        createdBy,
+        createdBy: author.actorId,
         anchor: anchorOf(workpieceId),
         ...defined({ at }),
+        anonymous: stampsOf([author]),
       });
     } catch (error) {
       options.logger.error(
@@ -170,10 +177,13 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
   async function notePresence(
     workpieceId: ObjectId,
     kind: 'joined' | 'left',
-    actor: Actor,
+    connection: Connection,
     at?: ObjectId,
   ): Promise<void> {
-    await Promise.all([trace(workpieceId, kind, actor.actorId, at), noteActor(actor)]);
+    await Promise.all([
+      trace(workpieceId, kind, writerOf(connection), at),
+      noteActor(connection.actor),
+    ]);
   }
 
   /** Stores first, distributes second: nobody shall see a change that is nowhere kept. */
@@ -197,9 +207,10 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
 
       // The state before this change, where a bundle starting with it begins.
       const since = loaded.stored.lastUpdateId;
+      const author = writerOf(from);
       let updateId: ObjectId;
       try {
-        updateId = await storeUpdate(options.db, loaded.stored, update, from.actor.actorId);
+        updateId = await storeUpdate(options.db, loaded.stored, update, author);
       } catch (error) {
         options.logger.error(
           { err: error, workpieceId: loaded.workpiece.workpieceId.toHexString() },
@@ -212,15 +223,15 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
 
       // A merge tells of everything at once when it is done, so here it only collects.
       if (isReplayer(from)) {
-        collect(from.found, from.actor.actorId, deletions, since);
+        collect(from.found, author, deletions, since);
       } else {
         // Gathered until the person pauses, then written as one.
         if (deletions.removals.length > 0) {
-          bundling.add(loaded, from.actor.actorId, deletions.removals, since, updateId);
+          bundling.add(loaded, author, deletions.removals, since, updateId);
         }
         // Only once stored and passed on, so telling of it never holds up the work.
         if (deletions.losses.length > 0) {
-          await tracing.traceLosses(loaded, deletions.losses, from.actor.actorId, updateId);
+          await tracing.traceLosses(loaded, deletions.losses, author, updateId);
         }
       }
 
@@ -253,8 +264,10 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
       }
     }
 
-    // Back to the sender too: a y-websocket client counts it as a sign of life.
-    broadcast(loaded.workpiece, encodeAwareness(loaded.workpiece.awareness, touched), undefined);
+    // Back to the sender too: a y-websocket client counts it as a sign of life; each as they may see it.
+    for (const connection of loaded.workpiece.connections) {
+      connection.send(loaded.workpiece.awarenessFor(connection, touched));
+    }
   }
 
   /** Holds a workpiece, loading it if nobody holds it yet. */
@@ -311,12 +324,7 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
     await Promise.all([
       bundling.flush(loaded),
       ...disconnected.map((connection) =>
-        notePresence(
-          loaded.workpiece.workpieceId,
-          'left',
-          connection.actor,
-          loaded.stored.lastUpdateId,
-        ),
+        notePresence(loaded.workpiece.workpieceId, 'left', connection, loaded.stored.lastUpdateId),
       ),
     ]);
   }
@@ -382,7 +390,7 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
         throw error;
       }
 
-      const found = await replay(loaded, input.rows, discarded);
+      const found = await replay(loaded, input, discarded);
       return await recordMerge(options.db, tracing, loaded, input, found);
     } finally {
       held.merges.running -= 1;
@@ -430,7 +438,7 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
     }
 
     // at: delivered up to here, not read; everything after it this person missed (D6.18).
-    await notePresence(workpieceId, 'left', connection.actor, loaded.stored.lastUpdateId);
+    await notePresence(workpieceId, 'left', connection, loaded.stored.lastUpdateId);
 
     // The last one out closes the workpiece.
     if (loaded.workpiece.connections.size === 0) {
@@ -458,7 +466,7 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
 
       try {
         const workpiece = (await held.loaded).workpiece;
-        await notePresence(workpieceId, 'joined', connection.actor);
+        await notePresence(workpieceId, 'joined', connection);
         return workpiece;
       } catch (error) {
         // Loading failed: forget it, so the next join tries again.
@@ -490,15 +498,22 @@ export function createWorkpieceHub(options: HubOptions): WorkpieceHub {
     presentAt: (workpieceId) => {
       const connections = heldByKey.get(workpieceId.toHexString())?.connections ?? [];
 
-      // One entry per person, however many tabs they have open.
-      const counted = new Map<string, number>();
+      // One entry per person and pseudonym, however many tabs they have open.
+      const counted = new Map<string, { author: Author; count: number }>();
       for (const connection of connections) {
-        const { actorId } = connection.actor;
-        counted.set(actorId, (counted.get(actorId) ?? 0) + 1);
+        const author = writerOf(connection);
+        const key = JSON.stringify([author.actorId, author.as ?? null]);
+        counted.set(key, { author, count: (counted.get(key)?.count ?? 0) + 1 });
       }
-      return [...counted]
-        .toSorted(([one], [other]) => one.localeCompare(other))
-        .map(([actorId, count]) => ({ actorId, connections: count }));
+      // By what is shown, so a masked entry does not stand where its true key would.
+      return [...counted.values()]
+        .toSorted((one, other) => shownAs(one.author).localeCompare(shownAs(other.author)))
+        .map(({ author, count }) =>
+          Object.assign(
+            { actorId: author.actorId, connections: count },
+            stampField(stampsOf([author])),
+          ),
+        );
     },
 
     close: async () => {
@@ -527,6 +542,39 @@ function broadcast(
       connection.send(message);
     }
   }
+}
+
+/** A presence with person set from the speaker's token: masked unless it is the receiver's own. */
+function presenceFor(
+  state: Record<string, unknown>,
+  speaker: Connection | undefined,
+  receiver: Connection,
+): Record<string, unknown> {
+  // Whatever the client put there counts for nothing.
+  const shown = Object.fromEntries(Object.entries(state).filter(([name]) => name !== 'person'));
+  if (speaker === undefined) {
+    return shown;
+  }
+
+  const { actorId, label } = speaker.actor;
+  const masked =
+    speaker.pseudonym !== undefined &&
+    receiver.actor.actorId !== actorId &&
+    receiver.seesThrough !== true;
+  if (masked) {
+    return { ...shown, person: { id: speaker.pseudonym } };
+  }
+  return { ...shown, person: label === undefined ? { id: actorId } : { id: actorId, name: label } };
+}
+
+/** What an author shows as to those who do not see through: the pseudonym, else the key. */
+function shownAs(author: Author): string {
+  return author.as ?? author.actorId;
+}
+
+/** Whom a connection writes as: its actor, under the pseudonym if it has one. */
+function writerOf(connection: Connection): Author {
+  return { actorId: connection.actor.actorId, ...defined({ as: connection.pseudonym }) };
 }
 
 /** The origin of a change as a connection, undefined if it did not come from one. */

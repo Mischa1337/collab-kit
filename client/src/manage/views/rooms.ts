@@ -2,7 +2,8 @@
 
 import { html, nothing, type TemplateResult } from 'lit';
 
-import type { Grant, Group, Right, Room, Workpiece } from '../../api.ts';
+import type { Grant, Group, Room, Workpiece } from '../../api.ts';
+import type { Switch } from '../store.ts';
 import { cross, forward, plus } from '../look/icons.ts';
 import type { Texts } from '../look/texts.ts';
 import { accessRow } from './access.ts';
@@ -29,7 +30,7 @@ export interface RoomView {
   openForm(kind: 'workpiece'): void;
   open(workpiece: Workpiece): void;
   takeOut(workpieceId: string): void;
-  toggle(grant: Grant, right: Right): void;
+  toggle(grant: Grant, chip: Switch): void;
   give(groupId: string): void;
 }
 

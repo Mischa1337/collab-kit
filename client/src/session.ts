@@ -2,6 +2,7 @@
 
 import * as decoding from 'lib0/decoding';
 import * as encoding from 'lib0/encoding';
+import * as random from 'lib0/random';
 import { WebsocketProvider } from 'y-websocket';
 import * as Y from 'yjs';
 
@@ -73,16 +74,13 @@ export function openSession<Value>(
   const history = new Y.UndoManager(map, { trackedOrigins: new Set([tracked]), captureTimeout: 0 });
   // Every text handed out, once per name.
   const texts = new Map<string, OpenText>();
-  const provider = new WebsocketProvider(context.socketUrl, workpieceId, doc, {
-    // Connected only once token and rights are in.
-    connect: false,
-    params: { events: '1' },
-    // Two sessions in one browser meet at CK, never on a channel past it.
-    disableBc: true,
-    // Every close from CK comes back here, so the next attempt asks for token and rights again.
-    shouldReconnect: () => false,
-  });
-  const { awareness } = provider;
+  // Whoever follows the presence, over every awareness the session takes.
+  const presenceListeners = new Set<() => void>();
+  const tellPresence = (): void => {
+    for (const listener of presenceListeners) {
+      listener();
+    }
+  };
 
   // The own value per key and the clocks its setting took, so a conflict can hand it back.
   const written = new Map<string, Written<Value>>();
@@ -92,6 +90,7 @@ export function openSession<Value>(
   } = {
     status: new Set(),
     rightsChanged: new Set(),
+    anonymityChanged: new Set(),
     closed: new Set(),
     conflict: new Set(),
   };
@@ -99,6 +98,8 @@ export function openSession<Value>(
   let status: Status = 'disconnected';
   let mayWrite = false;
   let rightsKnown = false;
+  // Undefined until CK first said whether this person writes anonymously here.
+  let anonymous: boolean | undefined;
   let me: Me | undefined;
   // Whether the session should be connected, and whether close ended it for good.
   let wanted = true;
@@ -192,11 +193,14 @@ export function openSession<Value>(
 
     let token: string;
     let rights: string[];
+    let hidden: { readonly anonymous: boolean };
     try {
       token = await context.getToken();
-      [rights, me] = await Promise.all([
-        context.read<string[]>(token, '/me/rights', { kind: 'workpiece', id: workpieceId }),
+      const here = { kind: 'workpiece', id: workpieceId };
+      [rights, me, hidden] = await Promise.all([
+        context.read<string[]>(token, '/me/rights', here),
         context.read<Me>(token, '/me'),
+        context.read<{ readonly anonymous: boolean }>(token, '/me/anonymous', here),
       ]);
     } catch (error) {
       if (attempting === generation) {
@@ -224,8 +228,16 @@ export function openSession<Value>(
       emit('rightsChanged', writes);
     }
 
-    // Who this is, so the others see a person and not only a client.
-    announce(awareness, me);
+    // Changed, a new client, or its earlier changes would tie the open and the anonymous ones.
+    const swapped = anonymous !== undefined && hidden.anonymous !== anonymous;
+    anonymous = hidden.anonymous;
+    if (swapped) {
+      renewClient();
+      emit('anonymityChanged', hidden.anonymous);
+    }
+
+    // Who this is in the own view; the others are told by CK, from the token.
+    announce(provider.awareness, me);
 
     provider.protocols = [BEARER, token];
     provider.connect();
@@ -280,40 +292,76 @@ export function openSession<Value>(
     end({ code: 4000 + error.status, reason: error.message });
   }
 
-  provider.on('status', ({ status: next }) => setStatus(next));
-  provider.on('sync', (isSynced) => {
-    if (isSynced) {
-      failures = 0;
-      markSynced();
-    }
-  });
-  // Every close by CK, a refused handshake included, which a browser only shows as 1006.
-  provider.on('closed', ({ code, reason }) => {
-    // The next connection asks for a token of its own.
-    clearTimeout(renewal);
-    current = undefined;
-    if (FINAL_CODES.has(code)) {
-      end({ code, reason });
-      return;
-    }
-    // 4409 among them: the next attempt asks for the rights and tells what changed.
-    later();
-  });
+  /** A provider for the doc as its client stands now, wired to this session, not yet connected. */
+  function providerOf(): WebsocketProvider {
+    const next = new WebsocketProvider(context.socketUrl, workpieceId, doc, {
+      // Connected only once token and rights are in.
+      connect: false,
+      params: { events: '1' },
+      // Two sessions in one browser meet at CK, never on a channel past it.
+      disableBc: true,
+      // Every close from CK comes back here, so the next attempt asks for token and rights again.
+      shouldReconnect: () => false,
+    });
 
-  provider.messageHandlers[MESSAGE_EVENT] = (_encoder, decoder) => {
-    // Nothing goes into the encoder, or y-websocket would send it back.
-    const event = JSON.parse(decoding.readVarString(decoder)) as Named<CollabEvent>;
-    if (event.kind === 'work-lost') {
-      emit('conflict', conflictOf(event, me?.actorId, lostIn(event)));
-    }
-  };
+    next.on('status', ({ status: now }) => setStatus(now));
+    next.on('sync', (isSynced) => {
+      if (isSynced) {
+        failures = 0;
+        markSynced();
+      }
+    });
+    // Every close by CK, a refused handshake included, which a browser only shows as 1006.
+    next.on('closed', ({ code, reason }) => {
+      // The next connection asks for a token of its own.
+      clearTimeout(renewal);
+      current = undefined;
+      if (FINAL_CODES.has(code)) {
+        end({ code, reason });
+        return;
+      }
+      // 4409 among them: the next attempt asks for the rights and tells what changed.
+      later();
+    });
 
+    next.messageHandlers[MESSAGE_EVENT] = (_encoder, decoder) => {
+      // Nothing goes into the encoder, or y-websocket would send it back.
+      const event = JSON.parse(decoding.readVarString(decoder)) as Named<CollabEvent>;
+      if (event.kind === 'work-lost') {
+        emit('conflict', conflictOf(event, me?.actorId, lostIn(event)));
+      }
+    };
+    next.awareness.on('change', tellPresence);
+    return next;
+  }
+
+  /** A new Yjs client with a presence of its own, between two connections; the doc stays. */
+  function renewClient(): void {
+    const fields = provider.awareness.getLocalState();
+    provider.awareness.off('change', tellPresence);
+    provider.destroy();
+    provider.awareness.destroy();
+
+    doc.clientID = random.uint32();
+    // The own values were found by the clocks of the old client, which are no longer its own.
+    written.clear();
+    provider = providerOf();
+    // What the tool put into the presence goes along, person is set anew before connecting.
+    if (fields !== null) {
+      provider.awareness.setLocalState(fields);
+    }
+    tellPresence();
+  }
+
+  let provider = providerOf();
   void attempt(generation);
 
   return {
     workpieceId,
     synced,
-    clientId: doc.clientID,
+    get clientId() {
+      return doc.clientID;
+    },
     get mayWrite() {
       return mayWrite;
     },
@@ -376,7 +424,14 @@ export function openSession<Value>(
       texts.set(name, opened);
       return opened.shared;
     },
-    presence: presenceOf(awareness, () => me?.actorId),
+    presence: presenceOf(
+      () => provider.awareness,
+      () => me?.actorId,
+      (listener) => {
+        presenceListeners.add(listener);
+        return () => presenceListeners.delete(listener);
+      },
+    ),
     on: (kind, listener) => {
       listeners[kind].add(listener);
       return () => listeners[kind].delete(listener);
@@ -401,7 +456,12 @@ export function openSession<Value>(
       failures = 0;
       void attempt(generation);
     },
-    yjs: { doc, awareness },
+    yjs: {
+      doc,
+      get awareness() {
+        return provider.awareness;
+      },
+    },
     close: () => {
       if (ended) {
         return;
@@ -423,8 +483,9 @@ export function openSession<Value>(
       }
       texts.clear();
       // The provider tells CK this client left; awareness and doc keep no timer behind.
+      presenceListeners.clear();
       provider.destroy();
-      awareness.destroy();
+      provider.awareness.destroy();
       doc.destroy();
       status = 'closed';
     },

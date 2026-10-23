@@ -1,6 +1,6 @@
 import { createPublicKey, createSecretKey, type KeyObject } from 'node:crypto';
 import jwt from 'jsonwebtoken';
-import type { Actor } from '../model/actor.ts';
+import { isPseudonym, type Actor } from '../model/actor.ts';
 import { asActorId, asNonBlank } from '../utils/input.ts';
 import { defined } from '../utils/optional.ts';
 
@@ -106,6 +106,10 @@ export function createTokenCheck(options: TokenOptions): (token: string) => Prom
     const actorId = asActorId(claims[actorClaim]);
     if (actorId === undefined) {
       throw new TokenRejected(new Error(`claim ${actorClaim} holds no usable key`));
+    }
+    // Such a key would pass for the pseudonym of someone writing anonymously.
+    if (isPseudonym(actorId)) {
+      throw new TokenRejected(new Error(`claim ${actorClaim} holds a key like a pseudonym`));
     }
 
     const label = asNonBlank(claims[labelClaim]);

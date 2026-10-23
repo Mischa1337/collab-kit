@@ -6,7 +6,7 @@ import pino from 'pino';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 
 import type { Closed, Conflict, Session, Status } from '../../client/src/api.ts';
-import { createCollabKitApi } from '../../client/src/index.ts';
+import { createCollabKitApi, isPseudonym } from '../../client/src/index.ts';
 import { createTokenCheck } from '../../src/auth/token.ts';
 import { applyDefinitions } from '../../src/db/apply.ts';
 import { connect, type Storage } from '../../src/db/client.ts';
@@ -529,6 +529,51 @@ describe('rights and ends', () => {
 
     erin.units.update({ set: { b: 2 } });
     expect(await waitFor(() => alice.units.get('b') === 2)).toBe(true);
+  });
+
+  it('takes a new client and presence when the own anonymity changes, and keeps the units', async () => {
+    const place = await freshWorkpiece();
+    const bob = open('bob', place.workpieceId);
+    const erin = open('erin', place.workpieceId);
+    await Promise.all([bob.synced, erin.synced]);
+    bob.units.update({ set: { a: 1 } });
+    await stored(place.workpieceId, 1);
+    bob.presence.set({ pointer: 2 });
+    const before = { clientId: bob.clientId, awareness: bob.yjs.awareness };
+    const told: boolean[] = [];
+    bob.on('anonymityChanged', (anonymous) => told.push(anonymous));
+
+    await setGrant(storage.db, {
+      groupId: place.writers,
+      scope: { kind: 'room', id: place.roomId },
+      rights: ['see', 'edit'],
+      anonymous: true,
+      setBy: 'alice',
+    });
+    await gateway.recheck();
+
+    expect(await waitFor(() => told.length === 1 && bob.status === 'connected')).toBe(true);
+    expect(told).toEqual([true]);
+    expect(bob.clientId).not.toBe(before.clientId);
+    expect(bob.yjs.awareness).not.toBe(before.awareness);
+    expect(bob.units.get('a')).toBe(1);
+    expect(bob.presence.people().find((person) => person.self)?.clients[0]?.state).toMatchObject({
+      pointer: 2,
+    });
+
+    // What bob changes from now on comes from the new client, under his pseudonym.
+    bob.units.update({ set: { b: 2 } });
+    await stored(place.workpieceId, 2);
+    const [, later] = await readUpdatesSince(storage.db, place.workpieceId);
+    expect(later?.clients).toEqual([bob.clientId]);
+    expect(later?.anonymous?.map((stamp) => stamp.key)).toEqual(['bob']);
+    expect(
+      await waitFor(() =>
+        erin.presence
+          .people()
+          .some((person) => isPseudonym(person.id) && person.name === undefined),
+      ),
+    ).toBe(true);
   });
 
   it('ends with closed on 4403 and does not come back', async () => {

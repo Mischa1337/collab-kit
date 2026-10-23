@@ -2,15 +2,15 @@
 
 import { html, type TemplateResult } from 'lit';
 
-import type { Grant, Right } from '../../api.ts';
-import { RIGHTS } from '../store.ts';
+import type { Grant } from '../../api.ts';
+import { RIGHTS, type Switch } from '../store.ts';
 
-/** One grant: what it is about on the left, every right as a switch on the right. */
+/** One grant: what it is about on the left, every right and the flag as a switch on the right. */
 export function accessRow(
   label: string,
   grant: Grant,
   busy: boolean,
-  toggle: (grant: Grant, right: Right) => void,
+  toggle: (grant: Grant, chip: Switch) => void,
 ): TemplateResult {
   return html`<div class="row">
     <span>${label}</span>
@@ -26,6 +26,14 @@ export function accessRow(
             ${right}
           </button>`,
       )}
+      <button
+        class="chip"
+        aria-pressed=${grant.anonymous === true}
+        ?disabled=${busy}
+        @click=${() => toggle(grant, 'anonymous')}
+      >
+        anonymous
+      </button>
     </span>
   </div>`;
 }

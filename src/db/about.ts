@@ -30,3 +30,37 @@ export async function aboutOfTask(
   }
   return task.parentId === undefined ? undefined : aboutOf(db, { kind: 'task', id: task.parentId });
 }
+
+/** What a pseudonym belongs to: what the chain is about, else the task on top that hangs on nothing. */
+export async function subjectOf(
+  db: Db,
+  reference: Reference,
+  seen = new Set<string>(),
+): Promise<Reference> {
+  const place: Reference = { kind: reference.kind, id: reference.id };
+
+  // Each once, so a chain written by hand in a circle still ends.
+  const key = `${place.kind}:${place.id.toHexString()}`;
+  if (seen.has(key)) {
+    return place;
+  }
+  seen.add(key);
+
+  if (place.kind === 'comment') {
+    const comment = await findComment(db, place.id);
+    if (comment !== null) {
+      return subjectOf(db, comment.anchor, seen);
+    }
+  }
+  if (place.kind === 'task') {
+    const task = await findTask(db, place.id);
+    if (task?.anchor !== undefined) {
+      return subjectOf(db, task.anchor, seen);
+    }
+    if (task?.parentId !== undefined) {
+      return subjectOf(db, { kind: 'task', id: task.parentId }, seen);
+    }
+  }
+  // A room, a workpiece, a group or a task on top, without the unit.
+  return place;
+}

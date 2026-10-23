@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import type { Db } from 'mongodb';
+import { ObjectId, type Db } from 'mongodb';
 
 import {
   assigneeSees,
@@ -10,7 +10,8 @@ import {
   maySee,
   maySetTaskState,
 } from '../auth/access.ts';
-import { aboutOf, aboutOfTask } from '../db/about.ts';
+import { readerOf, stampsFor, unstampedFor } from '../auth/anonymity.ts';
+import { aboutOf, aboutOfTask, subjectOf } from '../db/about.ts';
 import {
   addAssignee,
   createTask,
@@ -20,7 +21,7 @@ import {
   setTaskState,
   type TaskQuery,
 } from '../db/collections/tasks.ts';
-import { withNames } from '../db/names.ts';
+import { itself, withNames } from '../db/names.ts';
 import {
   ANCHOR_QUERY_RULE,
   ASSIGNEE_RULE,
@@ -33,9 +34,14 @@ import {
   asObjectId,
   asParentId,
   asText,
+  isPseudonymAssignee,
+  PSEUDONYM_RULE,
 } from '../utils/input.ts';
 import { defined } from '../utils/optional.ts';
 import { actorOf, bodyOf, fail, guard, idOf, requireId, unusableField } from './http.ts';
+
+/** Each task goes out masked at itself, where manage lets the reader see through. */
+const TASKS = { placeOf: itself('task') };
 
 /** Task, review, revision and approval alike: something to be done, by someone, with a state. */
 export function taskRoutes(db: Db, decisions: readonly string[]): Router {
@@ -75,6 +81,9 @@ export function taskRoutes(db: Db, decisions: readonly string[]): Router {
     if (body['assignees'] !== undefined && assignees === undefined) {
       return fail(response, 400, `assignees must be a list; ${ASSIGNEE_RULE}`);
     }
+    if (assignees?.some(isPseudonymAssignee) === true) {
+      return fail(response, 400, PSEUDONYM_RULE);
+    }
     const unusable = unusableField(body, { anchor, parentId, order, detail });
     if (unusable !== undefined) {
       return fail(response, 400, `${unusable} is unusable`);
@@ -112,18 +121,33 @@ export function taskRoutes(db: Db, decisions: readonly string[]): Router {
 
     // Looked up here and never read from the body, so no task lands in another room's stream.
     const about = await aboutOfTask(db, { anchor, parentId });
+    // Author and persons given it, asked where it hangs; on nothing, the task is what it is about.
+    const id = new ObjectId();
+    const hangsOn = anchor ?? (parentId === undefined ? undefined : { kind: 'task', id: parentId });
+    const anonymous = await stampsFor(
+      db,
+      [actor.actorId, ...given.flatMap((entry) => (entry.kind === 'actor' ? [entry.id] : []))],
+      {
+        places,
+        about: hangsOn === undefined ? { kind: 'task', id } : await subjectOf(db, hangsOn),
+      },
+    );
     const task = await createTask(db, {
+      id,
       kind,
       title,
       state,
       createdBy: actor.actorId,
+      anonymous,
       ...defined({ anchor, parentId, assignees, order, detail, about }),
     });
-    response.status(201).json(await withNames(db, task));
+    response.status(201).json(await withNames(db, task, readerOf(db, actorOf(request)), TASKS));
   });
 
   routes.get('/tasks/:id', seeing, async (request, response) => {
-    response.json(await withNames(db, await findTask(db, idOf(request))));
+    response.json(
+      await withNames(db, await findTask(db, idOf(request)), readerOf(db, actorOf(request)), TASKS),
+    );
   });
 
   /** Tasks at an anchor or under a parent; whoever sees that entry sees all that is found. */
@@ -163,8 +187,18 @@ export function taskRoutes(db: Db, decisions: readonly string[]): Router {
     }
 
     const assignees: TaskQuery['assignees'] = assignee === undefined ? undefined : [assignee];
-    const tasks = await readTasks(db, defined({ anchor, parentId, assignees, kind, state }));
-    response.json(await withNames(db, tasks));
+    // Asked where the tasks hang, at the anchor or under the parent.
+    const place =
+      anchor ?? (parent === undefined ? undefined : { kind: 'task' as const, id: parent });
+    const unstamped =
+      assignee?.kind === 'actor' && place !== undefined
+        ? await unstampedFor(db, actor, assignee.id, place)
+        : undefined;
+    const tasks = await readTasks(
+      db,
+      defined({ anchor, parentId, assignees, unstamped, kind, state }),
+    );
+    response.json(await withNames(db, tasks, readerOf(db, actorOf(request)), TASKS));
   });
 
   /** Moves the state; who moved it and why land in the events of the task. */
@@ -194,7 +228,7 @@ export function taskRoutes(db: Db, decisions: readonly string[]): Router {
       changedBy: actor.actorId,
       ...defined({ reason, about }),
     });
-    response.json(await withNames(db, changed));
+    response.json(await withNames(db, changed, readerOf(db, actorOf(request)), TASKS));
   });
 
   /** Gives the task to one more person or group; who gave it to whom and why land in its events. */
@@ -205,6 +239,9 @@ export function taskRoutes(db: Db, decisions: readonly string[]): Router {
 
     if (assignee === undefined) {
       return fail(response, 400, ASSIGNEE_RULE);
+    }
+    if (isPseudonymAssignee(assignee)) {
+      return fail(response, 400, PSEUDONYM_RULE);
     }
     const unusable = unusableField(body, { reason });
     if (unusable !== undefined) {
@@ -222,14 +259,24 @@ export function taskRoutes(db: Db, decisions: readonly string[]): Router {
     }
 
     const about = await aboutOf(db, { kind: 'task', id });
+    // Whoever gives it and the person given, asked against the task, which keeps whom it knows.
+    const at = { kind: 'task' as const, id };
+    const anonymous = await stampsFor(
+      db,
+      [actor.actorId, ...(assignee.kind === 'actor' ? [assignee.id] : [])],
+      { places: [at], about: await subjectOf(db, at), ...defined({ known: task ?? undefined }) },
+    );
     const added = await addAssignee(db, id, {
       assignee,
       changedBy: actor.actorId,
+      anonymous,
       ...defined({ reason, about }),
     });
 
     // 200 if it was already there: giving it twice is no error, it just changes nothing.
-    response.status(added ? 201 : 200).json(await withNames(db, await findTask(db, id)));
+    response
+      .status(added ? 201 : 200)
+      .json(await withNames(db, await findTask(db, id), readerOf(db, actorOf(request)), TASKS));
   });
 
   // In the query and not the body: a body on DELETE may get lost on the way.
@@ -253,7 +300,9 @@ export function taskRoutes(db: Db, decisions: readonly string[]): Router {
       changedBy: actorOf(request).actorId,
       ...defined({ reason, about }),
     });
-    response.json(await withNames(db, await findTask(db, id)));
+    response.json(
+      await withNames(db, await findTask(db, id), readerOf(db, actorOf(request)), TASKS),
+    );
   });
 
   /** Where a client finds its work: tasks given to this token or to one of its groups. */
@@ -266,7 +315,14 @@ export function taskRoutes(db: Db, decisions: readonly string[]): Router {
     }
 
     const assignees = await assigneesFor(db, actorOf(request));
-    response.json(await withNames(db, await readTasks(db, { assignees, ...defined({ state }) })));
+    response.json(
+      await withNames(
+        db,
+        await readTasks(db, { assignees, ...defined({ state }) }),
+        readerOf(db, actorOf(request)),
+        TASKS,
+      ),
+    );
   });
 
   return routes;

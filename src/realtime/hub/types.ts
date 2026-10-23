@@ -6,11 +6,16 @@ import type * as Y from 'yjs';
 import type { Actor } from '../../model/actor.ts';
 import type { ActorNotes } from '../../db/collections/actors.ts';
 import type { EventRecord } from '../../db/collections/events.ts';
+import type { Stamp } from '../../db/collections/pseudonyms.ts';
 import type { UpdateRecord } from '../../db/collections/updates.ts';
 
 /** What the hub needs from a connection, so it does not depend on the transport. */
 export interface Connection {
   readonly actor: Actor;
+  /** What its actor writes under at this workpiece; absent while they write openly. */
+  readonly pseudonym?: string;
+  /** Whether its actor manages the workpiece and so sees the true keys behind pseudonyms. */
+  readonly seesThrough?: boolean;
   /** Whether it asked with ?events=1 to hear of events as they happen, as message 101. */
   readonly wantsEvents: boolean;
   send(message: Uint8Array): void;
@@ -26,12 +31,16 @@ export interface OpenWorkpiece {
   readonly connections: Set<Connection>;
   /** Whether a connection may speak for an awareness client: never for another person's. */
   mayAnnounce(connection: Connection, clientId: number): boolean;
+  /** These awareness entries as one message to the receiver, person set by the service. */
+  awarenessFor(receiver: Connection, clientIds: readonly number[]): Uint8Array;
 }
 
 /** A person connected to a workpiece, and over how many connections, such as tabs. */
 export interface PresentActor {
   readonly actorId: string;
   readonly connections: number;
+  /** The pseudonym, when they are connected anonymously; masked by whoever reads it. */
+  readonly anonymous?: Stamp[];
 }
 
 /** What a person gives a checkpoint: who sets it, a name and the why. */
@@ -47,6 +56,8 @@ export interface Merge {
   readonly from: ObjectId;
   /** Its changes after the mark, oldest first, each still under its author. */
   readonly rows: readonly UpdateRecord[];
+  /** The pseudonym each change is stored under at the target, by its id; any other goes openly. */
+  readonly writers: ReadonlyMap<string, string>;
   /** The last change of from the target holds afterwards, the mark for the next merge. */
   readonly upTo?: ObjectId;
   readonly createdBy: string;

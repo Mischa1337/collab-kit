@@ -1,6 +1,7 @@
 import type { ObjectId } from 'mongodb';
 
 import type { NewEvent } from '../../db/collections/events.ts';
+import { stampsOf, type Author } from '../../db/collections/pseudonyms.ts';
 import type { Anchor } from '../../model/anchor.ts';
 import { defined } from '../../utils/optional.ts';
 import { idKey, merged, type Loss, type Removal, type Stretch } from './deletions.ts';
@@ -10,7 +11,7 @@ const MAX_RANGES = 100;
 
 /** What the removal events have in common: who did it, where, and with which change. */
 interface RemovalBase {
-  readonly createdBy: string;
+  readonly createdBy: Author;
   readonly anchor: Anchor;
   readonly at: ObjectId;
 }
@@ -19,13 +20,13 @@ interface RemovalBase {
 interface LossBase {
   readonly anchor: Anchor;
   readonly at: ObjectId;
-  readonly sender: string;
+  readonly sender: Author;
 }
 
 /** One group of removals that becomes one event. */
 interface RemovalGroup {
   readonly kind: string;
-  readonly affected: string;
+  readonly affected: Author;
   readonly unit: string | undefined;
   readonly ranges: Stretch[];
   /** Whether every piece in it is a format mark; then the event says so. */
@@ -35,27 +36,27 @@ interface RemovalGroup {
 /** One group of losses that becomes one event. */
 interface LossGroup {
   readonly loss: Loss;
-  readonly loser: string;
-  readonly other: string | undefined;
+  readonly loser: Author;
+  readonly other: Author | undefined;
   readonly lost: Stretch[];
 }
 
 /** One event per kind, person whose work it was and unit; the remover's own work is left out. */
 export function removalEvents(
   removals: readonly Removal[],
-  authors: ReadonlyMap<number, string>,
+  authors: ReadonlyMap<number, Author>,
   base: RemovalBase,
 ): NewEvent[] {
   const groups = new Map<string, RemovalGroup>();
 
-  // Grouped by kind, author and unit; whose author is unknown stays out.
+  // Grouped by kind, author as written and unit; whose author is unknown stays out.
   for (const removal of removals) {
     const author = authors.get(removal.client);
-    if (author === undefined || author === base.createdBy) {
+    if (author === undefined || author.actorId === base.createdBy.actorId) {
       continue;
     }
     const kind = removal.replaced ? 'work-replaced' : 'work-removed';
-    const key = JSON.stringify([kind, author, removal.unit ?? null]);
+    const key = JSON.stringify([kind, author.actorId, author.as ?? null, removal.unit ?? null]);
     const group = groups.get(key) ?? {
       kind,
       affected: author,
@@ -74,12 +75,14 @@ export function removalEvents(
     const ranges = merged(group.ranges.toSorted(byId), () => true);
 
     // Many stretches would only bloat the event, their count is enough then.
+    // Each stamped as the change was and the work came, so a later flag gives nobody away.
     return {
       kind: group.kind,
-      createdBy: base.createdBy,
+      createdBy: base.createdBy.actorId,
       anchor: inUnit(base.anchor, group.unit),
       at: base.at,
-      affects: [group.affected],
+      affects: [group.affected.actorId],
+      anonymous: stampsOf([base.createdBy, group.affected]),
       detail: {
         ...(ranges.length > MAX_RANGES ? { rangeCount: ranges.length } : { ranges }),
         ...(group.formatting ? { formatting: true } : {}),
@@ -96,8 +99,8 @@ function byId(a: Stretch, b: Stretch): number {
 /** One work-lost per cause, place or value, loser, other side and unit; none if both are one. */
 export function lossEvents(
   losses: readonly Loss[],
-  authors: ReadonlyMap<number, string>,
-  deleters: ReadonlyMap<string, string>,
+  authors: ReadonlyMap<number, Author>,
+  deleters: ReadonlyMap<string, Author>,
   base: LossBase,
 ): NewEvent[] {
   const groups = new Map<string, LossGroup>();
@@ -114,15 +117,17 @@ export function lossEvents(
         ? authors.get(loss.other.client)
         : deleters.get(idKey(loss.other));
     // Two tabs of one person: nobody lost anything to anybody.
-    if (other === loser) {
+    if (other?.actorId === loser.actorId) {
       continue;
     }
 
     const key = JSON.stringify([
       loss.cause,
       idKey(loss.other),
-      loser,
-      other ?? null,
+      loser.actorId,
+      loser.as ?? null,
+      other?.actorId ?? null,
+      other?.as ?? null,
       loss.unit ?? null,
     ]);
     const group = groups.get(key) ?? { loss, loser, other, lost: [] };
@@ -138,12 +143,15 @@ function lossEvent(group: LossGroup, base: LossBase): NewEvent {
   const { loss, loser, other, lost } = group;
   const where = loss.cause === 'overwritten' ? 'current' : 'removed';
 
+  const winner = other ?? base.sender;
+
   return {
     kind: 'work-lost',
-    createdBy: other ?? base.sender,
+    createdBy: winner.actorId,
     anchor: inUnit(base.anchor, loss.unit),
     at: base.at,
-    affects: other === undefined ? [loser] : [loser, other],
+    affects: other === undefined ? [loser.actorId] : [loser.actorId, other.actorId],
+    anonymous: stampsOf([winner, loser]),
     detail: {
       cause: loss.cause,
       // Many stretches would only bloat the event, their count is enough then.

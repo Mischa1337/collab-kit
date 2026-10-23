@@ -1,12 +1,13 @@
 import { Router } from 'express';
-import type { Db, ObjectId } from 'mongodb';
+import { ObjectId, type Db } from 'mongodb';
 
 import { may, maySee, workpiecesVisibleTo } from '../auth/access.ts';
+import { readerOf, stampsFor } from '../auth/anonymity.ts';
 import { addToRoom } from '../db/collections/rooms.ts';
 import { createWorkpiece, findWorkpiece } from '../db/collections/workpieces.ts';
-import { latestPerActor } from '../db/collections/events.ts';
+import { latestPerActor, withoutAnchor } from '../db/collections/events.ts';
 import { isUpdateOf, summarizeUpdatesSince } from '../db/collections/updates.ts';
-import { eventKeysOf, withNames } from '../db/names.ts';
+import { atAnchor, EVENTS_AT_ANCHOR, itself, withNames } from '../db/names.ts';
 import type { Actor } from '../model/actor.ts';
 import {
   forkWorkpiece,
@@ -17,6 +18,9 @@ import {
 import { asCount, asObject, asObjectId, asText, asUnits } from '../utils/input.ts';
 import { defined } from '../utils/optional.ts';
 import { actorOf, bodyOf, fail, guard, idOf, requireId, unusableField } from './http.ts';
+
+/** Each workpiece goes out masked at itself, where manage lets the reader see through. */
+const WORKPIECES = { placeOf: itself('workpiece') };
 
 /** The workpiece as a thing; typing runs over the WebSocket, here only a merge writes into one. */
 export function workpieceRoutes(db: Db, hub: WorkpieceHub): Router {
@@ -84,21 +88,38 @@ export function workpieceRoutes(db: Db, hub: WorkpieceHub): Router {
       return fail(response, ...refused);
     }
 
+    // Asked where it will lie, in the room or in nothing; its pseudonyms belong to itself.
+    const id = new ObjectId();
+    const anonymous = await stampsFor(db, [actor.actorId], {
+      places: roomId === undefined ? [] : [{ kind: 'room', id: roomId }],
+      about: { kind: 'workpiece', id },
+    });
     const workpiece = await createWorkpiece(db, {
+      id,
       name,
       createdBy: actor.actorId,
+      anonymous,
       ...defined({ contract, units }),
     });
     if (roomId !== undefined) {
       await addToRoom(db, roomId, { workpieceId: workpiece._id, addedBy: actor.actorId });
     }
 
-    response.status(201).json(await withNames(db, workpiece));
+    response
+      .status(201)
+      .json(await withNames(db, workpiece, readerOf(db, actorOf(request)), WORKPIECES));
   });
 
   /** Every workpiece this token may see, so a tool can offer them, say for a room. */
   routes.get('/workpieces', async (request, response) => {
-    response.json(await withNames(db, await workpiecesVisibleTo(db, actorOf(request))));
+    response.json(
+      await withNames(
+        db,
+        await workpiecesVisibleTo(db, actorOf(request)),
+        readerOf(db, actorOf(request)),
+        WORKPIECES,
+      ),
+    );
   });
 
   routes.get('/workpieces/:id', async (request, response) => {
@@ -109,7 +130,7 @@ export function workpieceRoutes(db: Db, hub: WorkpieceHub): Router {
       return fail(response, 404, 'unknown workpiece');
     }
 
-    response.json(await withNames(db, workpiece));
+    response.json(await withNames(db, workpiece, readerOf(db, actorOf(request)), WORKPIECES));
   });
 
   /** The chain of changes, oldest first after since: who and when, the bytes only as a size. */
@@ -122,15 +143,27 @@ export function workpieceRoutes(db: Db, hub: WorkpieceHub): Router {
       return fail(response, 400, `${unusable} is unusable`);
     }
 
+    // Every change lies at the workpiece, so manage there lets the reader see through.
+    const id = idOf(request);
     response.json(
-      await withNames(db, await summarizeUpdatesSince(db, idOf(request), since, limit)),
+      await withNames(
+        db,
+        await summarizeUpdatesSince(db, id, since, limit),
+        readerOf(db, actorOf(request)),
+        {
+          placeOf: () => ({ kind: 'workpiece', id }),
+        },
+      ),
     );
   });
 
   /** Per person the last trace at the workpiece and its comments and tasks, newest first. */
   routes.get('/workpieces/:id/activity', seeing, async (request, response) => {
     const activity = await latestPerActor(db, [{ kind: 'workpiece', id: idOf(request) }]);
-    response.json(await withNames(db, activity));
+    const named = await withNames(db, activity, readerOf(db, actorOf(request)), {
+      placeOf: atAnchor,
+    });
+    response.json(named.map(withoutAnchor));
   });
 
   /** The stored state as Yjs bytes after the change at, or the newest; restoring is the tool's. */
@@ -170,7 +203,9 @@ export function workpieceRoutes(db: Db, hub: WorkpieceHub): Router {
       createdBy: actorOf(request).actorId,
       ...defined({ label, reason }),
     });
-    response.status(201).json(await withNames(db, checkpoint, eventKeysOf));
+    response
+      .status(201)
+      .json(await withNames(db, checkpoint, readerOf(db, actorOf(request)), EVENTS_AT_ANCHOR));
   });
 
   /** A copy of the history up to a point, each change under its author, to work on apart. */
@@ -207,7 +242,9 @@ export function workpieceRoutes(db: Db, hub: WorkpieceHub): Router {
       createdBy: actor.actorId,
       ...defined({ at, roomId, reason }),
     });
-    response.status(201).json(await withNames(db, fork));
+    response
+      .status(201)
+      .json(await withNames(db, fork, readerOf(db, actorOf(request)), WORKPIECES));
   });
 
   /** Replays what another workpiece has beyond the last merge, each change under its author. */
@@ -244,7 +281,9 @@ export function workpieceRoutes(db: Db, hub: WorkpieceHub): Router {
       createdBy: actor.actorId,
       ...defined({ reason }),
     });
-    response.status(201).json(await withNames(db, merged, eventKeysOf));
+    response
+      .status(201)
+      .json(await withNames(db, merged, readerOf(db, actorOf(request)), EVENTS_AT_ANCHOR));
   });
 
   return routes;

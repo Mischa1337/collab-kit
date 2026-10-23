@@ -1,6 +1,7 @@
 import { Binary, ObjectId, type Db, type Filter, type FindCursor } from 'mongodb';
 
 import type { CollectionDefinition } from '../apply.ts';
+import { authorOf, stampField, stampsSchema, type Author, type Stamp } from './pseudonyms.ts';
 
 /** One change to a workpiece as Yjs bytes plus who and when; never deleted, not even by a fold. */
 export interface UpdateRecord {
@@ -13,6 +14,8 @@ export interface UpdateRecord {
   deletes?: number[];
   createdBy: string;
   createdAt: Date;
+  /** Whether its author wrote it anonymously, with the pseudonym; decided by the connection. */
+  anonymous?: Stamp[];
 }
 
 export const updatesDefinition: CollectionDefinition = {
@@ -36,6 +39,7 @@ export const updatesDefinition: CollectionDefinition = {
       },
       createdBy: { bsonType: 'string', description: 'D6.19, author on every single change' },
       createdAt: { bsonType: 'date' },
+      anonymous: stampsSchema,
     },
   },
   indexes: [
@@ -51,6 +55,8 @@ export interface NewUpdate {
   readonly clients: readonly number[];
   readonly deletes?: readonly number[];
   readonly createdBy: string;
+  /** Whether the author writes anonymously; left out, openly. */
+  readonly anonymous?: readonly Stamp[];
 }
 
 export async function appendUpdate(
@@ -68,13 +74,14 @@ export async function appendUpdate(
       : { deletes: [...input.deletes] }),
     createdBy: input.createdBy,
     createdAt: now,
+    ...stampField(input.anonymous ?? []),
   };
 
   await db.collection<UpdateRecord>('updates').insertOne(record);
   return record;
 }
 
-/** Copies changes to another workpiece in their order, each under its author and time as before. */
+/** Copies changes to another workpiece in their order, each under its author, time and stamp. */
 export async function copyUpdates(
   db: Db,
   rows: readonly UpdateRecord[],
@@ -132,23 +139,23 @@ export async function creatorsOf(
   db: Db,
   workpieceId: ObjectId,
   clientIds: readonly number[],
-): Promise<Map<number, string>> {
-  // One lookup per client, each answered by the index alone.
+): Promise<Map<number, Author>> {
+  // One lookup per client; a client keeps one stamp, as a session takes a new one when it changes.
   const found = await Promise.all(
     clientIds.map(async (client) => {
       const first = await db
         .collection<UpdateRecord>('updates')
-        .findOne(
+        .findOne<Pick<UpdateRecord, 'createdBy' | 'anonymous'>>(
           { workpieceId, clients: client },
-          { sort: { _id: 1 }, projection: { createdBy: 1 } },
+          { sort: { _id: 1 }, projection: { _id: 0, createdBy: 1, anonymous: 1 } },
         );
-      return [client, first?.createdBy] as const;
+      return [client, first === null ? undefined : authorOf(first)] as const;
     }),
   );
 
   // A client no change brought stays out, so the caller sees whose author is unknown.
   return new Map(
-    found.filter((entry): entry is readonly [number, string] => entry[1] !== undefined),
+    found.filter((entry): entry is readonly [number, Author] => entry[1] !== undefined),
   );
 }
 
@@ -157,12 +164,12 @@ export function readUpdatesDeleting(
   db: Db,
   workpieceId: ObjectId,
   client: number,
-): FindCursor<Pick<UpdateRecord, 'bytes' | 'createdBy'>> {
+): FindCursor<Pick<UpdateRecord, 'bytes' | 'createdBy' | 'anonymous'>> {
   return db
     .collection<UpdateRecord>('updates')
-    .find<Pick<UpdateRecord, 'bytes' | 'createdBy'>>(
+    .find<Pick<UpdateRecord, 'bytes' | 'createdBy' | 'anonymous'>>(
       { workpieceId, deletes: client },
-      { sort: { _id: 1 }, projection: { _id: 0, bytes: 1, createdBy: 1 } },
+      { sort: { _id: 1 }, projection: { _id: 0, bytes: 1, createdBy: 1, anonymous: 1 } },
     );
 }
 
@@ -172,6 +179,8 @@ export interface UpdateSummary {
   createdBy: string;
   createdAt: Date;
   bytes: number;
+  /** Read along, so the routes mask the author; never passed on. */
+  anonymous?: Stamp[];
 }
 
 /** Like readUpdatesSince, but MongoDB counts the bytes instead of sending them; limit caps it. */
@@ -184,7 +193,7 @@ export async function summarizeUpdatesSince(
   const found = db
     .collection<UpdateRecord>('updates')
     .find<UpdateSummary>(after(workpieceId, since), {
-      projection: { createdBy: 1, createdAt: 1, bytes: { $binarySize: '$bytes' } },
+      projection: { createdBy: 1, createdAt: 1, bytes: { $binarySize: '$bytes' }, anonymous: 1 },
     })
     .sort({ _id: 1 });
 

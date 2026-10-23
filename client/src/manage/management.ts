@@ -152,7 +152,7 @@ export class Management extends LitElement implements ManagementOptions {
       openForm: (kind) => store.openForm(kind),
       open: (workpiece) => this.open(workpiece, room),
       takeOut: (workpieceId) => void store.takeOut(room, workpieceId),
-      toggle: (grant, right) => void store.toggle(grant, right),
+      toggle: (grant, chip) => void store.toggle(grant, chip),
       give: (groupId) => void store.give(room, groupId),
     });
   }
@@ -183,7 +183,7 @@ export class Management extends LitElement implements ManagementOptions {
       openForm: (kind) => store.openForm(kind),
       pick: (person) => void store.pick(group, person),
       dismiss: (actorId) => void store.dismiss(group, actorId),
-      toggle: (grant, right) => void store.toggle(grant, right),
+      toggle: (grant, chip) => void store.toggle(grant, chip),
     });
   }
 

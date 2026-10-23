@@ -6,17 +6,13 @@ import type { Logger } from 'pino';
 import { WebSocketServer, type WebSocket } from 'ws';
 
 import type { Actor } from '../../model/actor.ts';
-import { workpieceAccess } from '../../auth/access.ts';
+import { may, workpieceAccess } from '../../auth/access.ts';
+import { writesAs } from '../../auth/anonymity.ts';
 import { asObjectId } from '../../utils/input.ts';
+import { defined } from '../../utils/optional.ts';
 import { isAllowedOrigin } from '../../utils/origin.ts';
 import type { Connection, WorkpieceHub, OpenWorkpiece } from '../hub/types.ts';
-import {
-  encodeAwareness,
-  encodeSyncStep1,
-  handleMessage,
-  MessageRefused,
-  tokenIn,
-} from './protocol.ts';
+import { encodeSyncStep1, handleMessage, MessageRefused, tokenIn } from './protocol.ts';
 
 /** The client announces two subprotocols: this marker and the token itself. */
 const BEARER = 'bearer';
@@ -59,6 +55,10 @@ interface Admitted {
   readonly actor: Actor;
   /** Fixed for the life of the connection; when it changes, recheck closes it with 4409. */
   readonly mayWrite: boolean;
+  /** What the actor writes under here, from the flag on grants; fixed as mayWrite is. */
+  readonly pseudonym?: string;
+  /** Whether the actor manages the workpiece and so sees the true keys; fixed as mayWrite is. */
+  readonly seesThrough: boolean;
   /** Whether it asked with ?events=1 to hear of events as they happen. */
   readonly wantsEvents: boolean;
 }
@@ -148,10 +148,21 @@ export function attachGateway(options: GatewayOptions): Gateway {
             if (access === 'none') {
               options.logger.info(who, 'access withdrawn, connection closed');
               ws.close(4403, 'access withdrawn');
-            } else if ((access === 'write') !== admitted.mayWrite) {
+            } else if (
+              (access === 'write') !== admitted.mayWrite ||
+              (await seesThroughAt(options.db, admitted.actor, admitted.workpieceId)) !==
+                admitted.seesThrough
+            ) {
               // A fresh connection is admitted with the new rights, Yjs loses nothing on the way.
               options.logger.info(who, 'rights changed, connection closed');
               ws.close(4409, 'rights changed');
+            } else if (
+              (await writesAs(options.db, admitted.actor.actorId, admitted.workpieceId)) !==
+              admitted.pseudonym
+            ) {
+              // Its changes would otherwise go on under the old stamp, open or anonymous.
+              options.logger.info(who, 'anonymity changed, connection closed');
+              ws.close(4409, 'anonymity changed');
             }
           } catch (error) {
             options.logger.error({ err: error }, 'could not check access again');
@@ -196,6 +207,8 @@ async function serveConnection(
   // What the hub knows of this socket: who is on it and how to reach them.
   const connection: Connection = {
     actor: admitted.actor,
+    ...defined({ pseudonym: admitted.pseudonym }),
+    seesThrough: admitted.seesThrough,
     wantsEvents: admitted.wantsEvents,
     send: (message) => {
       if (ws.readyState === ws.OPEN) {
@@ -351,7 +364,7 @@ async function serveConnection(
 
   const others = [...workpiece.awareness.getStates().keys()];
   if (others.length > 0) {
-    connection.send(encodeAwareness(workpiece.awareness, others));
+    connection.send(workpiece.awarenessFor(connection, others));
   }
 
   // From here messages go straight in, after those that came while it was loading.
@@ -409,7 +422,23 @@ async function admit(
 
   // Only who asks hears of events: a plain y-websocket client would not know message 101.
   const wantsEvents = new URLSearchParams(query).get('events') === '1';
-  return { workpieceId, actor, mayWrite: access === 'write', wantsEvents };
+  const [pseudonym, seesThrough] = await Promise.all([
+    writesAs(options.db, actor.actorId, workpieceId),
+    seesThroughAt(options.db, actor, workpieceId),
+  ]);
+  return {
+    workpieceId,
+    actor,
+    mayWrite: access === 'write',
+    seesThrough,
+    wantsEvents,
+    ...defined({ pseudonym }),
+  };
+}
+
+/** Whether the actor manages the workpiece, which lets them see the true keys behind pseudonyms. */
+function seesThroughAt(db: Db, actor: Actor, workpieceId: ObjectId): Promise<boolean> {
+  return may(db, actor, 'manage', { kind: 'workpiece', id: workpieceId });
 }
 
 /** A catch for work nobody waits for: a failure is logged instead of ending the process. */

@@ -4,6 +4,7 @@ import { anchorSchema, anchoredAt, type Anchor, type AnchorQuery } from '../../m
 import { defined, matchOptional } from '../../utils/optional.ts';
 import type { CollectionDefinition } from '../apply.ts';
 import { changeWithEvent, writeWithEvents, type About, type NewEvent } from './events.ts';
+import { stampField, stampsSchema, unstampedBy, type Stamp } from './pseudonyms.ts';
 
 /** Something a person said about a place; feedback, chat and reactions differ only in kind. */
 export interface CommentRecord {
@@ -23,6 +24,8 @@ export interface CommentRecord {
   /** Set once the words are gone; the shell stays so the answers keep their thread. */
   deletedAt?: Date;
   deletedBy?: string;
+  /** Who in it wrote anonymously, its author or whoever deleted it; decided when they did. */
+  anonymous?: Stamp[];
 }
 
 export const commentsDefinition: CollectionDefinition = {
@@ -44,6 +47,7 @@ export const commentsDefinition: CollectionDefinition = {
       editedAt: { bsonType: 'date', description: 'when the words last changed' },
       deletedAt: { bsonType: 'date', description: 'the words are gone, the shell stays' },
       deletedBy: { bsonType: 'string' },
+      anonymous: stampsSchema,
     },
   },
   indexes: [
@@ -62,6 +66,8 @@ export interface NewComment {
   readonly state?: string;
   /** What its anchor hangs on in the end, for the trace; the route looks it up. */
   readonly about?: About;
+  /** Whether the author writes anonymously, decided by the route as about is; left out, openly. */
+  readonly anonymous?: readonly Stamp[];
 }
 
 /** Stores the comment and records comment-created in one transaction, the words not in it. */
@@ -78,15 +84,22 @@ export async function createComment(
     body: input.body,
     createdAt: now,
     ...defined({ parentId: input.parentId, state: input.state }),
+    ...stampField(input.anonymous ?? []),
   };
 
+  // Its trace is stamped as the comment is, it cannot be asked at a comment not stored yet.
   await writeWithEvents(
     db,
     async (session) => {
       await db.collection<CommentRecord>('comments').insertOne(comment, { session });
       return true;
     },
-    [commentEvent('comment-created', comment._id, input.createdBy, input.about)],
+    [
+      {
+        ...commentEvent('comment-created', comment._id, input.createdBy, input.about),
+        anonymous: input.anonymous ?? [],
+      },
+    ],
     now,
   );
   return comment;
@@ -165,6 +178,8 @@ export interface CommentDeletion {
   readonly deletedBy: string;
   readonly reason?: string;
   readonly about?: About;
+  /** Whether whoever deletes it writes anonymously, decided against the comment; left out, openly. */
+  readonly anonymous?: readonly Stamp[];
 }
 
 /** Takes the words away for good and leaves the shell; answers whether it was still there. */
@@ -174,19 +189,28 @@ export async function deleteComment(
   input: CommentDeletion,
   now = new Date(),
 ): Promise<boolean> {
+  const stamps = input.anonymous ?? [];
+
   return writeWithEvents(
     db,
     async (session) => {
-      const result = await db
-        .collection<CommentRecord>('comments')
-        .updateOne(
-          { _id: commentId, deletedAt: { $exists: false } },
-          { $set: { body: {}, deletedAt: now, deletedBy: input.deletedBy } },
-          { session },
-        );
+      // The stamp of whoever deletes it joins those already there, each one once.
+      const result = await db.collection<CommentRecord>('comments').updateOne(
+        { _id: commentId, deletedAt: { $exists: false } },
+        {
+          $set: { body: {}, deletedAt: now, deletedBy: input.deletedBy },
+          ...(stamps.length === 0 ? {} : { $addToSet: { anonymous: { $each: [...stamps] } } }),
+        },
+        { session },
+      );
       return result.modifiedCount === 1;
     },
-    [commentEvent('comment-deleted', commentId, input.deletedBy, input.about, input.reason)],
+    [
+      {
+        ...commentEvent('comment-deleted', commentId, input.deletedBy, input.about, input.reason),
+        anonymous: stamps,
+      },
+    ],
     now,
   );
 }
@@ -214,6 +238,8 @@ export interface CommentQuery {
   readonly kind?: string;
   readonly state?: string;
   readonly createdBy?: string;
+  /** Only comments in which this key is not stamped, for a createdBy the reader may not see through. */
+  readonly unstamped?: string;
   readonly anchor?: AnchorQuery;
   /** Left out matches every comment, ROOT only those that answer nothing. */
   readonly parentId?: ObjectId | null;
@@ -226,6 +252,7 @@ export async function readComments(db: Db, query: CommentQuery = {}): Promise<Co
   const filter: Document = {
     ...(query.anchor === undefined ? {} : anchoredAt(query.anchor)),
     ...defined({ kind: query.kind, state: query.state, createdBy: query.createdBy }),
+    ...(query.unstamped === undefined ? {} : unstampedBy(query.unstamped)),
     ...matchOptional('parentId', query.parentId),
     ...(query.since === undefined ? {} : { _id: { $gt: query.since } }),
   };

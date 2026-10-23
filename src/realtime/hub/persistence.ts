@@ -12,6 +12,7 @@ import {
   readUpdatesSince,
   readUpdatesUntil,
 } from '../../db/collections/updates.ts';
+import { authorOf, stampsOf, type Author } from '../../db/collections/pseudonyms.ts';
 import { defined } from '../../utils/optional.ts';
 
 /** How far a workpiece is stored, and the queue its writes run through. */
@@ -123,7 +124,7 @@ export async function storeUpdate(
   db: Db,
   stored: Stored,
   update: Uint8Array,
-  createdBy: string,
+  author: Author,
 ): Promise<ObjectId> {
   const record = await appendUpdate(db, {
     workpieceId: stored.workpieceId,
@@ -132,7 +133,8 @@ export async function storeUpdate(
     clients: [...Y.parseUpdateMeta(update).from.keys()],
     // Whose pieces it deleted, so who deleted one can be found later.
     deletes: [...Y.decodeUpdate(update).ds.clients.keys()],
-    createdBy,
+    createdBy: author.actorId,
+    anonymous: stampsOf([author]),
   });
 
   // The newest stored change is the cut for the next fold.
@@ -146,11 +148,11 @@ export async function deleterOf(
   db: Db,
   workpieceId: ObjectId,
   id: { readonly client: number; readonly clock: number },
-): Promise<string | undefined> {
+): Promise<Author | undefined> {
   // Each piece is deleted by one stored change, so the first that holds it is the one.
   for await (const row of readUpdatesDeleting(db, workpieceId, id.client)) {
     if (Y.isDeleted(Y.decodeUpdate(new Uint8Array(row.bytes.buffer)).ds, id)) {
-      return row.createdBy;
+      return authorOf(row);
     }
   }
   return undefined;

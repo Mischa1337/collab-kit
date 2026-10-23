@@ -50,16 +50,31 @@ export function tokenIn(data: Uint8Array): string | undefined {
   return decoding.readVarString(decoder);
 }
 
-/** The awareness entries of these clients as one message. */
+/** A state of the awareness as one receiver may see it. */
+export type Shown = (clientId: number, state: Record<string, unknown>) => Record<string, unknown>;
+
+/** The awareness entries of these clients as one message, each state as shown says. */
 export function encodeAwareness(
   awareness: awarenessProtocol.Awareness,
-  clientIds: number[],
+  clientIds: readonly number[],
+  shown?: Shown,
 ): Uint8Array {
+  // A client that is gone has no state and goes out as null, as y-protocols writes it.
+  const states =
+    shown === undefined
+      ? awareness.getStates()
+      : new Map(
+          clientIds.flatMap((clientId) => {
+            const state = awareness.getStates().get(clientId);
+            return state === undefined ? [] : [[clientId, shown(clientId, state)] as const];
+          }),
+        );
+
   const encoder = encoding.createEncoder();
   encoding.writeVarUint(encoder, MESSAGE_AWARENESS);
   encoding.writeVarUint8Array(
     encoder,
-    awarenessProtocol.encodeAwarenessUpdate(awareness, clientIds),
+    awarenessProtocol.encodeAwarenessUpdate(awareness, [...clientIds], states),
   );
   return encoding.toUint8Array(encoder);
 }
