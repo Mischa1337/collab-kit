@@ -1,59 +1,36 @@
-# Installierte Abhängigkeiten — werden via npm install wiederhergestellt
+# Installed dependencies, restored by npm ci
 node_modules/
 
-# Kompilierter TypeScript-Output — wird via npm run build erzeugt
+# Build output of the service and the client library, made by npm run build
 dist/
-
-# Echte Umgebungsvariablen mit Passwörtern — nur die *.example-Vorlagen werden versioniert
-.env*
-!.env.example
-!.env.prod.example
-
-# Lokale Docker-Compose-Overrides (z. B. DEV_ENFORCE_ROLES fürs Rollen-Testen) — nur lokal
-docker-compose.override.yml
-
-# Source-Map-Dateien für den kompilierten JS-Output
 *.js.map
 
-# Claude Code interne Konfiguration und Worktrees — nicht für das Team relevant
+# Real environment with secrets, only the template is tracked
+.env*
+!.env.example
+
+# Local overrides of docker-compose.yml
+docker-compose.override.yml
+
+# Local settings of tools and editors
 .claude/
-
-# JetBrains IDE-Konfiguration (.idea) — nur lokal, nicht fürs Team relevant
+CLAUDE.md
 .idea/
-
-# macOS Systemdateien
 .DS_Store
 
-# M16-Test-Hilfsrepo (Gitlink ohne .gitmodules) — dient nur lokal dem Testen von M16,
-# bleibt auf dem lokalen Branch des Kollegen, nicht im geteilten Stand.
-MaxGraphTest/
-
-# Projektkontext fuer Claude Code — reine Werkzeugkonfiguration, nur lokal
-CLAUDE.md
-
-# Dokumentation und Arbeitsdokumente — bleiben lokal, nicht im geteilten Stand
+# Documentation and working notes, local only for now
 docs/
 
-# Lokale Arbeitsdateien, nicht Teil der Veroeffentlichung
-demo-links.sh
-seed-praesi.sql
-DEMO-PRAESENTATION.md
-SETUP-KOLLEGEN.md
-PRE-PUBLIC-AUDIT.md
-documents/
-
-# Lokale Sicherungen
+# Local backups
 *.tar.gz
 *.bundle
 
-# Urheberrechtlich geschuetzte Fremdliteratur - nur lokal, nie veroeffentlichen
+# Copyrighted literature, local only, never to be published
 literatur-quellen/
 literatur-quellen*.zip
 **/literatur-quellen*.zip
 *.pdf
 
-# Lokale Hilfsskripte (Token, Seed, Lasttest), nicht Teil eines Release
+# Local helper scripts (token, seed, load test) and the demo page that needs a token from them
 scripts/
-
-# Lokale Demoseite der Verwaltung, braucht ein Token aus scripts/
 client/demo/
