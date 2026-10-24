@@ -1,136 +1,101 @@
 # collab-kit
 
-Ein Backend-Dienst ohne eigene Oberfläche, der Werkzeuge für Einzelne gemeinsam nutzbar macht. Er
-unterstützt beide Arten der Zusammenarbeit: **kollaborativ**, wenn mehrere gleichzeitig am selben
-Werkstück arbeiten, und **kooperativ**, wenn Arbeit in Aufgaben zerlegt, zugewiesen und wieder
-zusammengeführt wird.
+A backend service that makes tools built for one person usable together. Its core has no user
+interface, an optional element for managing rooms, groups and rights comes along. It supports both
+kinds of working together: **collaborative**, when several people work on the same workpiece at
+the same time, and **cooperative**, when work is split into tasks, assigned and brought back
+together.
 
-Der Dienst ist inhaltsblind. Er kennt kein Fachgebiet und kein Dateiformat, beides bringt das
-anbindende Werkzeug mit. Personen führt er nicht selbst, er liest sie aus dem signierten Token des
-Werkzeugs. Jedes Werkzeug bekommt eine eigene Instanz. Echtzeit läuft über Yjs und WebSocket,
-gespeichert wird in MongoDB.
+The service is content-blind. It knows no subject and no file format, the docking tool brings
+both. It does not manage identities, it reads them from the tool's signed token. Every tool gets
+an instance of its own. Real-time editing runs on Yjs over WebSocket, data is stored in MongoDB.
 
-## Rechte
+## Rights
 
-Der Dienst kennt sechs feste Rechte: `see`, `speak`, `edit`, `plan`, `decide` und `manage`. Damit
-regelt er, wer was sehen, kommentieren, bearbeiten, planen, entscheiden und verwalten darf. Wer sie
-wo bekommt, legt das anbindende Werkzeug fest.
+The service knows six fixed rights: `see`, `speak`, `edit`, `plan`, `decide` and `manage`. With
+them it controls who may see, comment, edit, plan, decide and manage what.
+
+Rights go to groups through grants. A grant gives a group rights at one place, such as a room or a
+workpiece, and everything below it. Without a place it holds in the whole instance. A grant may
+also make its members write anonymously there, others then see a pseudonym. Which group gets which
+rights where is up to the docking tool.
 
 ## Token
 
-Der Dienst stellt keine Token aus. Er prüft das JWT des anbindenden Werkzeugs und liest daraus, wer
-handelt. Eingestellt wird das pro Instanz in der `.env` (Vorlage: `.env.example`), nie pro Anfrage.
+The service issues no tokens. It verifies the JWT the docking tool sends with every request, as
+`Authorization: Bearer <token>` over HTTP or as WebSocket subprotocols `['bearer', <token>]`, and
+reads from it who is acting. An open WebSocket closes with 4401 once its token expires, unless the
+client sends a new one, which the client library does on its own. How the service checks the token
+(algorithm, key or JWKS, issuer, audience, claims) is set per instance in `.env`, and
+`.env.example` describes every variable.
 
-| Variable              | Vorgabe | Bedeutung                                                                                                     |
-| --------------------- | ------- | ------------------------------------------------------------------------------------------------------------- |
-| `JWT_ALGORITHM`       | `RS256` | Verfahren, mit dem das Werkzeug signiert: `HS256/384/512`, `RS256/384/512`, `PS256/384/512`, `ES256/384/512`  |
-| `JWT_SECRET`          | keine   | Gemeinsames Geheimnis mit dem Werkzeug. Pflicht bei `HS…`                                                     |
-| `JWT_PUBLIC_KEY`      | keine   | Öffentlicher Schlüssel des Werkzeugs als PEM. Bei `RS…`, `PS…` und `ES…` dies oder `JWT_JWKS_URI`             |
-| `JWT_JWKS_URI`        | keine   | Adresse, unter der das Werkzeug seine öffentlichen Schlüssel als JWKS veröffentlicht                          |
-| `JWT_ISSUER`          | keine   | Erwarteter Aussteller `iss`. Leer heißt: nicht geprüft                                                        |
-| `JWT_AUDIENCE`        | keine   | Erwartete Empfänger `aud`, durch Komma getrennt, einer muss passen. Leer heißt: nicht geprüft                 |
-| `ACTOR_CLAIM`         | `sub`   | Claim mit der Kennung der Person, Text oder Zahl. Eindeutig und dauerhaft, keine E-Mail, kein Benutzername    |
-| `LABEL_CLAIM`         | `name`  | Claim mit dem Anzeigenamen. Darf im Token fehlen                                                              |
-| `TOP_CLAIM`           | keine   | Claim, der sagt, wer ganz oben steht und überall alles darf. Nur zusammen mit `TOP_VALUES`                    |
-| `TOP_VALUES`          | keine   | Werte in `TOP_CLAIM`, die ganz oben zählen, durch Komma getrennt. Leer heißt: niemand, nur Grants entscheiden |
-| `JWT_CLOCK_TOLERANCE` | `5`     | Sekunden, die ein abgelaufenes Token noch gilt, um Uhrenabweichungen auszugleichen. `0` heißt streng          |
+## Client library
 
-Ein leerer Wert gilt als nicht gesetzt. Ein ungültiger Wert oder ein fehlender Schlüssel verhindert
-den Start, die Ursache steht in der Fehlermeldung. Wie lange ein Token gilt, entscheidet das
-Werkzeug über `exp`. Das gilt auch für eine offene WebSocket-Verbindung: Der Dienst schließt sie
-mit 4401, sobald ihr Token samt `JWT_CLOCK_TOLERANCE` abgelaufen ist, außer der Client schickt
-vorher ein neues über die Verbindung. Die Client-Bibliothek fragt dafür 30 s vor `exp` selbst
-`getToken`.
-
-Bei einem Schlüsselpaar bekommt der Dienst nur den öffentlichen Schlüssel, Zeilenumbrüche im PEM
-werden als `\n` geschrieben:
-
-```sh
-JWT_PUBLIC_KEY="-----BEGIN PUBLIC KEY-----\nMIIBIjANBg...\n-----END PUBLIC KEY-----"
-```
-
-Veröffentlicht das Werkzeug seine Schlüssel als JWKS, holt der Dienst sie selbst. Er lädt sie beim
-Start, ein nicht erreichbarer Aussteller verhindert den Start. Später lädt er neu, wenn ein Token
-einen unbekannten `kid` nennt oder die Schlüssel älter als zehn Minuten sind, höchstens einmal pro
-Minute. Fällt der Aussteller dabei aus, gelten die bekannten Schlüssel weiter.
-
-Signiert ein Aussteller Token für mehrere Anwendungen mit demselben Schlüssel, gehören `iss` und
-`aud` dazu. Sonst gilt auch ein Token, das für eine andere Anwendung ausgestellt wurde:
-
-```sh
-JWT_JWKS_URI=https://fbs.example/oauth2/jwks
-JWT_ISSUER=https://fbs.example
-JWT_AUDIENCE=fbs-web-shell
-```
-
-Für selbst signierte Testtoken genügt ein gemeinsames Geheimnis:
-
-```sh
-JWT_ALGORITHM=HS256
-JWT_SECRET=ein-langes-zufaelliges-geheimnis
-```
-
-### Token mitschicken
-
-- HTTP: Header `Authorization: Bearer <token>`
-- WebSocket: als Subprotokolle `['bearer', <token>]`
-
-Jede Ablehnung beantwortet der Dienst gleich mit `401`. Den Grund schreibt er nur ins Log.
-
-## Client-Bibliothek
-
-Ein Werkzeug im Browser lädt die Bibliothek vom Dienst selbst, so passt sie immer zu dieser
-Instanz:
+A tool in the browser loads the library from the service itself, so it always fits this instance.
+It opens sessions at workpieces and calls every route. It brings Yjs along, the tool needs none of
+its own:
 
 ```js
 const { createCollabKitApi } = await import('https://ck.example/client/v1.js');
+const ck = createCollabKitApi({ url: 'https://ck.example', getToken });
 ```
 
-`/client/v1.js` und `/client/v1.d.ts` mit den Typen für TypeScript kommen ohne Token. Laden darf
-jede Seite, die `ALLOWED_ORIGINS` erlaubt. Die Bibliothek bringt Yjs mit, das Werkzeug braucht
-kein eigenes.
+`/client/v1.js`, `/client/v1.d.ts` with the types and `/client/manage-v1.js` come without a token,
+for every page that `ALLOWED_ORIGINS` allows.
 
-## Betrieb und Grenzen
+`manage-v1.js` adds `<ck-management>`, an optional element for rooms, groups and rights. It brings
+Lit along and calls CK only through the `ck` it is given:
 
-### Genau ein Prozess
+```js
+await import('https://ck.example/client/manage-v1.js');
+document.querySelector('ck-management').ck = ck;
+```
 
-Der Dienst hält jedes geöffnete Werkstück im Speicher seines Prozesses. Zwei Instanzen gegen
-dieselbe Datenbank sehen sich nicht live und stören sich beim Falten. Deshalb:
+## Operation and limits
 
-- immer genau eine Instanz,
-- beim Update erst die alte stoppen, dann die neue starten,
-- beim Stoppen wartet der Dienst höchstens 5 s auf jeden Client. Die Frist, die die Plattform zum
-  Beenden gibt, sollte darüber liegen (Docker: 10 s).
+The service keeps every open workpiece in the memory of its process. Two instances against the
+same database do not see each other live and get in each other's way when compacting stored
+changes. Therefore:
 
-### Größen
+- always exactly one instance,
+- on an update, stop the old one first, then start the new one,
+- on stop the service waits at most 5 s for each client, so the platform should allow more time to
+  shut down (Docker: 10 s).
 
-| Variable              | Vorgabe | Bedeutung                                                                                                                      |
-| --------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| `MAX_MESSAGE_BYTES`   | 8 MiB   | Größte Nachricht eines Clients, höchstens 15 MiB, weil MongoDB eine Änderung in einem Dokument bis 16 MiB ablegt. Größer: 1009 |
-| `MAX_AWARENESS_BYTES` | 64 KiB  | Größter Awareness-Eintrag (Cursor, Auswahl, Name). Er geht alle 15 s an alle. Größer: 1009                                     |
+Message sizes, the web origins allowed to connect, and which states of tasks and comments count as
+a decision are set in `.env` as well, see `.env.example`.
 
-Zur Einordnung: 50 000 Tastendrücke ergeben rund 1 MB Änderungen und 250 KB gefalteten Stand.
+Known limits:
 
-### Herkunft der Verbindungen
+- **Clock:** changes are ordered by the time in their `_id`. The server clock should therefore be
+  kept in step through NTP instead of jumping.
+- **Change that cannot be applied:** if a stored change cannot be applied, e.g. after a manual edit
+  of the database, the workpiece no longer opens. The log names the `_id` of the row. Deleting it
+  loses this change and everything built on it.
+- **Author:** the author of a change is whoever's connection delivers it. Only when storing fails
+  and is retried can a change stand under someone else's name.
 
-`ALLOWED_ORIGINS` listet die Webseiten, von denen aus ein Browser den Socket öffnen und die Routen
-aufrufen darf: durch Komma getrennt, ohne Pfad und ohne `/` am Ende, etwa `https://tool.example`.
-Leer heißt: von überall. Andere Herkunft bekommt am Socket `403` und bei den Routen keine
-CORS-Header.
+## Development
 
-### Entscheidungen
+Needs Node.js 24 and Docker.
 
-`DECISION_STATES` nennt die Zustände von Aufgaben und Kommentaren, die eine Entscheidung sind,
-durch Komma getrennt, etwa `accepted,rejected`. Einen davon setzt nur, wer das Recht `decide` hat.
-Welche Wörter das sind, bestimmt das Werkzeug, der Dienst kennt ihre Bedeutung nicht. Leer heißt:
-keiner.
+```sh
+cp .env.example .env   # then set the token variables
+npm ci
+npm run db:up          # MongoDB as a single-node replica set on port 24203
+npm run dev            # the service on port 24202, restarts on changes
+```
 
-### Bekannte Grenzen
+`npm test` runs the unit tests, `npm run test:integration` the integration tests against the
+database from `.env`. These empty the database named in `MONGODB_DB`, so point them at one of their
+own, e.g. `MONGODB_DB=collab_kit_test npm run test:integration`. The CI also runs `npm run lint`,
+`npm run format:check` and `npm run typecheck`.
 
-- **Uhr:** Änderungen sind nach der Zeit in ihrer `_id` geordnet. Die Serveruhr sollte deshalb über
-  NTP nachgeführt werden, statt zu springen.
-- **Nicht anwendbare Änderung:** Lässt sich eine gespeicherte Änderung nicht anwenden, etwa nach
-  einem Eingriff von Hand in die Datenbank, öffnet das Werkstück nicht mehr. Das Log nennt die
-  `_id` der Zeile. Sie zu löschen verliert diese Änderung und alles, was darauf aufbaut.
-- **Urheber:** Als Urheber einer Änderung gilt, wessen Verbindung sie liefert. Nur wenn das
-  Speichern scheitert und nachgeliefert wird, kann eine Änderung unter fremdem Namen stehen.
+## License
+
+collab-kit is licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE). It may be used,
+changed and passed on for noncommercial purposes, including by universities and other educational
+and research institutions. Commercial use is not permitted.
+
+Because it rules out commercial use, this is a source-available license rather than an
+OSI-approved open-source license.
